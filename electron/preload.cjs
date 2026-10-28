@@ -1,0 +1,14 @@
+// Cầu nối an toàn giữa trang và Electron: chỉ mở các lệnh tệp cần thiết, không lộ Node
+const { contextBridge, ipcRenderer } = require('electron');
+
+contextBridge.exposeInMainWorld('xlDesktop', {
+  platform: process.platform,
+  startupFile: () => ipcRenderer.invoke('xl:startup-file'),
+  openDialog: () => ipcRenderer.invoke('xl:open-dialog'),
+  save: (o) => ipcRenderer.invoke('xl:save', o),
+  onOpen: (cb) => ipcRenderer.on('xl:open', (_e, f) => cb(f)),
+  onCloseRequest: (cb) => { ipcRenderer.on('xl:close-request', () => cb()); ipcRenderer.send('xl:close-ready'); },
+  closeOk: () => ipcRenderer.send('xl:close-ok'),
+  closePending: () => ipcRenderer.send('xl:close-pending'),
+  closeCancel: () => ipcRenderer.send('xl:close-cancel'),
+});

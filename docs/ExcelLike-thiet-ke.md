@@ -1,0 +1,245 @@
+# ExcelLike — Doc thiết kế (Bước 1)
+
+Phần mềm bảng tính chức năng tương tự Excel 365. Người dùng: chỉ anh Lâm dùng cá nhân.
+Trạng thái: Bước 0 đã duyệt 28/10/2026 · Chốt UI: chọn **phương án A – Ribbon** (28/10/2026) · Đợt 1 đã duyệt (28/10/2026) · Đợt 2 xong, đã review độc lập + kiểm chứng, chờ anh duyệt Bước 5.
+
+## 1. Mục tiêu v1
+
+Một mã nguồn web chạy được hai kiểu:
+- **PWA**: cài được trên desktop (Chrome/Edge) và mobile (Android, iOS), mở lại khi offline.
+- **App Windows (Electron)**: cài bằng file .exe, chạy offline, mở/lưu file trực tiếp, gắn đuôi .xlsx.
+
+Phạm vi: Cốt lõi + Xlsx + Biểu đồ + PivotTable. Không có kênh góp ý (dùng cá nhân).
+
+## 2. Tiêu chí đạt (đã duyệt ở Bước 0)
+
+| # | Tiêu chí | Cách đo |
+|---|---|---|
+| T1 | Lưới ô: chọn ô/vùng, kéo điền, sao chép/dán, undo/redo, đóng băng ngăn, đổi cỡ cột/hàng, nhiều sheet | Test E2E Playwright |
+| T2 | Công thức cho kết quả trùng Excel | Bộ file .xlsx mẫu có giá trị Excel đã tính sẵn → so khớp từng ô |
+| T3 | Tính lại theo phụ thuộc; sửa 1 ô chỉ tính các ô liên quan; phát hiện tham chiếu vòng | Unit test + đếm số ô được tính lại |
+| T4 | Định dạng ô: số, tiền, %, ngày, font, màu, viền, căn lề, gộp ô, định dạng có điều kiện | Unit + ảnh chụp |
+| T5 | Sắp xếp, lọc, Data Validation | Unit + E2E |
+| T6 | Biểu đồ cột, đường, tròn; tự cập nhật khi đổi dữ liệu | E2E |
+| T7 | PivotTable: kéo-thả hàng/cột/giá trị/bộ lọc; Sum/Count/Average | Đối chiếu với Pivot của Excel trên cùng dữ liệu |
+| T8 | Mở/lưu .xlsx giữ công thức, định dạng, nhiều sheet; CSV vào/ra; xuất PDF; in | Mở → lưu → mở lại, so sánh |
+| T9 | 100.000 hàng × 20 cột: cuộn mượt, mở và tính lại trong ngưỡng | Đo thời gian (chốt ngưỡng ở Bước 5) |
+| T10 | PWA cài được, offline vào được shell | Lighthouse + cài thật |
+| T11 | UI hiện đại, sáng/tối, responsive (mobile dọc + ngang, 360×640), dùng được bằng bàn phím, WCAG AA | Ảnh chụp tự động + kiểm tra bàn phím |
+
+Ca biên/ca xấu: tham chiếu vòng, chia 0, ô trống hoặc chữ lẫn số, công thức lồng sâu, file .xlsx hỏng hoặc có tính năng chưa hỗ trợ (báo rõ, không mất dữ liệu), dán dữ liệu rất lớn, hàm chưa có (#NAME?).
+
+Chưa làm ở v1: macro/VBA, cộng tác thời gian thực, Power Query, LET/LAMBDA và mảng động đầy đủ, nguồn dữ liệu ngoài.
+
+## 3. Kiến trúc
+
+```
+┌──────────────────────── Giao diện (React + TypeScript) ────────────────────────┐
+│ Ribbon/Toolbar · Thanh công thức · Lưới Canvas · Tab sheet · Bảng Biểu đồ/Pivot │
+└───────────────┬─────────────────────────────────────────────┬──────────────────┘
+                │ lệnh (command) + undo/redo                   │ sự kiện thay đổi
+┌───────────────▼──────────────┐   ┌──────────────────────────▼─────────────────┐
+│ Mô hình Workbook (core)       │◄──┤ Engine công thức (HyperFormula, Web Worker)│
+│ sheet, ô, style, merge, CF,   │   │ parse, đồ thị phụ thuộc, tính lại từng phần │
+│ validation, chart, pivot      │   └────────────────────────────────────────────┘
+└───────┬───────────────┬──────┘
+        │               │
+┌───────▼─────┐  ┌──────▼────────────────────────────────┐
+│ IO: ExcelJS │  │ Lớp nền tảng (platform adapter)        │
+│ .xlsx / CSV │  │ PWA: File System Access + IndexedDB    │
+│ PDF / in    │  │ Electron: fs, hộp thoại Open/Save, .exe│
+└─────────────┘  └───────────────────────────────────────┘
+```
+
+### Lựa chọn công nghệ
+
+| Phần | Chọn | Lý do |
+|---|---|---|
+| Ngôn ngữ, build | TypeScript, Vite | Một mã nguồn cho PWA và Electron |
+| UI | TypeScript thuần (không framework) | Đổi so với kế hoạch ban đầu (React): ribbon và hộp thoại đơn giản, lưới vẽ Canvas; bỏ React giúp nhẹ và ít phụ thuộc |
+| Lưới ô | Tự viết, vẽ Canvas, ảo hóa hàng/cột | Đạt T9 (100.000 hàng); DOM không chịu nổi |
+| Engine công thức | HyperFormula 3.4, chạy trên luồng chính (Đợt 1) | ~420 hàm, đồ thị phụ thuộc, tính lại từng phần. Sửa 1 ô ~5 ms nên chưa cần Worker; xem lại khi có sổ rất lớn |
+| Đọc/ghi .xlsx | ExcelJS | Đọc/ghi được style, merge, CF, validation |
+| Biểu đồ | ECharts | Cột/đường/tròn, vẽ Canvas, nhẹ |
+| PivotTable | Tự viết (group-by trên vùng dữ liệu) | Đơn giản, kiểm soát được |
+| PDF/in | Electron: `printToPDF`; PWA: CSS in + hộp thoại in của trình duyệt | |
+| Lưu tạm/khôi phục | IndexedDB, tự lưu mỗi 30 giây | Không mất dữ liệu khi app bị đóng |
+| Đóng gói Windows | Electron + electron-builder (NSIS .exe) | Gắn đuôi .xlsx, cập nhật thủ công |
+| Test | Vitest (unit), Playwright (E2E + ảnh chụp mobile) | |
+
+## 4. Module
+
+| Module | Việc | Ghi chú |
+|---|---|---|
+| `core/model` | Workbook, Sheet, Cell, Style, Range, địa chỉ A1 ↔ (r,c) | Thuần TS, không phụ thuộc UI |
+| `core/commands` | Mọi thay đổi đi qua lệnh có `do/undo` | Undo/redo, kéo điền, dán |
+| `core/engine` | Bọc HyperFormula trong Worker; đồng bộ ô ↔ engine | |
+| `core/format` | Định dạng số kiểu Excel (`#,##0`, `0.0%`, `dd/mm/yyyy`), locale vi-VN | |
+| `core/cf`, `core/validation` | Định dạng có điều kiện, Data Validation | |
+| `core/sortfilter` | Sắp xếp nhiều khóa, AutoFilter | |
+| `core/pivot` | Tính bảng Pivot từ vùng nguồn | |
+| `io/xlsx`, `io/csv`, `io/pdf` | Nhập/xuất | |
+| `ui/grid` | Canvas: vẽ, cuộn ảo, chọn, sửa tại ô, đóng băng | |
+| `ui/ribbon`, `ui/formula-bar`, `ui/sheets`, `ui/chart`, `ui/pivot` | Giao diện theo phương án được chọn | |
+| `platform/pwa`, `platform/electron` | File, menu, cài đặt, offline | |
+
+## 5. Rủi ro và cách xử lý
+
+| Rủi ro | Xử lý |
+|---|---|
+| HyperFormula giấy phép GPLv3 (miễn phí khi dùng cá nhân); nếu sau này bán/giao cho đơn vị khác phải mua giấy phép hoặc mở mã nguồn | Ghi rõ; bọc qua lớp `core/engine` để thay engine được |
+| ExcelJS **không ghi được biểu đồ và PivotTable gốc** vào .xlsx | v1: lưu biểu đồ/pivot trong phần dữ liệu riêng của app (vẫn mở lại được trong ExcelLike); khi mở bằng Excel thật, pivot hiện thành bảng giá trị, biểu đồ không hiện. Báo rõ khi lưu |
+| File .xlsx dùng tính năng chưa hỗ trợ (macro, slicer…) | Giữ nguyên phần không hiểu khi có thể, cảnh báo trước khi lưu đè |
+| Hiệu năng 100.000 hàng | Canvas + ảo hóa + engine trong Worker; đo sớm ở task 3 |
+| Bàn phím ảo trên mobile che ô đang sửa | Sửa trong thanh công thức trên mobile, cuộn ô vào vùng nhìn thấy |
+| iOS không có File System Access | Mở bằng chọn file, lưu bằng Chia sẻ/tải xuống |
+
+## 5b. Quyết định kỹ thuật đã chốt khi làm Đợt 1
+
+- **Quy ước tiếng Việt**: công thức dùng `;` ngăn tham số, `,` thập phân; hiển thị nhóm nghìn `.`. Hằng mảng viết `{1,2}` bị nhầm với số thập phân → chưa hỗ trợ hằng mảng (dùng vùng ô thay thế). Khi làm .xlsx (Đợt 2) phải đổi `;`↔`,` và `,`↔`.` lúc đọc/ghi.
+- **Sai khác của HyperFormula so với Excel đã vá**: `INT` (số âm), `MOD` (dấu theo số chia), `TRUE`/`FALSE` viết không ngoặc.
+- **Lỗi vòng lặp** hiển thị `#CYCLE!` (Excel hiện 0 kèm cảnh báo).
+- **Hoàn tác**: một ngăn xếp chung; mỗi mục ghi "có bước của HyperFormula hay không" + hàm hoàn tác riêng cho định dạng/cỡ cột/cố định ngăn.
+- **Kéo điền công thức**: tự dời tham chiếu bằng `core/formula.ts` (shiftFormula), không dùng copy/paste của HyperFormula (không chạy được trong batch).
+- **Mở sổ lớn**: dùng `buildFromSheets` (nhanh hơn ~2,5 lần): 2 triệu ô mở trong ~4 giây.
+- **Điện thoại**: sửa ô trên thanh công thức (không bị bàn phím ảo che); chạm 2 lần để sửa, giữ lâu để mở menu.
+- **Định dạng cả cột/hàng** chỉ áp cho phần đã có dữ liệu (chưa có kiểu định dạng theo cột như Excel).
+
+## 6. Kế hoạch task (thứ tự, mỗi task có test)
+
+| # | Task | Phụ thuộc | Kiểm chứng |
+|---|---|---|---|
+| 0 | **Chốt UI: 3 phương án A/B/C** (desktop + mobile dọc/ngang, sáng/tối) | – | Anh chọn |
+| 1 | Khung dự án Vite + TS + Vitest + Playwright; PWA (manifest, icon, service worker) | 0 | Lighthouse Installable |
+| 2 | `core/model` + địa chỉ A1 + `core/commands` (undo/redo) | 1 | Unit |
+| 3 | `ui/grid` Canvas: cuộn ảo, chọn, sửa ô, đóng băng, đổi cỡ | 2 | E2E + đo 100.000 hàng |
+| 4 | `core/engine` HyperFormula trong Worker; thanh công thức | 2 | Bộ đối chiếu Excel |
+| 5 | Sao chép/dán, kéo điền, chèn/xóa hàng cột, nhiều sheet | 3, 4 | E2E |
+| 6 | `core/format` + định dạng ô + gộp ô | 3 | Unit + ảnh |
+| 7 | `io/xlsx` + CSV (mở/lưu, round-trip) | 4, 6 | So sánh trước/sau |
+| 8 | Sắp xếp, lọc, Data Validation, định dạng có điều kiện | 6 | Unit + E2E |
+| 9 | Biểu đồ cột/đường/tròn | 4 | E2E |
+| 10 | PivotTable | 4 | Đối chiếu Pivot Excel |
+| 11 | Xuất PDF, in | 6 | Mở PDF kiểm tra |
+| 12 | Electron: đóng gói .exe, hộp thoại file, gắn đuôi .xlsx | 7 | Cài thật trên Windows |
+| 13 | Mobile: dọc/ngang/360px, sửa ô qua thanh công thức | 3 | Bộ ảnh Playwright |
+| 14 | Review độc lập (subagent) → sửa → Bước 5 kiểm chứng | tất cả | Báo cáo đạt/chưa đạt |
+
+Làm theo từng đợt, mỗi đợt anh nhận một bản chạy được:
+- **Đợt 1** (task 1–5): lưới + công thức + nhiều sheet, chạy trên trình duyệt.
+- **Đợt 2** (task 6–8): định dạng, .xlsx, dữ liệu.
+- **Đợt 3** (task 9–11): biểu đồ, pivot, PDF.
+- **Đợt 4** (task 12–14): bản .exe, hoàn thiện mobile, kiểm chứng.
+
+## 6b. Kết quả kiểm chứng Đợt 1 (28/10/2026)
+
+| Hạng mục | Kết quả |
+|---|---|
+| Unit test (Vitest) | 58/58 đạt (gồm bộ đối chiếu Excel và 12 ca từ review) |
+| Kiểm thử trình duyệt (Playwright) | 38/38 đạt |
+| Mở sổ 100.000 × 20 ô (2 triệu ô, 100.000 công thức) | ~4 giây |
+| Sửa 1 ô → tính lại | chỉ ô phụ thuộc, ~5 ms |
+| Vẽ khi cuộn (trình duyệt không GPU) | trung vị ~5 ms/khung |
+| PWA | manifest + service worker đạt, mất mạng vẫn mở được |
+| Mobile | dọc 390×844, ngang 844×390, máy nhỏ 360×640, sáng + tối: không tràn, nút ≥ 40px |
+
+Review độc lập tìm 15 lỗi (3 nghiêm trọng: hoàn tác định dạng lệch sau chèn/dán; mở lỗi thì ghi đè sổ cũ; tên sheet dạng số/Q1 mất dấu nháy) — đã sửa hết, mỗi lỗi có test.
+
+Chưa thử trên máy thật: gõ tiếng Việt bằng Unikey/EVKey, cài PWA thật trên Android/iPhone, cảm ứng thật.
+
+## 6c. Đợt 2 (28/10/2026) — .xlsx, CSV, viền, gộp ô, sắp xếp, lọc, CF, DV
+
+| Hạng mục | Kết quả |
+|---|---|
+| Unit test | 90/90 đạt (thêm: chuyển công thức Việt↔Excel, CSV, gộp ô, viền, sắp xếp, lọc, CF, DV, đọc .xlsx kiểu Excel, khứ hồi .xlsx, 17 ca từ review) |
+| Kiểm thử trình duyệt | Đợt 2: 21/21 · Đợt 1: 38/38 (không hồi quy) |
+| Tệp .xlsx app lưu ra | openpyxl đọc lại đúng công thức, ô gộp, màu, lọc, cố định ngăn, CF, DV |
+
+Quyết định kỹ thuật Đợt 2:
+- ExcelJS 4.4 (MIT) đọc/ghi; phần **Kiểm tra dữ liệu tự đọc từ XML** (JSZip) vì ExcelJS trải từng ô (cột C:C mất 26 giây, 641 MB) và bỏ qua dạng mới trong extLst.
+- Công thức trong tệp dùng `,`/`.`; app dùng `;`/`,` → `core/locale.ts` đổi hai chiều (cả hằng mảng `{1,2;3,4}` ↔ `{1,2|3,4}`), thêm/bỏ tiền tố `_xlfn.` cho hàm mới.
+- Chữ trông như số/công thức (`+84…`, `1E5`, `=abc`, `0123`) được giữ là chữ bằng dấu `'` như Excel.
+- Danh sách Kiểm tra dữ liệu dài >255 ký tự hoặc có dấu phẩy/ngoặc kép → ghi ra sheet ẩn `_ExcelLike_DS` (app tự đọc lại).
+- Độ rộng cột: 8 px/ký tự (phông của app rộng hơn Calibri) để số không thành ####.
+- **Độ chính xác số: 15 chữ số có nghĩa** (HyperFormula mặc định chỉ 10 → đã sửa).
+- Định dạng số Excel: nhiều phần (`;`), màu `[Red]`, chữ cố định, `_ *`, giờ `h:mm:ss`, `[h]:mm`, `mmm`, khoa học `0.00E+00`, chia nghìn `#,##0,,`.
+- Khi đang lọc, sắp xếp chỉ đụng các hàng đang hiện (như Excel).
+
+Chưa làm/còn hạn chế: hình ảnh, biểu đồ, ghi chú, macro trong tệp (báo trước, mất nếu lưu đè); điều kiện lọc không lưu vào tệp (hàng ẩn vẫn giữ); xóa CF/DV ở vùng chọn xóa cả quy tắc chồng lấn; hằng mảng có số thập phân.
+
+## 6d. Đợt 3 (28/10/2026) — biểu đồ, PivotTable, In / PDF
+
+| Hạng mục | Kết quả |
+|---|---|
+| Unit test | 117/117 đạt (thêm: Pivot đối chiếu kết quả Excel, dữ liệu & trục biểu đồ, biểu đồ trong .xlsx đọc/ghi, trang in, 13 ca từ review) |
+| Kiểm thử trình duyệt | Đợt 3: 32/32 · Đợt 2: 21/21 · Đợt 1: 38/38 (không hồi quy) |
+| Tệp .xlsx app lưu ra | openpyxl đọc được 7 loại biểu đồ, hướng giấy, lặp hàng tiêu đề |
+| In | PDF tạo từ trang in: đúng khổ A4 ngang, có số liệu và ảnh biểu đồ (pdftotext/pdfinfo) |
+
+Quyết định kỹ thuật Đợt 3:
+- Biểu đồ vẽ bằng Canvas riêng (`ui/chartdraw.ts`), không thêm thư viện; nằm trên lớp nổi phía trên lưới, neo theo ô + lệch (như Excel), kéo/đổi cỡ/sửa/xóa đều hoàn tác được.
+- Biểu đồ trong .xlsx: tự đọc `drawing` + `chart` XML (JSZip) và gỡ khỏi gói trước khi đưa ExcelJS (ExcelJS lỗi với biểu đồ); khi lưu tự sinh `chartN.xml`, `drawingN.xml`, liên kết và content type. Bộ đệm giá trị ghi đủ cả hàng ẩn để chỉ số khớp vùng.
+- PivotTable tính trong lõi (`core/pivot.ts`), ghi kết quả ra ô như bảng giá trị; định nghĩa Pivot lưu trong sổ (IndexedDB). Lưu ra .xlsx là bảng giá trị, chưa phải PivotTable "sống" của Excel.
+- Như Excel: không chèn/xóa hàng/cột cắt ngang Pivot; không đặt Pivot chồng lên vùng nguồn; tên cột trùng được đánh số; trường ngày hiện theo ngày đã định dạng.
+- Xóa sheet: biểu đồ/Pivot trỏ tới sheet đó bị gỡ tham chiếu (mã sheet của HyperFormula được dùng lại) — hoàn tác trả lại.
+- In: dựng HTML riêng (khổ, hướng, lề, vừa chiều ngang bằng zoom, lặp tiêu đề bằng `thead`, ô gộp bằng rowspan/colspan) rồi in qua khung ẩn; trang in có CSP chặn script, kiểu ô được thoát ký tự.
+- Mở tệp openpyxl có đường dẫn tuyệt đối/ghi chú đặt chỗ không chuẩn: tự sửa đường dẫn, gỡ ghi chú và báo trước.
+
+Review độc lập Đợt 3: 2 lỗi nặng (chèn mã qua tên phông trong trang in; biểu đồ/Pivot bám nhầm sheet mới sau khi xóa sheet), 7 lỗi vừa, 7 lỗi nhẹ — đã sửa, mỗi lỗi có test.
+
+Chưa làm/còn hạn chế: PivotTable chưa ghi dạng Pivot "sống" vào .xlsx; ô lỗi (#DIV/0!) trong cột giá trị bị bỏ qua khi tổng hợp; biểu đồ tán xạ/radar/kết hợp chưa hỗ trợ; hình ảnh, hình vẽ, ghi chú trong tệp vẫn mất nếu lưu đè (có báo trước); điện thoại nằm ngang vùng lưới còn hẹp (xử lý ở Đợt 4).
+
+## 6e. Đợt 4 (28/10/2026) — bản Windows .exe, điện thoại, kiểm chứng cuối
+
+Quyết định kỹ thuật Đợt 4:
+- Electron 33: nạp bản build web qua giao thức riêng `app://` (chặn thoát thư mục, gắn CSP); `contextIsolation` + `sandbox`, trang chỉ thấy cầu nối `xlDesktop` (mở, lưu, nhận tệp, đóng cửa sổ). Một phiên duy nhất: nhấp đúp tệp khi app đang mở → chuyển vào cửa sổ hiện có.
+- Lưu tệp: ghi ra tệp tạm (tên riêng mỗi lần) rồi đổi tên; các lần lưu cùng một tệp chạy tuần tự; chỉ ghi thẳng vào tệp người dùng đã chọn (danh sách nhớ ở thư mục dữ liệu app), đường dẫn lạ → hỏi bằng hộp thoại Lưu thành.
+- “Có thay đổi chưa lưu vào tệp” được lưu kèm sổ nháp → mở lại app vẫn nhớ. Đóng cửa sổ: hỏi Lưu / Không lưu / Hủy; trang treo hoặc chưa sẵn sàng thì vẫn đóng được (bản nháp đã tự lưu).
+- Bộ cài: NSIS viết tay (makensis gốc, không cần Wine), cài cho người dùng hiện tại vào `%LOCALAPPDATA%\Programs\ExcelLike` (luôn thêm thư mục con ExcelLike), lối tắt, “Mở bằng…” cho .xlsx/.csv, tùy chọn đặt làm mặc định; gỡ cài đặt chỉ xóa đúng tệp đã cài, giữ dữ liệu sổ tính. Biểu tượng + thông tin phiên bản gắn vào .exe bằng resedit. Kèm bản Portable .zip.
+- Phông Be Vietnam Pro đóng gói kèm (không gọi Google Fonts) → chạy hoàn toàn offline.
+- Điện thoại: ribbon thu gọn được (Ctrl+F1, nút ⌃/⌄, nhấp đúp thẻ); nằm ngang thì mặc định thu gọn, chạm thẻ để hiện tạm; thanh tiêu đề + thẻ chung một hàng.
+
+Review độc lập Đợt 4: 1 lỗi nặng (Esc ở hộp thoại hỏi lưu làm không đóng được cửa sổ), 4 lỗi vừa (lưu chồng nhau có thể hỏng tệp; nút Lưu trong hộp thoại đóng; trạng thái chưa lưu mất khi mở lại; trang có thể ghi vào đường dẫn bất kỳ), 7 lỗi nhẹ — đã sửa, có kiểm thử.
+
+## 7. Kiểm chứng cuối theo tiêu chí Bước 0
+
+| # | Tiêu chí | Kết quả |
+|---|---|---|
+| T1 | Lưới ô, kéo điền, sao chép/dán, hoàn tác, cố định ngăn, đổi cỡ, nhiều sheet | Đạt — E2E Đợt 1 38/38 |
+| T2 | Công thức trùng Excel | Đạt — bộ đối chiếu với giá trị Excel (unit test), ~420 hàm |
+| T3 | Tính lại theo phụ thuộc, phát hiện vòng | Đạt — sửa 1 ô chỉ tính ô phụ thuộc (~5 ms) |
+| T4 | Định dạng ô, viền, gộp, có điều kiện | Đạt — unit + E2E Đợt 2 21/21 |
+| T5 | Sắp xếp, lọc, kiểm tra dữ liệu | Đạt |
+| T6 | Biểu đồ cột/đường/tròn, tự cập nhật | Đạt — 7 loại, E2E Đợt 3 32/32 |
+| T7 | PivotTable kéo-thả, Sum/Count/Average | Đạt — khớp kết quả Pivot của Excel |
+| T8 | Mở/lưu .xlsx, CSV, PDF, in | Đạt — openpyxl đọc lại; PDF đúng khổ/hướng |
+| T9 | 100.000 hàng × 20 cột | Sổ trong app: mở ~4 giây, cuộn trung vị ~5 ms/khung. Tệp .xlsx: 10.000 hàng ~2 giây; 30.000 hàng ~5 giây; 100.000 hàng mở ~24 giây, lưu ~29 giây (giới hạn của thư viện ExcelJS — ghi nhận là hạn chế) |
+| T10 | PWA cài được, offline | Đạt — manifest + service worker, phông đóng gói kèm |
+| T11 | UI hiện đại, sáng/tối, điện thoại dọc/ngang, bàn phím, WCAG AA | Đạt — Lighthouse Trợ năng 100, Chuẩn kỹ thuật 100; E2E điện thoại 32/32 (360×640, 390×844, 844×390, 640×360) |
+| — | Bản Windows | E2E bản máy tính 21/21 (Electron); cài/gỡ thử không giao diện bằng Wine: tệp, lối tắt, registry đúng, gỡ sạch, giữ tệp người dùng |
+
+Còn hạn chế v1: tệp .xlsx rất lớn mở/lưu chậm; PivotTable lưu ra .xlsx là bảng giá trị; hình ảnh, ghi chú, macro trong tệp mất nếu lưu đè (có báo trước); biểu đồ tán xạ/radar chưa có; bộ cài chưa ký số (SmartScreen sẽ cảnh báo); chưa thử trên máy Windows thật và điện thoại thật (gõ Unikey/EVKey, cài PWA).
+
+## 7b. Trạng thái
+
+- **28/10/2026: chốt bản v1 — ExcelLike 0.4.0** (bộ cài Windows `ExcelLike-Setup-0.4.0.exe`, bản Portable `.zip`, PWA). Việc tiếp theo: cài thử trên máy Windows thật và điện thoại thật; ghi lỗi gặp phải để làm bản 0.4.x.
+- Hướng cải thiện sau v1 (chưa cam kết): mở/lưu .xlsx lớn nhanh hơn (tự ghi XML sheet thay ExcelJS), PivotTable “sống” trong .xlsx, biểu đồ tán xạ/kết hợp, giữ hình ảnh/ghi chú khi lưu, ký số bộ cài.
+
+Bài học quy trình (rút ra khi làm 4 đợt):
+- Review độc lập sau mỗi đợt đều tìm ra lỗi nặng mà test của chính mình bỏ sót (chèn mã qua tên phông, tham chiếu sheet bị dùng lại, Esc làm treo đóng cửa sổ) → giữ bước review độc lập, giao cho người review chạy thử thật (script, Wine, Electron) chứ không chỉ đọc mã.
+- Đóng gói Windows từ Linux không cần Wine: electron-builder `--win dir` + resedit (icon/phiên bản) + makensis gốc (`Target amd64-unicode`); Wine64 chỉ dùng để chạy thử bộ cài 64-bit.
+- Đo hiệu năng khi máy rảnh (đo lúc đang đóng gói song song cho số sai lệch).
+
+## 8. Cách chạy (cập nhật khi có mã nguồn)
+
+```
+npm install
+npm run dev          # chạy bản web
+npm test             # unit test (Vitest)
+npm run build        # bản PWA trong dist/
+npm run e2e          # E2E + ảnh chụp (Playwright, cần bản build)
+node tools/artifact.mjs   # gộp 1 file HTML chạy thử
+npm run desktop      # chạy bản máy tính (Electron)
+npm run build:win    # release/ExcelLike-Setup-x.y.z.exe + ExcelLike-Portable-x.y.z.zip (cần makensis)
+npm run e2e:desktop  # kiểm thử bản máy tính (Linux: xvfb-run)
+```

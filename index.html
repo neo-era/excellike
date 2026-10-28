@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>ExcelLike</title>
+  <meta name="description" content="Phần mềm bảng tính chạy trên trình duyệt và Windows">
+  <meta name="theme-color" content="#0f5e3d">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="ExcelLike">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+</head>
+<body>
+  <div class="app" id="app">
+    <header class="top">
+      <div class="logo" aria-hidden="true">XL</div>
+      <div class="doc">
+        <input id="doc-name" class="doc-name" aria-label="Tên sổ tính" spellcheck="false">
+        <span id="save-state" class="save-state">Đang mở…</span>
+      </div>
+      <div class="sp"></div>
+      <button class="ib install" id="btn-install" hidden data-ic="install" title="Cài đặt ứng dụng"><span>Cài đặt</span></button>
+      <button class="ib" id="btn-undo" data-ic="undo" title="Hoàn tác (Ctrl+Z)" aria-label="Hoàn tác"></button>
+      <button class="ib" id="btn-redo" data-ic="redo" title="Làm lại (Ctrl+Y)" aria-label="Làm lại"></button>
+      <button class="ib" id="btn-save" data-ic="save" title="Lưu (Ctrl+S)" aria-label="Lưu"></button>
+      <button class="ib" id="btn-theme" data-ic="moon" title="Đổi giao diện sáng/tối" aria-label="Đổi giao diện sáng/tối"></button>
+    </header>
+    <nav class="tabs" id="tabs" role="tablist" aria-label="Thẻ lệnh"></nav>
+    <section class="ribbon" id="ribbon" aria-label="Lệnh"></section>
+    <div class="fbar">
+      <input class="namebox" id="namebox" aria-label="Ô đang chọn" spellcheck="false">
+      <div class="fx-btns">
+        <button class="fxb" id="fx-cancel" data-ic="x" data-s="16" title="Hủy (Esc)" aria-label="Hủy"></button>
+        <button class="fxb" id="fx-ok" data-ic="validate" data-s="16" title="Nhập (Enter)" aria-label="Nhập"></button>
+      </div>
+      <span class="fx" aria-hidden="true">fx</span>
+      <textarea id="fx-input" class="fx-input" rows="1" aria-label="Thanh công thức" spellcheck="false"></textarea>
+    </div>
+    <main class="grid-wrap" id="gridwrap"></main>
+    <footer class="foot">
+      <div class="sheets" id="sheets" role="tablist" aria-label="Các sheet"></div>
+      <span class="mode" id="mode">Sẵn sàng</span>
+      <span class="agg" id="agg" aria-live="polite"></span>
+      <div class="zoom">
+        <button id="zoom-out" data-ic="minus" data-s="14" aria-label="Thu nhỏ"></button>
+        <button id="zoom-val" title="Về 100%">100%</button>
+        <button id="zoom-in" data-ic="plus" data-s="14" aria-label="Phóng to"></button>
+      </div>
+    </footer>
+  </div>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <div id="sr-cell" class="sr-only" aria-live="polite"></div>
+  <noscript>ExcelLike cần bật JavaScript.</noscript>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

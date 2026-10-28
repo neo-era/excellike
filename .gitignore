@@ -1,0 +1,6 @@
+node_modules/
+dist/
+dist-demo/
+release/
+e2e/shots/
+build/uninst-files.nsh
