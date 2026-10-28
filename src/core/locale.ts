@@ -23,7 +23,17 @@ function convert(f: string, to: Mode): string {
     if (ch === "'") { // tên sheet trong nháy
       let j = i + 1;
       while (j < f.length) { if (f[j] === "'" && f[j + 1] === "'") { j += 2; continue; } if (f[j] === "'") break; j++; }
+      // 'Sheet'!#REF! (tham chiếu đã hỏng trong Excel) → #REF! như Excel hiển thị
+      if (to === 'vi' && f.startsWith('!#REF!', j + 1)) { out += '#REF!'; i = j + 7; continue; }
       out += f.slice(i, j + 1); i = j + 1; continue;
+    }
+    // liên kết ngoài viết liền [1]Sheet1!A1 → '[1]Sheet1'!A1 (bộ tính chỉ hiểu dạng có nháy)
+    if (to === 'vi' && ch === '[') {
+      const m = /^\[(\d+)\]([^'!\s()+\-*\/^&=<>,;:"{}[\]]+)!/.exec(f.slice(i));
+      if (m && !/[\w.\u00C0-\uFFFF\]]/.test(i > 0 ? f[i - 1] : '')) { out += `'[${m[1]}]${m[2]}'!`; i += m[0].length; continue; }
+    }
+    if (to === 'vi' && ch === '!' && f.startsWith('!#REF!', i)) {
+      out = out.replace(/(\[[^\]]*\])?[A-Za-z_À-￿][\w.À-￿]*$/, '') + '#REF!'; i += 6; continue;
     }
     const prev = i > 0 ? f[i - 1] : '';
     if (/[0-9]/.test(ch) && !/[A-Za-z_$.0-9À-￿]/.test(prev)) {

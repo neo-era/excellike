@@ -121,6 +121,35 @@ await win2.waitForSelector('.dlg h2:has-text("Lưu thay đổi")', { timeout: 50
 await win2.click('.dlg .btn:has-text("Không lưu")').catch(() => {});
 check('Mở lại rồi đóng: vẫn hỏi lưu, chọn Không lưu thì thoát', await closed2);
 
+// nhấp đúp tệp lớn rồi nhấp đúp lần nữa khi app đang khởi động/đang mở → vẫn ra đúng sổ, không quay về sổ trống
+{
+  const big = join(work, 'tep-lon.xlsx');
+  execFileSync('python3', ['-c', `
+import openpyxl,sys
+wb=openpyxl.Workbook(); ws=wb.active; ws.title='Lớn'
+for r in range(1,60001): ws.append([f'Mục {r}', r, r*2, f'=B{r}*C{r}', f'Ghi chú dài cho hạng mục số {r}', r*0.5])
+wb.save(sys.argv[1])`, big]);
+  const ud = join(work, 'ud-race');
+  const envR = { ...env, XL_USER_DATA: ud };
+  const a3 = await electron.launch({ executablePath: electronBin, args: [ROOT, big], env: envR });
+  const w3 = await a3.firstWindow();
+  await w3.waitForTimeout(300);
+  const again = spawn(electronBin, [...(process.getuid?.() === 0 ? ['--no-sandbox'] : []), ROOT, big], { env: envR, stdio: 'ignore' });
+  await new Promise((r) => { again.on('exit', r); setTimeout(r, 15000); });
+  await w3.waitForFunction(() => window.__xl && window.__xl.wb.name === 'tep-lon', null, { timeout: 60000 }).catch(() => {});
+  await w3.waitForTimeout(1500);
+  const r3 = await w3.evaluate(() => ({ name: window.__xl.wb.name, rows: window.__xl.wb.used(window.__xl.grid.sheet).rows }));
+  check('Mở tệp lớn khi nhấp đúp hai lần liền: vẫn ra đúng sổ', r3.name === 'tep-lon' && r3.rows === 60000, JSON.stringify(r3));
+  await a3.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close());
+  await a3.waitForEvent('close', { timeout: 15000 }).catch(() => {});
+  const a4 = await electron.launch({ executablePath: electronBin, args: [ROOT], env: envR });
+  const w4 = await a4.firstWindow();
+  await w4.waitForFunction(() => window.__xl, null, { timeout: 30000 });
+  const n4 = await w4.evaluate(() => window.__xl.wb.name);
+  check('Mở lại app: vẫn là sổ vừa mở (không quay về Sổ tính 1)', n4 === 'tep-lon', n4);
+  await a4.close().catch(() => {});
+}
+
 const bad = results.filter((r) => !r.ok);
 console.log(`\n${results.length - bad.length}/${results.length} kiểm thử bản máy tính đạt`);
 await app.close().catch(() => {}); await app2.close().catch(() => {});

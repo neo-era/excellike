@@ -1,6 +1,6 @@
 // Service worker: cache vỏ ứng dụng để mở được khi mất mạng.
 // Vỏ app (HTML/JS/CSS/icon): ưu tiên cache, cập nhật nền. Font Google: cache khi dùng.
-const VERSION = 'xl-v0.4.0';
+const VERSION = 'xl-v0.4.1';
 const SHELL = ['./', './index.html', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {

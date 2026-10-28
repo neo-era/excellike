@@ -2,8 +2,6 @@
 
 Phần mềm bảng tính chức năng tương tự Excel 365 (dùng cá nhân). Một mã nguồn chạy được dạng **app Windows (.exe)** (Electron) và **PWA** (cài trên máy tính, điện thoại).
 
-**Dùng ngay trên web:** https://neo-era.github.io/excellike/ (cài được như ứng dụng từ Chrome/Edge, chạy cả khi mất mạng).
-
 ## Cài trên Windows (Đợt 4)
 
 - **ExcelLike-Setup-0.4.0.exe**: bộ cài cho tài khoản đang dùng, không cần quyền quản trị. Có lối tắt Start/màn hình, mục “Mở bằng…” cho .xlsx và .csv; tùy chọn đặt ExcelLike làm ứng dụng mặc định. Gỡ trong Cài đặt → Ứng dụng (dữ liệu sổ tính được giữ lại).
@@ -88,7 +86,7 @@ npm run build:win    # đóng gói Windows: release/ExcelLike-Setup-x.y.z.exe + 
 npm run e2e:desktop  # kiểm thử bản máy tính (Linux cần xvfb-run)
 ```
 
-Mỗi lần đẩy mã lên nhánh `main`, GitHub Actions (`.github/workflows/pages.yml`) tự chạy unit test, build và cập nhật bản web trên GitHub Pages.
+Đưa thư mục `dist/` lên bất kỳ máy chủ HTTPS nào (GitHub Pages, Netlify…) là cài được như ứng dụng.
 
 ## Cấu trúc
 

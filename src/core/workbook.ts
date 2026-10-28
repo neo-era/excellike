@@ -82,12 +82,53 @@ class ExcelIntPlugin extends FunctionPlugin {
       d === 0 ? new CellError(ErrorType.DIV_BY_ZERO) : n - d * Math.floor(n / d));
   }
 }
+// FORECAST / FORECAST.LINEAR / INTERCEPT (HyperFormula chưa có) — hồi quy tuyến tính như Excel
+const numOfCell = (v: any): number | null => (typeof v === 'number' ? v : v && typeof v === 'object' && typeof v.val === 'number' ? v.val : null);
+function pairs(ys: any, xs: any): [number[], number[]] | CellError {
+  const a = ys.valuesFromTopLeftCorner ? ys.valuesFromTopLeftCorner() : [ys];
+  const b = xs.valuesFromTopLeftCorner ? xs.valuesFromTopLeftCorner() : [xs];
+  if (a.length !== b.length) return new CellError(ErrorType.NA);
+  const Y: number[] = [], X: number[] = [];
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] instanceof CellError) return a[i];
+    if (b[i] instanceof CellError) return b[i];
+    const y = numOfCell(a[i]), x = numOfCell(b[i]);
+    if (y !== null && x !== null) { Y.push(y); X.push(x); }
+  }
+  return [Y, X];
+}
+function linfit(ys: any, xs: any): { a: number; b: number } | CellError {
+  const p = pairs(ys, xs);
+  if (p instanceof CellError) return p;
+  const [Y, X] = p, n = Y.length;
+  if (n < 2) return new CellError(ErrorType.DIV_BY_ZERO);
+  const mx = X.reduce((s, v) => s + v, 0) / n, my = Y.reduce((s, v) => s + v, 0) / n;
+  let sxy = 0, sxx = 0;
+  for (let i = 0; i < n; i++) { sxy += (X[i] - mx) * (Y[i] - my); sxx += (X[i] - mx) ** 2; }
+  if (sxx === 0) return new CellError(ErrorType.DIV_BY_ZERO);
+  const b = sxy / sxx;
+  return { a: my - b * mx, b };
+}
+class ExcelForecastPlugin extends FunctionPlugin {
+  static implementedFunctions = {
+    FORECAST: { method: 'forecast', parameters: [{ argumentType: FunctionArgumentType.NUMBER }, { argumentType: FunctionArgumentType.RANGE }, { argumentType: FunctionArgumentType.RANGE }] },
+    'FORECAST.LINEAR': { method: 'forecast', parameters: [{ argumentType: FunctionArgumentType.NUMBER }, { argumentType: FunctionArgumentType.RANGE }, { argumentType: FunctionArgumentType.RANGE }] },
+    INTERCEPT: { method: 'intercept', parameters: [{ argumentType: FunctionArgumentType.RANGE }, { argumentType: FunctionArgumentType.RANGE }] },
+  };
+  forecast(ast: any, state: any) {
+    return (this as any).runFunction(ast.args, state, (this as any).metadata('FORECAST'), (x: number, ys: any, xs: any) => { const f = linfit(ys, xs); return f instanceof CellError ? f : f.a + f.b * x; });
+  }
+  intercept(ast: any, state: any) {
+    return (this as any).runFunction(ast.args, state, (this as any).metadata('INTERCEPT'), (ys: any, xs: any) => { const f = linfit(ys, xs); return f instanceof CellError ? f : f.a; });
+  }
+}
 let pluginsReady = false;
 function ensurePlugins() {
   if (pluginsReady) return;
   HyperFormula.unregisterFunction('INT');
   HyperFormula.unregisterFunction('MOD');
   HyperFormula.registerFunctionPlugin(ExcelIntPlugin as any, { enGB: { INT: 'INT', MOD: 'MOD' } } as any);
+  HyperFormula.registerFunctionPlugin(ExcelForecastPlugin as any, { enGB: { FORECAST: 'FORECAST', 'FORECAST.LINEAR': 'FORECAST.LINEAR', INTERCEPT: 'INTERCEPT' } } as any);
   pluginsReady = true;
 }
 // Excel cho phép viết TRUE/FALSE không có ngoặc
@@ -138,7 +179,7 @@ export class Workbook {
   onChange(f: () => void) { this.listeners.add(f); return () => this.listeners.delete(f); }
   /** Tăng mỗi khi sổ thay đổi — dùng làm khóa bộ nhớ đệm (CF) */
   ver = 0;
-  private emit() { this.ver++; this.listeners.forEach((f) => f()); }
+  private emit() { this.ver++; if (this.iterate.on) this.resolveIter(); this.listeners.forEach((f) => f()); }
 
   // ---------- lịch sử ----------
   private hfDepth(): number | null {
@@ -195,7 +236,12 @@ export class Workbook {
   }
 
   // ---------- sheet ----------
-  sheetIds(): number[] { return this.hf.getSheetNames().map((n) => this.hf.getSheetId(n)!); }
+  /** Sheet người dùng thấy (bỏ sheet đệm giá trị của liên kết ngoài “[n]Tên”) */
+  sheetIds(): number[] { return this.hf.getSheetNames().filter((n) => !isExtName(n)).map((n) => this.hf.getSheetId(n)!); }
+  /** Mọi sheet trong bộ tính, kể cả sheet đệm liên kết ngoài */
+  allSheetIds(): number[] { return this.hf.getSheetNames().map((n) => this.hf.getSheetId(n)!); }
+  /** Liên kết sang tệp khác (giữ nguyên phần XML để ghi lại khi lưu .xlsx) */
+  extLinks: ExtLink[] = [];
   sheetName(id: number) { return this.hf.getSheetName(id)!; }
   meta(id: number): SheetMeta {
     let m = this.metas.get(id);
@@ -246,7 +292,79 @@ export class Workbook {
 
   // ---------- đọc ô ----------
   private A(s: number, r: number, c: number): SimpleCellAddress { return { sheet: s, row: r, col: c }; }
-  value(s: number, r: number, c: number) { return this.hf.getCellValue(this.A(s, r, c)); }
+  value(s: number, r: number, c: number) {
+    const v = this.hf.getCellValue(this.A(s, r, c));
+    // như Excel: công thức trả về ô trống thì hiện 0 (=A1 khi A1 trống)
+    if (v === null) return (this.hf.doesCellHaveFormula(this.A(s, r, c)) ? 0 : null) as typeof v;
+    // tính lặp: ô thuộc vòng tham chiếu lấy giá trị đã hội tụ
+    if (this.over.size && v && typeof v === 'object' && (v as any).type === 'CYCLE') { const o = this.over.get(s + ':' + r + ':' + c); if (o !== undefined) return o as typeof v; }
+    return v;
+  }
+
+  // ---------- tính lặp (File → Options → Formulas → Enable iterative calculation) ----------
+  iterate = { on: false, count: 100, delta: 0.001 };
+  private over = new Map<string, unknown>();
+  private seeds = new Map<string, unknown>();
+  setIterate(p: Partial<Workbook['iterate']>) {
+    const before = { ...this.iterate }, after = { ...this.iterate, ...p };
+    this.iterate = after;
+    this.record(null, { undo: () => (this.iterate = { ...before }), redo: () => (this.iterate = { ...after }) });
+    this.resolveIter();
+  }
+  /** Giá trị khởi đầu (vd giá trị Excel lưu sẵn trong tệp) để hội tụ ngay như Excel */
+  setIterSeeds(list: [number, number, number, unknown][]) { for (const [s, r, c, v] of list) this.seeds.set(s + ':' + r + ':' + c, v); this.resolveIter(); }
+  private resolveIter() {
+    if (!this.iterate.on) { this.over.clear(); return; }
+    type DC = { s: number; r: number; c: number; k: string; parts: (string | XRef)[] };
+    const D: DC[] = [];
+    const inD = new Set<string>();
+    for (const s of this.allSheetIds()) {
+      const vals = this.hf.getSheetValues(s);
+      for (let r = 0; r < vals.length; r++) {
+        const row = vals[r];
+        for (let c = 0; c < row.length; c++) {
+          const v: any = row[c];
+          if (v && typeof v === 'object' && v.type === 'CYCLE') { const k = s + ':' + r + ':' + c; inD.add(k); D.push({ s, r, c, k, parts: [] }); }
+        }
+      }
+    }
+    if (!D.length) { this.over.clear(); return; }
+    if (D.length > 20000) return; // quá lớn: giữ #CYCLE! như cũ
+    const sheetOf = (name: string | undefined, s: number) => (name === undefined ? s : this.hf.getSheetId(name));
+    for (const d of D) d.parts = compileRefs(this.hf.getCellFormula(this.A(d.s, d.r, d.c)) ?? '', (n) => sheetOf(n, d.s));
+    const cur = (s: number, r: number, c: number): unknown => {
+      const k = s + ':' + r + ':' + c;
+      if (inD.has(k)) return this.over.get(k) ?? this.seeds.get(k) ?? 0;
+      return this.hf.getCellValue(this.A(s, r, c));
+    };
+    const build = (parts: (string | XRef)[]) => parts.map((p) => {
+      if (typeof p === 'string') return p;
+      let hit = false;
+      for (let r = p.r1; r <= p.r2 && !hit; r++) for (let c = p.c1; c <= p.c2; c++) if (inD.has(p.s + ':' + r + ':' + c)) { hit = true; break; }
+      if (!hit) return p.text;
+      if (p.r1 === p.r2 && p.c1 === p.c2) return '(' + lit(cur(p.s, p.r1, p.c1)) + ')';
+      const n = (p.r2 - p.r1 + 1) * (p.c2 - p.c1 + 1);
+      if (n > 5000 || (p.r1 !== p.r2 && p.c1 !== p.c2)) return p.text; // vùng 2 chiều: chưa hỗ trợ
+      const items: string[] = [];
+      for (let r = p.r1; r <= p.r2; r++) for (let c = p.c1; c <= p.c2; c++) items.push(lit(cur(p.s, r, c), true));
+      const arr = '{' + items.join('|') + '}';
+      return p.r1 === p.r2 ? 'TRANSPOSE(' + arr + ')' : arr;
+    }).join('');
+    for (const d of D) if (!this.over.has(d.k)) this.over.set(d.k, this.seeds.get(d.k) ?? 0);
+    for (let it = 0; it < Math.max(1, this.iterate.count); it++) {
+      let change = 0;
+      for (const d of D) {
+        let v: any;
+        try { v = this.hf.calculateFormula(build(d.parts), d.s); } catch { v = this.hf.getCellValue(this.A(d.s, d.r, d.c)); }
+        if (Array.isArray(v)) v = v[0]?.[0] ?? null;
+        const old = this.over.get(d.k);
+        const delta = typeof v === 'number' && typeof old === 'number' ? Math.abs(v - old) : v === old || (v && old && typeof v === 'object' && (v as any).type === (old as any).type) ? 0 : Infinity;
+        if (delta > change) change = delta;
+        this.over.set(d.k, v);
+      }
+      if (change < this.iterate.delta) break;
+    }
+  }
   style(s: number, r: number, c: number): Style { return this.meta(s).styles.get(String(key(r, c))) ?? {}; }
   isFormula(s: number, r: number, c: number) { return this.hf.doesCellHaveFormula(this.A(s, r, c)); }
   /** Định dạng hiệu lực: style.fmt hoặc suy ra từ kiểu giá trị (ngày, %) */
@@ -279,7 +397,7 @@ export class Workbook {
     return editString(this.value(s, r, c), this.effFmt(s, r, c));
   }
   /** HyperFormula bỏ dấu nháy quanh tên sheet như 2024, Q1, 1Q khi xuất công thức → thêm lại */
-  private quoteNames(): string[] { return this.sheetIds().map((i) => this.sheetName(i)).filter(needsQuote); }
+  private quoteNames(): string[] { return this.allSheetIds().map((i) => this.sheetName(i)).filter(needsQuote); }
   outF(f: string, names = this.quoteNames()): string { return names.length ? fixSheetQuotes(f, names) : f; }
   used(s: number) { const d = this.hf.getSheetDimensions(s); return { rows: d.height, cols: d.width }; }
 
@@ -1039,9 +1157,15 @@ export class Workbook {
   // ---------- lưu / mở ----------
   toJSON() {
     const refOut = (r?: Ref) => (r && this.sheetIds().includes(r.sheet) ? { sheetName: this.sheetName(r.sheet), range: r.range } : undefined);
+    const ext = this.allSheetIds().filter((id) => isExtName(this.sheetName(id)));
+    const iterVals = [...this.over.entries()].map(([k, v]) => { const [s, r, c] = k.split(':').map(Number); return [this.sheetName(s), r, c, v] as [string, number, number, unknown]; })
+      .filter(([, , , v]) => v === null || typeof v !== 'object');
     return {
       v: 1,
       name: this.name,
+      calc: this.iterate.on ? { ...this.iterate } : undefined,
+      iterVals: iterVals.length ? iterVals : undefined,
+      ext: this.extLinks.length || ext.length ? { links: this.extLinks, sheets: ext.map((id) => ({ name: this.sheetName(id), cells: this.hf.getSheetSerialized(id) })) } : undefined,
       sheets: this.sheetIds().map((id) => {
         const m = this.meta(id);
         const qn = this.quoteNames();
@@ -1069,8 +1193,9 @@ export class Workbook {
     };
   }
   static fromJSON(d: BookJSON): Workbook {
-    const wb = new Workbook(buildHF(d.sheets.map((x) => ({ name: x.name, cells: x.cells as RawCellContent[][] }))));
+    const wb = new Workbook(buildHF([...d.sheets, ...(d.ext?.sheets ?? [])].map((x) => ({ name: x.name, cells: x.cells as RawCellContent[][] }))));
     wb.name = d.name || 'Sổ tính';
+    wb.extLinks = d.ext?.links ?? [];
     const ids = d.sheets.map((x) => wb.hf.getSheetId(x.name)!);
     d.sheets.forEach((sh, i) => {
       const m = wb.meta(ids[i]);
@@ -1099,6 +1224,9 @@ export class Workbook {
       m.pivots = (sh.pivots ?? []).map((p: any) => ({ ...p, src: refIn(p.src) })).filter((p: any) => p.src);
     });
     wb.hf.clearUndoStack();
+    if (d.calc) wb.iterate = { on: !!d.calc.on, count: d.calc.count ?? 100, delta: d.calc.delta ?? 0.001 };
+    for (const [n, r, c, v] of d.iterVals ?? []) { const id = wb.hf.getSheetId(n); if (id !== undefined) wb.seeds.set(id + ':' + r + ':' + c, v); }
+    wb.resolveIter();
     return wb;
   }
   /** Nạp nhanh một bảng lớn (dùng cho nhập dữ liệu, đo hiệu năng) – không ghi lịch sử */
@@ -1121,7 +1249,58 @@ export interface SheetJSON {
   merges?: Range[]; cf?: CFRule[]; dv?: DVRule[]; filter?: SheetFilter | null;
   charts?: unknown[]; pivots?: unknown[]; print?: PrintSetup | null;
 }
-export interface BookJSON { v: number; name: string; sheets: SheetJSON[] }
+export interface ExtLink { index: number; path: string; xml: string; rels?: string }
+export interface BookJSON {
+  v: number; name: string; sheets: SheetJSON[];
+  calc?: { on: boolean; count?: number; delta?: number };
+  iterVals?: [string, number, number, unknown][];
+  ext?: { links: ExtLink[]; sheets: { name: string; cells: unknown[][] }[] };
+}
+/** Sheet đệm giá trị của liên kết ngoài: tên dạng “[1]Tên sheet” (tên sheet thường không được có dấu [ ]) */
+export const isExtName = (n: string) => /^\[\d+\]/.test(n);
+
+// ---- tách tham chiếu ô/vùng trong công thức (dùng cho tính lặp) ----
+interface XRef { text: string; s: number; r1: number; c1: number; r2: number; c2: number }
+const colNum = (L: string) => { let n = 0; for (const ch of L.toUpperCase()) n = n * 26 + ch.charCodeAt(0) - 64; return n - 1; };
+const REF_RE = /((?:'(?:[^']|'')+'|[A-Za-z_\u00C0-\uFFFF][\w.\u00C0-\uFFFF]*)!)?\$?([A-Za-z]{1,3})\$?(\d{1,7})(?::\$?([A-Za-z]{1,3})\$?(\d{1,7}))?(?![\w(!])/y;
+function compileRefs(f: string, sheetOf: (name: string | undefined) => number | undefined): (string | XRef)[] {
+  const out: (string | XRef)[] = [];
+  let buf = '', i = 0;
+  while (i < f.length) {
+    const ch = f[i];
+    if (ch === '"') { let j = i + 1; while (j < f.length) { if (f[j] === '"' && f[j + 1] === '"') { j += 2; continue; } if (f[j] === '"') break; j++; } buf += f.slice(i, j + 1); i = j + 1; continue; }
+    const prev = i > 0 ? f[i - 1] : '';
+    if (!/[\w.\u00C0-\uFFFF$']/.test(prev)) {
+      REF_RE.lastIndex = i;
+      const m = REF_RE.exec(f);
+      if (m) {
+        const name = m[1] ? m[1].slice(0, -1).replace(/^'(.*)'$/, '$1').replace(/''/g, "'") : undefined;
+        const s = sheetOf(name);
+        if (s !== undefined) {
+          const r1 = +m[3] - 1, c1 = colNum(m[2]), r2 = m[5] ? +m[5] - 1 : r1, c2 = m[4] ? colNum(m[4]) : c1;
+          if (buf) { out.push(buf); buf = ''; }
+          out.push({ text: m[0], s, r1: Math.min(r1, r2), c1: Math.min(c1, c2), r2: Math.max(r1, r2), c2: Math.max(c1, c2) });
+          i += m[0].length; continue;
+        }
+      }
+    }
+    buf += ch; i++;
+  }
+  if (buf) out.push(buf);
+  return out;
+}
+/** Giá trị → hằng trong công thức (dấu thập phân “,” như cấu hình) */
+function lit(v: unknown, inArray = false): string {
+  if (v === null || v === undefined || v === '') return '0';
+  if (typeof v === 'number') {
+    if (!isFinite(v)) return '0';
+    return v.toLocaleString('en-US', { useGrouping: false, maximumSignificantDigits: 15 }).replace('.', ',');
+  }
+  if (typeof v === 'boolean') return inArray ? (v ? 'TRUE' : 'FALSE') : v ? 'TRUE()' : 'FALSE()';
+  if (typeof v === 'string') return '"' + v.replace(/"/g, '""') + '"';
+  const e = (v as any)?.value;
+  return typeof e === 'string' && e.startsWith('#') && !inArray ? e : '0';
+}
 
 function newMeta(): SheetMeta {
   return { styles: new Map(), colW: new AxisSizes(DEFAULT_COL_W, MAX_COLS), rowH: new AxisSizes(DEFAULT_ROW_H, MAX_ROWS), freeze: { rows: 0, cols: 0 }, merges: [], cf: [], dv: [], filter: null, charts: [], pivots: [], print: null };

@@ -23,6 +23,7 @@ let allowClose = false;
 let closeReady = false;   // trang đã đăng ký xử lý đóng cửa sổ
 let closeTimer = null;
 const pending = [];       // tệp chờ mở (đường dẫn)
+let rendererReady = false; // trang đã khởi động xong và tự hỏi tệp chờ mở
 const fileArg = (argv, cwd = process.cwd()) => {
   const c = argv.slice(1).filter((a) => !a.startsWith('-') && OPENABLE.test(a));
   return c.length ? path.resolve(cwd, c[0]) : undefined;
@@ -47,7 +48,8 @@ async function readFor(p) {
 }
 function sendOpen(p) {
   // trang đang nạp/nạp lại → để trang tự lấy khi khởi động xong
-  if (!win || win.webContents.isLoading()) { pending.push(p); return; }
+  // trang chưa sẵn sàng (đang nạp/nạp lại) → để trang tự lấy khi khởi động xong; mỗi tệp chỉ giao một lần
+  if (!win || !rendererReady) { pending.push(p); return; }
   if (win.isMinimized()) win.restore();
   win.focus();
   readFor(p).then((f) => win.webContents.send('xl:open', f)).catch((e) => dialog.showErrorBox('Không mở được tệp', String(e.message || e)));
@@ -64,9 +66,8 @@ function createWindow() {
   });
   win.once('ready-to-show', () => win.show());
   win.loadURL('app://excellike/index.html');
-  win.webContents.on('did-start-loading', () => { closeReady = false; });
+  win.webContents.on('did-start-loading', () => { closeReady = false; rendererReady = false; });
   // tệp nhấp đúp trong lúc trang đang nạp → gửi khi nạp xong
-  win.webContents.on('did-finish-load', () => { setTimeout(() => { while (pending.length && win) sendOpen(pending.shift()); }, 300); });
   // liên kết ngoài → trình duyệt mặc định; không cho mở cửa sổ con hay điều hướng ra ngoài
   win.webContents.setWindowOpenHandler(({ url }) => { if (/^https?:/i.test(url)) shell.openExternal(url); return { action: 'deny' }; });
   win.webContents.on('will-navigate', (e, url) => { if (!url.startsWith('app://excellike/')) { e.preventDefault(); if (/^https?:/i.test(url)) shell.openExternal(url); } });
@@ -90,6 +91,7 @@ ipcMain.on('xl:close-ok', () => forceClose());
 ipcMain.on('xl:close-cancel', () => { clearTimeout(closeTimer); closeTimer = null; });
 
 ipcMain.handle('xl:startup-file', async () => {
+  rendererReady = true;
   const p = pending.shift();
   return p ? readFor(p).catch(() => null) : null;
 });

@@ -14,10 +14,13 @@ function open(): Promise<IDBDatabase> {
 async function tx<T>(mode: IDBTransactionMode, f: (s: IDBObjectStore) => IDBRequest<T>): Promise<T> {
   const db = await open();
   return new Promise((res, rej) => {
-    const t = db.transaction(STORE, mode);
+    // chỉ báo xong khi giao dịch đã ghi hẳn xuống đĩa (oncomplete), không phải lúc yêu cầu thành công:
+    // nạp lại trang ngay sau đó sẽ huỷ giao dịch chưa xong → mất sổ vừa mở (tệp lớn ghi lâu)
+    const t = db.transaction(STORE, mode, { durability: 'strict' } as any);
     const q = f(t.objectStore(STORE));
-    q.onsuccess = () => res(q.result);
-    q.onerror = () => rej(q.error);
+    t.oncomplete = () => { db.close(); res(q.result); };
+    t.onerror = () => { db.close(); rej(t.error ?? q.error); };
+    t.onabort = () => { db.close(); rej(t.error ?? new Error('Ghi dữ liệu bị huỷ (có thể đầy bộ nhớ).')); };
   });
 }
 export const saveBook = (b: BookRec) => tx('readwrite', (s) => s.put(b));

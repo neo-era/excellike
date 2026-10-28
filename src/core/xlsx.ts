@@ -1,12 +1,12 @@
 // Đọc / ghi tệp Excel .xlsx bằng ExcelJS (+ JSZip để tự đọc phần Kiểm tra dữ liệu)
 import ExcelJS from 'exceljs';
 import JSZip from 'jszip';
-import { colName, parseRef, rangeToA1, MAX_ROWS, type Range } from './address';
+import { colName, parseA1, parseRef, rangeToA1, MAX_ROWS, type Range } from './address';
 import { shiftFormula } from './formula';
 import { toEn, toVi } from './locale';
 import { normalizeInput } from './input';
 import { numOf } from './rules';
-import { Workbook, dateSerial, type BookJSON, type Border, type BorderStyle, type SheetJSON, type Style } from './workbook';
+import { Workbook, dateSerial, type ExtLink, type BookJSON, type Border, type BorderStyle, type SheetJSON, type Style } from './workbook';
 import type { CFRule, DVRule } from './rules';
 import { cellsOf, type Chart, type ChartType, type Ref } from './chart';
 import { quoteSheet } from './formula';
@@ -131,6 +131,47 @@ export async function readXlsx(buf: ArrayBuffer | Uint8Array): Promise<{ wb: Wor
   for (const m of relXml.matchAll(/<Relationship\b([^>]*)\/?>/g)) { const a = attrs(m[1]); rels.set(a.Id, a.Target); }
   const dvBySheet = new Map<string, RawDV[]>();
   const chartsBySheet = new Map<string, RawChart[]>();
+  // tính lặp (File → Options → Formulas → Enable iterative calculation)
+  const calcTag = /<(?:\w+:)?calcPr\b[^>]*>/.exec(wbXml)?.[0] ?? '';
+  const iterOn = /\biterate="(1|true)"/.test(calcTag);
+  const calc = iterOn ? { on: true, count: +(/iterateCount="(\d+)"/.exec(calcTag)?.[1] ?? 100), delta: +(/iterateDelta="([^"]+)"/.exec(calcTag)?.[1] ?? 0.001) || 0.001 } : undefined;
+  const iterVals: [string, number, number, unknown][] = [];
+  // liên kết sang tệp khác: lấy giá trị Excel lưu sẵn trong externalLinkN.xml
+  const extLinks: ExtLink[] = [];
+  const extSheets: { name: string; cells: unknown[][] }[] = [];
+  const erBlock = /<(?:\w+:)?externalReferences>([\s\S]*?)<\/(?:\w+:)?externalReferences>/.exec(wbXml);
+  if (erBlock) {
+    let index = 0;
+    for (const m of erBlock[1].matchAll(/<(?:\w+:)?externalReference\b[^>]*\bid="([^"]+)"/g)) {
+      index++;
+      const t = rels.get(m[1]);
+      if (!t) continue;
+      const path = t.startsWith('/') ? t.slice(1) : 'xl/' + t.replace(/^\.\//, '');
+      const xml = await zip.file(path)?.async('string');
+      if (!xml) continue;
+      const relsX = await zip.file(relsPath(path))?.async('string');
+      extLinks.push({ index, path, xml, rels: relsX ?? undefined });
+      const sx = strip(xml);
+      const names = [...sx.matchAll(/<sheetName\b[^>]*\bval="([^"]*)"/g)].map((x) => unesc(x[1]));
+      for (const sd of sx.matchAll(/<sheetData\b[^>]*\bsheetId="(\d+)"[^>]*?(?:\/>|>([\s\S]*?)<\/sheetData>)/g)) {
+        const nm = names[+sd[1]];
+        if (nm === undefined || !sd[2]) continue;
+        const cells: unknown[][] = [];
+        for (const cm of sd[2].matchAll(/<cell\b([^>]*?)(?:\/>|>([\s\S]*?)<\/cell>)/g)) {
+          const a = attrs(cm[1]);
+          const pos = a.r ? parseA1(a.r) : null;
+          if (!pos || pos.r > 200000) continue;
+          const vm = cm[2] ? /<v>([\s\S]*?)<\/v>/.exec(cm[2]) : null;
+          if (!vm) continue;
+          const txt = unesc(vm[1]);
+          const val = a.t === 'str' || a.t === 's' || a.t === 'inlineStr' ? (needsApostrophe(txt) ? "'" + txt : txt) : a.t === 'b' ? txt === '1' : a.t === 'e' ? (STD_ERR.has(txt) ? txt : null) : Number(txt);
+          (cells[pos.r] ??= [])[pos.c] = typeof val === 'number' && !isFinite(val) ? null : val;
+        }
+        for (let r = 0; r < cells.length; r++) { cells[r] ??= []; for (let c = 0; c < cells[r].length; c++) if (cells[r][c] === undefined) cells[r][c] = null; }
+        extSheets.push({ name: `[${index}]${nm}`, cells });
+      }
+    }
+  }
   let pics = 0, unsupportedCharts = 0, shapes = 0, extraNotes = 0;
   let rezip = false;
   // tệp do openpyxl… tạo có Target tuyệt đối (/xl/…) mà ExcelJS không hiểu → đổi sang đường dẫn tương đối
@@ -242,6 +283,7 @@ export async function readXlsx(buf: ArrayBuffer | Uint8Array): Promise<{ wb: Wor
         if (v === null || v === undefined) raw = null;
         else if (v instanceof Date) raw = Math.round(((v.getTime() - EPOCH) / 86400000) * 1e8) / 1e8;
         else if (typeof v === 'object') {
+          if (iterOn && (typeof v.formula === 'string' || typeof v.sharedFormula === 'string') && (typeof v.result === 'number' || typeof v.result === 'string' || typeof v.result === 'boolean')) iterVals.push([ws.name, r, c, v.result]);
           if (typeof v.formula === 'string') { raw = toVi('=' + stripPrefixes(v.formula)); masters.set(cell.address, { f: raw as string, r, c }); }
           else if (typeof v.sharedFormula === 'string') {
             const m = masters.get(v.sharedFormula) ?? (() => { const mc: any = ws.getCell(v.sharedFormula); return mc.formula ? { f: toVi('=' + stripPrefixes(mc.formula)), r: mc.row - 1, c: mc.col - 1 } : null; })();
@@ -321,7 +363,8 @@ export async function readXlsx(buf: ArrayBuffer | Uint8Array): Promise<{ wb: Wor
   if (shapes) warnings.push(`Tệp có ${shapes} hình vẽ/hộp chữ — chưa hỗ trợ, sẽ mất nếu lưu đè.`);
   notes += extraNotes;
   if (notes) warnings.push(`Tệp có ${notes} ghi chú (comment) — chưa hỗ trợ, sẽ mất nếu lưu đè.`);
-  const book: BookJSON = { v: 2, name: 'Sổ tính', sheets };
+  if (extLinks.length) warnings.push(`Tệp có liên kết tới ${extLinks.length} tệp khác — dùng giá trị lưu sẵn trong tệp (như Excel khi chưa cập nhật liên kết); liên kết được giữ nguyên khi lưu.`);
+  const book: BookJSON = { v: 2, name: 'Sổ tính', sheets, calc, iterVals: iterVals.length ? iterVals : undefined, ext: extLinks.length ? { links: extLinks, sheets: extSheets } : undefined };
   const wb = Workbook.fromJSON(book);
   // gắn biểu đồ sau khi đã có độ rộng cột/chiều cao hàng
   for (const id of wb.sheetIds()) {
@@ -482,7 +525,42 @@ export async function writeXlsx(wb: Workbook): Promise<Uint8Array> {
   }
   const buf = new Uint8Array(await x.xlsx.writeBuffer() as ArrayBuffer);
   const withCharts = wb.sheetIds().some((id) => wb.meta(id).charts.length);
-  return withCharts ? addChartsToZip(buf, wb) : buf;
+  let out = withCharts ? await addChartsToZip(buf, wb) : buf;
+  if (wb.extLinks.length || wb.iterate.on) out = await addWorkbookExtras(out, wb);
+  return out;
+}
+
+/** Ghi lại liên kết ngoài (externalLinks) và chế độ tính lặp vào workbook.xml */
+async function addWorkbookExtras(buf: Uint8Array, wb: Workbook): Promise<Uint8Array> {
+  const zip = await JSZip.loadAsync(buf);
+  let wx = await zip.file('xl/workbook.xml')!.async('string');
+  let rx = await zip.file('xl/_rels/workbook.xml.rels')!.async('string');
+  let ct = await zip.file('[Content_Types].xml')!.async('string');
+  if (wb.extLinks.length) {
+    // giữ đúng thứ tự [1], [2]… như tệp gốc (công thức tham chiếu theo số thứ tự)
+    const links = [...wb.extLinks].sort((a, b) => a.index - b.index);
+    let refs = '';
+    links.forEach((l, i) => {
+      const path = `xl/externalLinks/externalLink${i + 1}.xml`;
+      zip.file(path, l.xml);
+      if (l.rels) zip.file(relsPath(path), l.rels);
+      const id = `rIdXLExt${i + 1}`;
+      rx = rx.replace('</Relationships>', `<Relationship Id="${id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/externalLink" Target="externalLinks/externalLink${i + 1}.xml"/></Relationships>`);
+      if (!ct.includes(`/${path}"`)) ct = ct.replace('</Types>', `<Override PartName="/${path}" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.externalLink+xml"/></Types>`);
+      refs += `<externalReference r:id="${id}"/>`;
+    });
+    if (!/xmlns:r=/.test(wx.slice(0, wx.indexOf('>', wx.indexOf('<workbook'))))) wx = wx.replace('<workbook ', '<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" ');
+    wx = wx.replace('</sheets>', `</sheets><externalReferences>${refs}</externalReferences>`);
+  }
+  if (wb.iterate.on) {
+    const it = `iterate="1" iterateCount="${wb.iterate.count}" iterateDelta="${wb.iterate.delta}"`;
+    if (/<calcPr\b/.test(wx)) wx = wx.replace(/<calcPr\b([^>]*?)(\/?)>/, (_m, a, sl) => `<calcPr${a.replace(/\s(iterate|iterateCount|iterateDelta)="[^"]*"/g, '')} ${it}${sl}>`);
+    else wx = wx.replace(/(<\/definedNames>|<\/externalReferences>|<\/sheets>)(?![\s\S]*(<\/definedNames>|<\/externalReferences>))/, `$1<calcPr ${it}/>`);
+  }
+  zip.file('xl/workbook.xml', wx);
+  zip.file('xl/_rels/workbook.xml.rels', rx);
+  zip.file('[Content_Types].xml', ct);
+  return zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });
 }
 /** Vùng cột nguyên ghi gọn kiểu C1:C1048576 */
 const refOut = (g: Range) => (g.r2 >= MAX_ROWS - 1 && g.r1 === 0 ? `${colName(g.c1)}1:${colName(g.c2)}${MAX_ROWS}` : rangeToA1(g));

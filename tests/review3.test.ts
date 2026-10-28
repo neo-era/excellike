@@ -143,3 +143,23 @@ describe('Review Đợt 3', () => {
     expect(warnings.join(' ')).toMatch(/1 ghi chú/);
   });
 });
+
+describe('Tệp thật (dự toán .xlsm)', () => {
+  it("'Sheet'!#REF! hiện #REF! như Excel; có FORECAST, FORECAST.LINEAR, INTERCEPT", async () => {
+    const { toVi } = await import('../src/core/locale');
+    expect(toVi("=+'TONG MUC DAU TU'!#REF!*2")).toBe('=+#REF!*2');
+    expect(toVi('=Sheet1!#REF!+1')).toBe('=#REF!+1');
+    expect(toVi('="a!#REF!"')).toBe('="a!#REF!"');
+    const wb = Workbook.create();
+    [['1', '2'], ['2', '4'], ['3', '6.5']].forEach((r, i) => { wb.setInput(0, i, 0, r[0]); wb.setInput(0, i, 1, r[1].replace('.', ',')); });
+    wb.setInput(0, 0, 3, '=FORECAST(4;B1:B3;A1:A3)');
+    wb.setInput(0, 1, 3, '=FORECAST.LINEAR(4;B1:B3;A1:A3)');
+    wb.setInput(0, 2, 3, '=INTERCEPT(B1:B3;A1:A3)');
+    wb.setInput(0, 3, 3, '=ROUND(FORECAST(5;B1:B3;A1:A3);2)');
+    // Excel: FORECAST(4) = 8,6666…; INTERCEPT = -0,3333…
+    expect(wb.value(0, 0, 3) as number).toBeCloseTo(8.666666667, 8);
+    expect(wb.value(0, 1, 3) as number).toBeCloseTo(8.666666667, 8);
+    expect(wb.value(0, 2, 3) as number).toBeCloseTo(-0.333333333, 8);
+    expect(wb.value(0, 3, 3)).toBe(10.92);
+  });
+});

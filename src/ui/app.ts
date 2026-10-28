@@ -143,7 +143,7 @@ export class App {
         ] },
         { label: 'Ứng dụng', items: [
           ...(desk() ? [] : [{ id: 'install', icon: 'install', label: 'Cài đặt app', act: () => this.install() }]),
-          { id: 'about', icon: 'info', label: 'Giới thiệu', act: () => this.toast('ExcelLike 0.4 · Bảng tính kiểu Excel 365: công thức tiếng Việt, .xlsx, CSV, định dạng, sắp xếp, lọc, định dạng có điều kiện, kiểm tra dữ liệu, biểu đồ, PivotTable, in / PDF. Bản Windows và PWA cùng một mã nguồn.') },
+          { id: 'about', icon: 'info', label: 'Giới thiệu', act: () => this.toast('ExcelLike 0.4.1 · Bảng tính kiểu Excel 365: công thức tiếng Việt, .xlsx, CSV, định dạng, sắp xếp, lọc, định dạng có điều kiện, kiểm tra dữ liệu, biểu đồ, PivotTable, in / PDF. Bản Windows và PWA cùng một mã nguồn.') },
         ] },
       ]],
       home: ['Trang chủ', [
@@ -214,6 +214,7 @@ export class App {
         ] },
         { label: 'Tính toán', items: [
           { id: 'recalc', icon: 'calc', label: 'Tính lại', kbd: 'F9', act: () => this.recalc() },
+          { id: 'iter', icon: 'refresh', label: 'Tính lặp', act: () => { this.wb.setIterate({ on: !this.wb.iterate.on }); this.grid.invalidate(); this.renderRibbon(); this.toast(this.wb.iterate.on ? `Đã bật tính lặp (tối đa ${this.wb.iterate.count} lần, sai số ${String(this.wb.iterate.delta).replace('.', ',')}) — tham chiếu vòng được tính như Excel.` : 'Đã tắt tính lặp — ô có tham chiếu vòng hiện #CYCLE!.'); }, on: () => this.wb.iterate.on },
         ] },
       ]],
       data: ['Dữ liệu', [
@@ -579,8 +580,15 @@ export class App {
     const picked = await pickFile();
     if (picked) await this.openPicked(picked);
   }
+  /** Đang chuyển sang sổ khác: không ghi gì thêm (tránh ghi đè “sổ mở gần nhất” bằng sổ cũ) */
+  private leaving = false;
+  private reload() { this.leaving = true; clearTimeout(this.saveTimer); location.reload(); }
+  private opening = false;
   async openPicked(picked: { file: File; handle?: any }) {
     const { file, handle } = picked;
+    if (this.leaving) return;
+    if (this.opening) { this.toast('Đang mở một tệp khác, vui lòng đợi.', 'err'); return; }
+    this.opening = true;
     try {
       if (/\.csv$|\.txt$/i.test(file.name)) {
         const text = await file.text();
@@ -598,9 +606,11 @@ export class App {
       lsSet('xl-last', id);
       if (warnings.length) sessionStorage.setItem('xl-warn', warnings.join('\n'));
       this.fileDirty = false;
-      location.reload();
+      this.reload();
     } catch (e) {
       this.toast('Không mở được tệp: ' + (e as Error).message, 'err');
+    } finally {
+      this.opening = false;
     }
   }
   private saving: Promise<boolean> | null = null;
@@ -968,6 +978,7 @@ export class App {
   }
   async saveNow(announce: boolean) {
     clearTimeout(this.saveTimer);
+    if (this.leaving) return;
     try {
       await saveBook({ id: this.bookId, name: this.wb.name, updated: Date.now(), data: this.wb.toJSON(), handle: this.fileHandle ?? undefined, fileName: this.fileName || undefined, fileDirty: this.fileDirty });
       this.dirtySave = false;
@@ -985,7 +996,7 @@ export class App {
     const id = 'b' + Date.now();
     lsSet('xl-last', id);
     location.hash = '';
-    location.reload();
+    this.reload();
   }
   private async openMenu() {
     let books: Awaited<ReturnType<typeof listBooks>> = [];
@@ -1000,7 +1011,7 @@ export class App {
         if (bk.id === this.bookId) return;
         await this.saveNow(false);
         lsSet('xl-last', bk.id);
-        location.reload();
+        this.reload();
       },
       side: bk.id === this.bookId ? undefined : { icon: 'trash', label: 'Xóa', act: async () => { await deleteBook(bk.id); this.toast(`Đã xóa “${bk.name}”.`); } },
     })), b.left, b.bottom + 4);
