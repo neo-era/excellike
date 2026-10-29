@@ -5,6 +5,9 @@ Target amd64-unicode
 ManifestDPIAware true
 !include "MUI2.nsh"
 !include "FileFunc.nsh"
+!include "nsDialogs.nsh"
+!include "LogicLib.nsh"
+!include "WinMessages.nsh"
 
 !define APP "ExcelLike"
 !define EXE "ExcelLike.exe"
@@ -34,6 +37,7 @@ VIAddVersionKey /LANG=1066 "CompanyName" "LAVIPCO"
 !define MUI_WELCOMEPAGE_TEXT "Trình cài đặt sẽ cài ${APP} ${VERSION} — phần mềm bảng tính kiểu Excel — cho tài khoản Windows của anh/chị.$\r$\n$\r$\nKhông cần quyền quản trị. Nếu ${APP} đang mở, hãy đóng trước khi cài.$\r$\n$\r$\nBấm Tiếp để tiếp tục."
 
 !insertmacro MUI_PAGE_WELCOME
+Page custom LicPage LicLeave
 !insertmacro MUI_PAGE_COMPONENTS
 !define MUI_PAGE_CUSTOMFUNCTION_LEAVE DirLeave
 !insertmacro MUI_PAGE_DIRECTORY
@@ -42,6 +46,103 @@ VIAddVersionKey /LANG=1066 "CompanyName" "LAVIPCO"
 !insertmacro MUI_UNPAGE_CONFIRM
 !insertmacro MUI_UNPAGE_INSTFILES
 !insertmacro MUI_LANGUAGE "Vietnamese"
+
+; ---------- Kích hoạt bản quyền ----------
+; Key ký số (Ed25519) do app Quản lý Key cấp. lic.exe kiểm chữ ký, Mã máy, hạn dùng ngay khi bấm Tiếp;
+; key hợp lệ được lưu vào %APPDATA%\ExcelLike\license.key để ExcelLike tự kích hoạt khi mở.
+; Cài im lặng (triển khai hàng loạt): ExcelLike-Setup.exe /S /KEY=XXXXX-XXXXX-…
+Var LicKey
+Var LicMachine
+Var LicEdit
+Var LicInfo
+
+Function .onInit
+  InitPluginsDir
+  File "/oname=$PLUGINSDIR\lic.exe" "lic\lic.exe"
+  nsExec::ExecToStack '"$PLUGINSDIR\lic.exe" machine'
+  Pop $0
+  Pop $LicMachine
+  StrCpy $LicMachine $LicMachine 15
+  ; key đã có từ lần cài trước → điền sẵn
+  StrCpy $LicKey ""
+  IfFileExists "$APPDATA\${APP}\license.key" 0 +5
+    FileOpen $1 "$APPDATA\${APP}\license.key" r
+    FileRead $1 $LicKey
+    FileClose $1
+    StrCpy $LicKey $LicKey 400
+  ${GetParameters} $0
+  ClearErrors
+  ${GetOptions} $0 "/KEY=" $2
+  ${IfNot} ${Errors}
+    StrCpy $LicKey $2
+  ${EndIf}
+  ${If} ${Silent}
+    Call LicCheck
+    ${If} $0 != 0
+      SetErrorLevel 3
+      Quit
+    ${EndIf}
+  ${EndIf}
+FunctionEnd
+
+; kiểm $LicKey bằng lic.exe → $0 = mã kết quả, $1 = thông tin
+Function LicCheck
+  FileOpen $2 "$PLUGINSDIR\key.txt" w
+  FileWrite $2 $LicKey
+  FileClose $2
+  nsExec::ExecToStack '"$PLUGINSDIR\lic.exe" verifyfile "$PLUGINSDIR\key.txt"'
+  Pop $0
+  Pop $1
+FunctionEnd
+
+Function LicPage
+  !insertmacro MUI_HEADER_TEXT "Kích hoạt bản quyền" "Nhập key bản quyền ${APP} để tiếp tục cài đặt."
+  nsDialogs::Create 1018
+  Pop $0
+  ${NSD_CreateLabel} 0 0 100% 24u "Dán key được cấp vào ô dưới (gồm các nhóm 5 ký tự, có hoặc không có dấu gạch đều được)."
+  Pop $0
+  nsDialogs::CreateControl EDIT ${DEFAULT_STYLES}|${WS_TABSTOP}|${ES_MULTILINE}|${ES_AUTOVSCROLL}|${WS_VSCROLL} ${WS_EX_CLIENTEDGE} 0 26u 100% 52u $LicKey
+  Pop $LicEdit
+  ${NSD_CreateLabel} 0 84u 100% 12u "Mã máy của máy này (gửi cho nơi cấp nếu cần key gắn với máy):"
+  Pop $0
+  ${NSD_CreateText} 0 98u 120u 13u $LicMachine
+  Pop $0
+  SendMessage $0 ${EM_SETREADONLY} 1 0
+  ${NSD_CreateLabel} 0 118u 100% 22u "Chưa có key? Liên hệ LAVIPCO — email lamvietphat2022@gmail.com, điện thoại 0989 725 507."
+  Pop $LicInfo
+  ${NSD_SetFocus} $LicEdit
+  nsDialogs::Show
+FunctionEnd
+
+Function LicLeave
+  ${NSD_GetText} $LicEdit $LicKey
+  Call LicCheck
+  ${Switch} $0
+    ${Case} 0
+      Return
+    ${Case} 10
+      MessageBox MB_ICONEXCLAMATION "Key không đúng định dạng. Hãy dán nguyên key (gồm các nhóm 5 ký tự)."
+      ${Break}
+    ${Case} 11
+      MessageBox MB_ICONEXCLAMATION "Key không hợp lệ (sai chữ ký). Kiểm tra lại từng ký tự hoặc liên hệ nơi cấp key."
+      ${Break}
+    ${Case} 12
+      MessageBox MB_ICONEXCLAMATION "Key này không dành cho ${APP}."
+      ${Break}
+    ${Case} 13
+      MessageBox MB_ICONEXCLAMATION "Key này cấp cho máy khác.$\r$\nMã máy của máy này: $LicMachine$\r$\nGửi Mã máy này cho nơi cấp để nhận key mới."
+      ${Break}
+    ${Case} 14
+      MessageBox MB_ICONEXCLAMATION "Key đã hết hạn sử dụng."
+      ${Break}
+    ${Case} 15
+      MessageBox MB_ICONEXCLAMATION "Key này đã bị thu hồi."
+      ${Break}
+    ${Default}
+      MessageBox MB_ICONEXCLAMATION "Không kiểm được key (mã $0)."
+  ${EndSwitch}
+  Abort
+FunctionEnd
 
 ; luôn cài vào thư mục riêng “…\ExcelLike” để không ghi đè/xóa tệp của chương trình khác
 Function DirLeave
@@ -59,6 +160,11 @@ Section "${APP} (bắt buộc)" SecMain
   SetOutPath "$INSTDIR"
   File /r "${SRC}\*.*"
   WriteUninstaller "$INSTDIR\Uninstall ${APP}.exe"
+  ; lưu key đã kiểm vào thư mục dữ liệu của ExcelLike (giữ lại khi gỡ cài đặt để cài lại không phải nhập)
+  CreateDirectory "$APPDATA\${APP}"
+  FileOpen $1 "$APPDATA\${APP}\license.key" w
+  FileWrite $1 $LicKey
+  FileClose $1
   CreateDirectory "$SMPROGRAMS\${APP}"
   CreateShortcut "$SMPROGRAMS\${APP}\${APP}.lnk" "$INSTDIR\${EXE}" "" "$INSTDIR\${EXE}" 0
   CreateShortcut "$SMPROGRAMS\${APP}\Gỡ cài đặt ${APP}.lnk" "$INSTDIR\Uninstall ${APP}.exe"

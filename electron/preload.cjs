@@ -17,4 +17,6 @@ contextBridge.exposeInMainWorld('xlDesktop', {
   pdf: (o) => ipcRenderer.invoke('xl:pdf', o),
   win: (a) => ipcRenderer.send('xl:win', String(a)),
   openExternal: (u) => ipcRenderer.send('xl:open-external', String(u)),
+  license: () => ipcRenderer.invoke('xl:license'),
+  activate: (k) => ipcRenderer.invoke('xl:activate', String(k)),
 });

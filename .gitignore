@@ -4,3 +4,11 @@ dist-demo/
 release/
 e2e/shots/
 build/uninst-files.nsh
+build/lic/lic.exe
+build/lic/pubkey.h
+build/lic/revoked.h
+keymgr/node_modules
+keymgr/release/
+keymgr/build/uninst-files.nsh
+*.xlsign
+signing*.json

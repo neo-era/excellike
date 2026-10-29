@@ -10,6 +10,7 @@ import type { App } from './app';
 import { VERSION } from './version';
 import { lang, setLang, tr, type Lang } from './i18n';
 import { TEMPLATES } from './templates';
+import { licenseStatus, licenseText, changeKey } from './license';
 
 /** Ngày sửa đổi dạng tương đối như Excel 365 (Vừa xong, 5 phút trước, Hôm qua lúc 14:20…) */
 export function relTime(t: number, now = Date.now()): string {
@@ -226,6 +227,11 @@ export class Backstage {
       const sel = f.querySelector('#bs-theme') as HTMLSelectElement;
       sel.value = app.themePref();
       sel.onchange = () => app.setTheme(sel.value);
+      if (desk()) {
+        const h2 = document.createElement('h2'); h2.textContent = 'Bản quyền'; f.appendChild(h2);
+        const p = document.createElement('p'); p.id = 'bs-lic'; p.textContent = licenseText(licenseStatus()); f.appendChild(p);
+        f.appendChild(cmd('protectBook', 'Đổi key bản quyền', 'Nhập key mới (gia hạn hoặc chuyển sang key khác)', async () => { await changeKey(); p.textContent = tr(licenseText(licenseStatus())); }, 'lic'));
+      }
       if (!desk()) f.appendChild(cmd('install', 'Cài đặt ứng dụng', 'Chạy như ứng dụng riêng, dùng được khi không có mạng', () => app.install(), 'install'));
     } else if (page === 'options') {
       h1('Tùy chọn');

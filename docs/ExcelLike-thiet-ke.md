@@ -312,6 +312,60 @@ Review độc lập Đợt 4: 1 lỗi nặng (Esc ở hộp thoại hỏi lưu l
   - `tests/v061.test.ts`: dịch, mẫu nghiêm, ngày tương đối, 4 mẫu không lỗi công thức, tổng dự toán đúng.
   - `e2e/i18n.mjs` (90 kiểm thử): có đủ nhóm và lệnh theo ảnh, bộ sưu tập Kiểu Ô, Ô Tiêu điểm, Dẫn hướng, Kiểm tra Hiệu suất, Backstage, tạo từ mẫu. Chế độ English quét mọi thẻ, 10 trang Backstage và 4 hộp thoại: **0 chữ tiếng Việt sót**.
 
+## 6j. Bản 0.6.2 (29/10/2026) — key bản quyền khi cài đặt + app Quản lý Key + khởi động an toàn
+
+**Mục tiêu:**
+- Nhập key ngay trong bộ cài.
+- Key có hai loại: gắn 1 máy, hoặc dùng mọi máy (có thể đặt hạn dùng).
+- App riêng để sinh, lưu và tra key.
+- Không cần mạng, không làm giả được key.
+
+**Thiết kế key:**
+- Gồm 19 byte nội dung và chữ ký Ed25519 (64 byte), viết bằng Base32 Crockford thành 27 nhóm 5 ký tự.
+- Nội dung: phiên bản, sản phẩm, loại key, số thứ tự (uint32), ngày cấp, ngày hết hạn (số ngày tính từ 01/01/2020; 0 = vĩnh viễn), băm máy 8 byte.
+- Khóa bí mật chỉ nằm trong app Quản lý Key (mã hóa DPAPI theo tài khoản Windows). ExcelLike và bộ cài chỉ chứa khóa công khai (`electron/license-config.cjs`).
+- **Mã máy** = SHA-512("ExcelLike|" + MachineGuid viết hoa), lấy 8 byte đầu, hiển thị dạng `XXXX-XXXX-XXXXX`.
+  - Bộ cài (lic.exe) và ExcelLike (Node) tính ra cùng một mã; đã đối chiếu dưới Wine.
+- Lõi chung `electron/license.cjs` cung cấp: makeKey, decodeKey, checkKey, machineHash/machineCode.
+- Chống chỉnh lùi đồng hồ: ghi `lastSeen` vào license-state.json. Key có hạn mà đồng hồ máy lùi quá 2 ngày so với lần dùng trước thì báo lỗi.
+- Thu hồi: danh sách `REVOKED` trong license-config.cjs, xuất ra từ app Quản lý Key. Có hiệu lực từ bản cài kế tiếp, vì key được kiểm ngay trên máy, không cần mạng.
+
+**Bộ cài (NSIS):**
+- Trang "Kích hoạt bản quyền" đặt sau trang Chào mừng.
+  - Hiện Mã máy và ô dán key; điền sẵn key nếu đã cài trước đó.
+  - Khi bấm Tiến, `lic.exe` (C + TweetNaCl, biên dịch bằng mingw) kiểm chữ ký, máy và hạn dùng, báo đúng lý do nếu key không hợp lệ.
+- Key hợp lệ được lưu vào `%APPDATA%\ExcelLike\license.key`. Gỡ cài đặt vẫn giữ tệp này.
+- Cài im lặng: `ExcelLike-Setup.exe /S /KEY=…`. Key sai thì thoát với mã 3 và không cài.
+
+**ExcelLike khi mở (bản Windows):**
+- Kiểm key ngay khi mở. Chưa hợp lệ thì hiện màn Kích hoạt chặn mọi thao tác (Mã máy, nút Chép, ô dán key).
+- Tiến trình chính từ chối lưu, in, xuất PDF khi chưa kích hoạt.
+- Tệp ▸ Tài khoản ▸ Bản quyền: xem thông tin key và Đổi key.
+- Key còn ≤ 14 ngày thì nhắc gia hạn.
+- Bản web/PWA không cần key.
+
+**Khởi động an toàn** (sửa lỗi mở ra cửa sổ trống trên máy anh Lâm; máy anh không có tệp nhật ký nên chưa rõ nguyên nhân):
+- Mỗi lần mở đều ghi nhật ký `excellike-log.txt`, gồm cả lỗi trong trang và lỗi tiến trình đồ họa.
+- Cờ `boot-pending`: lần mở trước không khởi động xong thì lần này vào chế độ an toàn (`?safe=1`): sổ trống, tiếng Việt, sổ cũ vẫn giữ.
+- Sau 25 giây chưa khởi động xong: hỏi Chờ thêm / Chế độ an toàn / Tắt tăng tốc đồ họa / Đóng.
+- Tiến trình đồ họa hỏng 2 lần: tự tắt tăng tốc đồ họa và mở lại.
+- Lỗi khi dựng giao diện: hiện trang báo lỗi có nút Chế độ an toàn, không để màn hình trống.
+
+**App Quản lý Key (keymgr/, ExcelLike Key Manager 1.0.0):**
+- Lần đầu: nhập tệp khóa ký.
+- Cấp key: khách hàng, đơn vị, liên hệ, loại key, Mã máy, thời hạn (vĩnh viễn / 30 ngày / 3–6 tháng / 1–2 năm / đến ngày cụ thể), ghi chú. Sau khi cấp: chép key, chép tin nhắn gửi khách, lưu .txt.
+- Sổ key: thống kê theo trạng thái, tìm kiếm, lọc, chi tiết (sửa thông tin, thu hồi/bỏ thu hồi), xuất CSV, chép danh sách thu hồi.
+- Kiểm tra key: đọc thông tin, kiểm chữ ký, đối chiếu với sổ.
+- Cài đặt: sao lưu khóa ký, sao lưu/khôi phục (gộp) sổ key, mở thư mục dữ liệu. Tự sao lưu sổ hằng ngày, giữ 30 bản.
+
+**Kiểm chứng:**
+- `tests/license.test.ts` (11 test).
+- `e2e/desktop-license.mjs` (18): màn kích hoạt, key sai / máy khác / hết hạn / đúng, tự kích hoạt từ key bộ cài, nhắc gia hạn, quá hạn khi mở, chế độ an toàn.
+- `e2e/keymgr.mjs` (27).
+- Bộ cài thật chạy dưới Wine: cài im lặng với key máy khác hoặc key rác thì thoát mã 3, không cài; key đúng thì cài xong và ghi license.key. Đã chụp màn trang Kích hoạt và hộp báo key sai.
+- `lic.exe` dưới Wine: 6 loại key đều trả đúng mã lỗi.
+- Khóa ký **không** nằm trong repo hay trong bộ cài nào. Bản sao lưu đặt ở tài liệu dự án `claude/ExcelLike-khoa-ky.md`.
+
 ## 7. Kiểm chứng cuối theo tiêu chí Bước 0
 
 | # | Tiêu chí | Kết quả |

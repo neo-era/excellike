@@ -7,6 +7,8 @@ const ROOT = new URL('..', import.meta.url).pathname;
 const { version } = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
 const run = (cmd, args, opts = {}) => execFileSync(cmd, args, { cwd: ROOT, stdio: 'inherit', ...opts });
 
+// lic.exe trước: được đóng kèm app (đọc Mã máy) và bộ cài (kiểm key)
+run('node', [join(ROOT, 'tools/build-lic.mjs')]);
 rmSync(join(ROOT, 'release'), { recursive: true, force: true });
 run('npx', ['electron-builder', '--win', 'dir', '--x64']);
 const SRC = join(ROOT, 'release/win-unpacked');

@@ -726,3 +726,28 @@ html.desktop #backstage .bs-page { padding-top: 40px; }
 .bs-foot button:hover { background: var(--hover); }
 @media (max-width: 600px) { .bs-recent .rr { grid-template-columns: 24px minmax(0, 1fr) 90px 32px 32px; gap: 6px; } .bs-find { margin-left: 0; width: 100%; } }
 .grp[hidden] { display: none !important; }
+.boot-err { position: fixed; inset: 0; z-index: 9999; background: var(--surface, #fff); color: var(--fg, #222); padding: 64px max(24px, 10vw); font: 15px var(--font-ui, system-ui); }
+.boot-err h1 { font-size: 22px; margin: 0 0 12px; }
+.boot-err .m { color: #a4262c; font-family: Consolas, monospace; white-space: pre-wrap; }
+.boot-err button { margin-top: 12px; padding: 8px 16px; border-radius: 4px; border: 1px solid #107c41; background: #107c41; color: #fff; min-height: 40px; }
+.boot-err button.again { background: transparent; color: #107c41; }
+/* Kích hoạt bản quyền */
+.lic-back { position: fixed; inset: 0; z-index: 9000; background: rgba(0,0,0,.45); display: grid; place-items: center; padding: 16px; }
+.lic { width: min(560px, 100%); background: var(--surface); color: var(--fg); border-radius: 10px; box-shadow: 0 18px 50px rgba(0,0,0,.35); padding: 24px; display: flex; flex-direction: column; gap: 10px; }
+.lic-top { display: flex; gap: 14px; align-items: center; color: var(--accent); }
+.lic-top h2 { margin: 0; font-size: 19px; color: var(--fg); }
+.lic-top p { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
+.lic-l { font-weight: 600; font-size: 13px; margin-top: 6px; }
+.lic textarea { font: 14px Consolas, 'Cascadia Mono', monospace; letter-spacing: .5px; padding: 8px 10px; border: 1px solid var(--line-ui); border-radius: 6px; resize: vertical; background: var(--surface); color: var(--fg); }
+.lic textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.lic-msg { min-height: 18px; margin: 0; color: #c42b1c; font-size: 13px; }
+.lic-msg.ok { color: var(--accent); }
+.lic-mc { display: flex; align-items: center; gap: 10px; background: var(--hover); border-radius: 6px; padding: 8px 10px; flex-wrap: wrap; }
+.lic-mc span { font-size: 13px; color: var(--muted); }
+.lic-mc code { font: 600 15px Consolas, monospace; letter-spacing: 1px; user-select: all; }
+.lic-copy { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 4px; border: 1px solid var(--line-ui); min-height: 32px; }
+.lic-note { margin: 0; color: var(--muted); font-size: 12.5px; }
+.lic-btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+.lic-btns button { min-width: 96px; min-height: 36px; border-radius: 5px; border: 1px solid var(--line-ui); padding: 0 14px; }
+.lic-btns .lic-ok { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.lic-btns .lic-ok:disabled { opacity: .6; }

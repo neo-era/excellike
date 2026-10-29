@@ -1,0 +1,40 @@
+{
+  "name": "excellike-keymgr",
+  "productName": "ExcelLike Key Manager",
+  "version": "1.0.0",
+  "description": "Quản lý và sinh key bản quyền ExcelLike",
+  "author": "Mai Vũ Lâm",
+  "main": "electron/main.cjs",
+  "devDependencies": {
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "vn.lavipco.excellike.keymgr",
+    "productName": "ExcelLike Key Manager",
+    "copyright": "© 2026 Mai Vũ Lâm",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "electron/**/*",
+      "ui/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "icon": "build/icon.ico",
+      "signAndEditExecutable": false,
+      "target": [
+        {
+          "target": "dir",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "afterPack": "build/afterPack.cjs"
+  }
+}

@@ -6,6 +6,8 @@ const fsSync = require('node:fs');
 const crypto = require('node:crypto');
 const { pathToFileURL } = require('node:url');
 const os = require('node:os');
+const LIC = require('./license.cjs');
+const LIC_CFG = require('./license-config.cjs');
 
 // biến môi trường chỉ dùng cho kiểm thử, bản đóng gói bỏ qua
 const TEST = !app.isPackaged ? process.env : {};
@@ -25,6 +27,24 @@ process.on('uncaughtException', (e) => {
   try { dialog.showErrorBox('ExcelLike gặp lỗi', String(e && e.message || e) + '\n\nChi tiết đã ghi vào: ' + path.join(app.getPath('userData'), 'excellike-log.txt')); } catch { /* bỏ qua */ }
 });
 
+// ---- khởi động an toàn ----
+// Lần chạy trước không khởi động xong (cờ boot-pending còn) → lần này vào chế độ an toàn (sổ trống, tiếng Việt).
+// Tiến trình đồ họa (GPU) hỏng nhiều lần → tắt tăng tốc phần cứng cho các lần sau.
+const BOOT_FLAG = path.join(app.getPath('userData'), 'boot-pending');
+const NOGPU_FLAG = path.join(app.getPath('userData'), 'disable-gpu');
+let safeStart = process.argv.includes('--safe') || fsSync.existsSync(BOOT_FLAG);
+if (fsSync.existsSync(NOGPU_FLAG) || process.argv.includes('--disable-gpu')) app.disableHardwareAcceleration();
+let gpuCrashes = 0;
+logErr(`Khởi động ExcelLike ${app.getVersion()}${safeStart ? ' (chế độ an toàn)' : ''}${fsSync.existsSync(NOGPU_FLAG) ? ' (không tăng tốc đồ họa)' : ''}`);
+app.on('child-process-gone', (_e, d) => {
+  logErr('Tiến trình con dừng: ' + JSON.stringify(d));
+  // đồ họa hỏng 2 lần → các lần sau chạy không dùng card đồ họa; đang khởi động dở thì mở lại ngay
+  if (d.type === 'GPU' && d.reason !== 'clean-exit' && ++gpuCrashes >= 2 && !fsSync.existsSync(NOGPU_FLAG)) {
+    try { fsSync.writeFileSync(NOGPU_FLAG, '1'); } catch { /* bỏ qua */ }
+    if (!rendererReady) { try { fsSync.rmSync(BOOT_FLAG, { force: true }); } catch { /* bỏ qua */ } app.relaunch(); app.exit(0); }
+  }
+});
+
 // chỉ một phiên chạy: mở tệp lần sau sẽ chuyển vào cửa sổ đang có
 if (!app.requestSingleInstanceLock()) { app.quit(); return; }
 
@@ -34,6 +54,8 @@ let closeReady = false;   // trang đã đăng ký xử lý đóng cửa sổ
 let closeTimer = null;
 const pending = [];       // tệp chờ mở (đường dẫn)
 let rendererReady = false; // trang đã khởi động xong và tự hỏi tệp chờ mở
+let bootTimer = null;
+let intentionalCrash = false, crashCount = 0;
 const fileArg = (argv, cwd = process.cwd()) => {
   const c = argv.slice(1).filter((a) => !a.startsWith('-') && OPENABLE.test(a));
   return c.length ? path.resolve(cwd, c[0]) : undefined;
@@ -83,9 +105,49 @@ function createWindow() {
   win.webContents.on('did-fail-load', (_e, code, desc, url) => logErr(`Không nạp được trang ${url}: ${code} ${desc}`));
   win.webContents.on('render-process-gone', (_e, d) => {
     logErr('Trang bị dừng: ' + JSON.stringify(d));
-    if (d.reason !== 'clean-exit' && win && !win.isDestroyed()) win.webContents.reload();
+    if (!win || win.isDestroyed()) return;
+    // chủ động dừng để vào chế độ an toàn → nạp trang an toàn, không nạp lại trang cũ
+    if (intentionalCrash) { intentionalCrash = false; loadApp(); return; }
+    if (d.reason === 'clean-exit') return;
+    // dừng khi đang khởi động → lần nạp lại vào chế độ an toàn (tránh lặp lỗi với sổ nặng/hỏng)
+    if (!rendererReady) safeStart = true;
+    if (++crashCount > 3) { logErr('Trang dừng quá nhiều lần, không tự nạp lại'); return; }
+    loadApp();
   });
-  win.loadURL('app://excellike/index.html');
+  // trang chưa khởi động xong sau 25 giây (sổ quá nặng, lỗi đồ họa, lỗi dữ liệu) → hỏi người dùng thay vì để màn hình trống
+  const watchdog = () => {
+    clearTimeout(bootTimer);
+    bootTimer = setTimeout(async () => {
+      if (rendererReady || !win || win.isDestroyed()) return;
+      logErr(`Trang chưa khởi động xong sau 25 giây${safeStart ? ' (chế độ an toàn)' : ''}`);
+      if (!win.isVisible()) win.show();
+      const r = await dialog.showMessageBox(win, {
+        type: 'warning', title: 'ExcelLike', noLink: true, cancelId: 0,
+        message: 'ExcelLike đang mở lâu hơn bình thường.',
+        detail: 'Có thể sổ tính lần trước quá nặng, hoặc card đồ họa của máy không tương thích.\n\n'
+          + '• Chờ thêm: tiếp tục đợi.\n• Chế độ an toàn: mở sổ trống (sổ cũ vẫn giữ trong Tệp ▸ Mở).\n• Tắt tăng tốc đồ họa: khởi động lại ExcelLike không dùng card đồ họa.\n\n'
+          + 'Nhật ký: ' + path.join(app.getPath('userData'), 'excellike-log.txt'),
+        buttons: ['Chờ thêm', 'Chế độ an toàn', 'Tắt tăng tốc đồ họa', 'Đóng'],
+      });
+      if (rendererReady || !win || win.isDestroyed()) return;
+      logErr('Người dùng chọn: ' + ['chờ thêm', 'chế độ an toàn', 'tắt tăng tốc đồ họa', 'đóng'][r.response]);
+      if (r.response === 0) watchdog();
+      else if (r.response === 1) {
+        safeStart = true;
+        // trang có thể đang treo: dừng hẳn tiến trình trang rồi nạp bản an toàn (trong render-process-gone)
+        intentionalCrash = true;
+        try { win.webContents.forcefullyCrashRenderer(); } catch { intentionalCrash = false; loadApp(); }
+      }
+      else if (r.response === 2) { try { fsSync.writeFileSync(NOGPU_FLAG, '1'); fsSync.rmSync(BOOT_FLAG, { force: true }); } catch { /* bỏ qua */ } app.relaunch(); app.exit(0); }
+      else { allowClose = true; win.close(); }
+    }, TEST.XL_TEST_BOOT_WAIT ? +TEST.XL_TEST_BOOT_WAIT : 25000);
+  };
+  const loadApp = () => { rendererReady = false; watchdog(); win.loadURL('app://excellike/index.html' + (safeStart ? '?safe=1' : '')); };
+  try { fsSync.writeFileSync(BOOT_FLAG, String(Date.now())); } catch { /* bỏ qua */ }
+  // lỗi trong trang (console.error, lỗi chưa bắt) → ghi nhật ký để chẩn đoán
+  win.webContents.on('console-message', (_e, level, message, line, source) => { if (level >= 3) logErr(`Trang: ${message} (${source}:${line})`); });
+  win.webContents.on('unresponsive', () => logErr('Trang không phản hồi'));
+  loadApp();
   // chỉ khi chính trang app nạp lại (không tính khung con như bản xem trước khi in)
   win.webContents.on('did-start-navigation', (e, _url, isInPlace, isMainFrame) => {
     const main = e?.isMainFrame ?? isMainFrame, same = e?.isSameDocument ?? isInPlace;
@@ -97,6 +159,8 @@ function createWindow() {
   win.webContents.on('will-navigate', (e, url) => { if (!url.startsWith('app://excellike/')) { e.preventDefault(); if (/^https?:/i.test(url)) shell.openExternal(url); } });
   win.on('close', (e) => {
     if (allowClose) return;
+    // chưa kích hoạt (màn Kích hoạt đang chặn giao diện) → đóng luôn, bản nháp đã tự lưu
+    if (!licensed) return;
     // trang hỏng, chưa nạp xong hoặc chưa sẵn sàng → đóng luôn (bản nháp đã tự lưu)
     if (!closeReady || win.webContents.isCrashed() || win.webContents.isLoading()) return;
     e.preventDefault();
@@ -108,6 +172,78 @@ function createWindow() {
   win.on('unresponsive', () => { if (closeTimer) forceClose(); });
   win.on('closed', () => { win = null; });
 }
+
+// ---- Bản quyền: key ký số, kiểm ngay trên máy (không cần mạng) ----
+const LIC_FILE = path.join(app.getPath('userData'), 'license.key');
+const LIC_STATE = path.join(app.getPath('userData'), 'license-state.json');
+let machineCache = null;
+function machineGuid() {
+  if (TEST.XL_TEST_MACHINE) return TEST.XL_TEST_MACHINE;
+  if (process.platform === 'win32') {
+    try {
+      const out = require('node:child_process').execFileSync('reg', ['query', 'HKLM\\SOFTWARE\\Microsoft\\Cryptography', '/v', 'MachineGuid', '/reg:64'], { encoding: 'utf8', windowsHide: true });
+      const m = /MachineGuid\s+REG_SZ\s+(\S+)/i.exec(out);
+      if (m) return m[1];
+    } catch (e) { logErr('Không đọc được MachineGuid: ' + e); }
+  }
+  if (process.platform === 'win32') return null; // không đọc được: không tự đoán (tránh lệch Mã máy với bộ cài)
+  try { return fsSync.readFileSync('/etc/machine-id', 'utf8').trim(); } catch { return os.hostname(); }
+}
+function machine() {
+  if (machineCache) return machineCache;
+  // Windows: dùng chính lic.exe của bộ cài để Mã máy luôn khớp (không phụ thuộc reg.exe bị chặn bởi chính sách)
+  if (process.platform === 'win32' && !TEST.XL_TEST_MACHINE) {
+    try {
+      const out = require('node:child_process').execFileSync(path.join(process.resourcesPath, 'lic.exe'), ['machine'], { encoding: 'utf8', windowsHide: true, timeout: 10000 }).trim();
+      const h = LIC.parseMachineCode(out);
+      if (h) return (machineCache = { hash: h, code: LIC.machineCode(h) });
+    } catch (e) { logErr('lic.exe machine: ' + e); }
+  }
+  const g = machineGuid();
+  if (!g) return (machineCache = { hash: null, code: 'không đọc được' });
+  const h = LIC.machineHash(g);
+  return (machineCache = { hash: h, code: LIC.machineCode(h) });
+}
+function licState() { try { return JSON.parse(fsSync.readFileSync(LIC_STATE, 'utf8')); } catch { return {}; } }
+const licToday = () => (TEST.XL_TEST_TODAY ? new Date(TEST.XL_TEST_TODAY) : new Date());
+function licCheck(key, ignoreLastSeen = false) {
+  const st = licState(), m = machine(), today = LIC.dayNum(licToday());
+  // ngày dùng gần nhất quá xa trong tương lai (đồng hồ từng bị đặt sai năm) → bỏ qua để không khóa oan
+  const lastSeen = ignoreLastSeen || !st.lastSeen || st.lastSeen > today + 366 ? undefined : st.lastSeen;
+  const d = LIC.decodeKey(key);
+  if (d && d.type === 'machine' && !m.hash) return { ok: false, code: 'machine', message: 'Không đọc được Mã máy của máy này nên không dùng được key gắn máy. Hãy dùng key “dùng mọi máy” hoặc báo người hỗ trợ.', machine: m.code };
+  const r = LIC.checkKey(key, { pub: LIC_CFG.PUBLIC_KEY, machine: m.hash || undefined, revoked: LIC_CFG.REVOKED, lastSeen, today: licToday() });
+  return { ...r, message: LIC.MESSAGES[r.code], machine: m.code };
+}
+function licStatus() {
+  let key = '';
+  try { key = fsSync.readFileSync(LIC_FILE, 'utf8').trim(); } catch { /* chưa có key */ }
+  if (!key) return { ok: false, code: 'missing', message: 'Chưa nhập key bản quyền.', machine: machine().code };
+  const r = licCheck(key);
+  if (r.ok) {
+    // ghi ngày dùng gần nhất (chống chỉnh lùi đồng hồ để kéo dài key có hạn)
+    const today = LIC.dayNum(licToday()), st = licState();
+    if (!st.lastSeen || today > st.lastSeen || st.lastSeen > today + 366) { try { fsSync.writeFileSync(LIC_STATE, JSON.stringify({ ...st, lastSeen: today })); } catch { /* bỏ qua */ } }
+  }
+  return r;
+}
+let licensed = false;
+ipcMain.handle('xl:license', () => { const r = licStatus(); licensed = r.ok; return r; });
+ipcMain.handle('xl:activate', (_e, key) => {
+  const k = String(key || '').slice(0, 600).trim();
+  // key mới (gia hạn/đổi key) được kiểm theo đồng hồ hiện tại; nhập lại đúng key cũ thì vẫn kiểm chống lùi đồng hồ
+  let cur = null; try { cur = LIC.decodeKey(fsSync.readFileSync(LIC_FILE, 'utf8').trim()); } catch { /* chưa có */ }
+  const d = LIC.decodeKey(k);
+  const r = licCheck(k, !!d && (!cur || cur.serial !== d.serial));
+  if (r.ok) {
+    licensed = true;
+    try { fsSync.writeFileSync(LIC_STATE, JSON.stringify({ ...licState(), lastSeen: LIC.dayNum(licToday()) })); } catch { /* bỏ qua */ }
+    try { fsSync.mkdirSync(path.dirname(LIC_FILE), { recursive: true }); fsSync.writeFileSync(LIC_FILE, LIC.decodeKey(k) ? k.replace(/\s+/g, ' ') : k); }
+    catch (e) { return { ok: false, code: 'write', message: 'Không lưu được key: ' + e.message, machine: machine().code }; }
+    logErr('Đã kích hoạt key số ' + r.info.serial);
+  }
+  return r;
+});
 
 ipcMain.on('xl:close-ready', () => { closeReady = true; });
 // màu nút cửa sổ theo chủ đề Office (Nhiều màu / Trắng / Xám Đậm / Đen)
@@ -142,6 +278,7 @@ ipcMain.handle('xl:printers', async () => {
   try { return (await win.webContents.getPrintersAsync()).map((p) => ({ name: p.name, displayName: p.displayName, isDefault: !!p.isDefault })); } catch { return []; }
 });
 ipcMain.handle('xl:print', async (_e, o) => {
+  if (!licensed) return { ok: false, error: 'Chưa kích hoạt bản quyền' };
   if (!o || typeof o.html !== 'string' || o.html.length > 200e6) return { ok: false, error: 'Dữ liệu in không hợp lệ' };
   let job;
   try { job = await renderJob(o.html); } catch (e) { return { ok: false, error: String(e.message || e) }; }
@@ -158,6 +295,7 @@ ipcMain.handle('xl:print', async (_e, o) => {
   });
 });
 ipcMain.handle('xl:pdf', async (_e, o) => {
+  if (!licensed) return { error: 'Chưa kích hoạt bản quyền' };
   if (!o || typeof o.html !== 'string' || o.html.length > 200e6) return { error: 'Dữ liệu không hợp lệ' };
   let target = TEST.XL_TEST_PDF;
   if (!target) {
@@ -195,6 +333,8 @@ ipcMain.on('xl:close-cancel', () => { clearTimeout(closeTimer); closeTimer = nul
 
 ipcMain.handle('xl:startup-file', async () => {
   rendererReady = true;
+  clearTimeout(bootTimer);
+  try { fsSync.rmSync(BOOT_FLAG, { force: true }); } catch { /* bỏ qua */ }
   const p = pending.shift();
   return p ? readFor(p).catch(() => null) : null;
 });
@@ -230,6 +370,7 @@ async function writeAtomic(target, data) {
   }
 }
 ipcMain.handle('xl:save', async (_e, { path: p, name, kind, data, saveAs }) => {
+  if (!licensed) throw new Error('Chưa kích hoạt bản quyền ExcelLike');
   // chỉ ghi đè thẳng vào tệp người dùng đã chọn; đường dẫn lạ → hỏi bằng hộp thoại
   let target = !saveAs && p && allowed.has(key(p)) ? p : null;
   if (!target) {

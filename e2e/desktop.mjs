@@ -24,7 +24,10 @@ const results = [];
 const check = (name, ok, info = '') => { results.push({ name, ok }); console.log(`${ok ? '✓' : '✗'} ${name}${info ? ' — ' + info : ''}`); };
 const py = (code, ...args) => execFileSync('python3', ['-c', code, ...args]).toString().trim();
 const printOut = join(work, 'print.json'), pdfOut = join(work, 'xuat.pdf');
-const env = { ...process.env, XL_USER_DATA: userData, XL_TEST_OPEN: csv, XL_TEST_SAVE: saveAs, XL_TEST_PRINT: printOut, XL_TEST_PDF: pdfOut };
+import { testKey, TEST_GUID } from './testkey.mjs';
+mkdirSync(userData, { recursive: true });
+writeFileSync(join(userData, 'license.key'), testKey());
+const env = { ...process.env, XL_TEST_MACHINE: TEST_GUID, XL_USER_DATA: userData, XL_TEST_OPEN: csv, XL_TEST_SAVE: saveAs, XL_TEST_PRINT: printOut, XL_TEST_PDF: pdfOut };
 
 const app = await electron.launch({ executablePath: electronBin, args: [ROOT, fx], env });
 const win = await app.firstWindow();
