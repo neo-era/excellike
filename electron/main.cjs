@@ -16,6 +16,15 @@ const CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inl
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }]);
 
+// ghi lỗi ra tệp nhật ký trong thư mục dữ liệu của app và báo cho người dùng thay vì im lặng thoát
+function logErr(msg) {
+  try { fsSync.appendFileSync(path.join(app.getPath('userData'), 'excellike-log.txt'), `[${new Date().toISOString()}] ${msg}\n`); } catch { /* bỏ qua */ }
+}
+process.on('uncaughtException', (e) => {
+  logErr('Lỗi: ' + (e && e.stack || e));
+  try { dialog.showErrorBox('ExcelLike gặp lỗi', String(e && e.message || e) + '\n\nChi tiết đã ghi vào: ' + path.join(app.getPath('userData'), 'excellike-log.txt')); } catch { /* bỏ qua */ }
+});
+
 // chỉ một phiên chạy: mở tệp lần sau sẽ chuyển vào cửa sổ đang có
 if (!app.requestSingleInstanceLock()) { app.quit(); return; }
 
@@ -69,6 +78,13 @@ function createWindow() {
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false },
   });
   win.once('ready-to-show', () => win.show());
+  // phòng khi trang không báo sẵn sàng (lỗi đồ họa, lỗi nạp trang): vẫn hiện cửa sổ sau 6 giây
+  setTimeout(() => { if (win && !win.isDestroyed() && !win.isVisible()) win.show(); }, 6000);
+  win.webContents.on('did-fail-load', (_e, code, desc, url) => logErr(`Không nạp được trang ${url}: ${code} ${desc}`));
+  win.webContents.on('render-process-gone', (_e, d) => {
+    logErr('Trang bị dừng: ' + JSON.stringify(d));
+    if (d.reason !== 'clean-exit' && win && !win.isDestroyed()) win.webContents.reload();
+  });
   win.loadURL('app://excellike/index.html');
   // chỉ khi chính trang app nạp lại (không tính khung con như bản xem trước khi in)
   win.webContents.on('did-start-navigation', (e, _url, isInPlace, isMainFrame) => {
@@ -218,7 +234,12 @@ ipcMain.handle('xl:save', async (_e, { path: p, name, kind, data, saveAs }) => {
   return { path: target, name: path.basename(target) };
 });
 
-app.on('second-instance', (_e, argv, cwd) => { const p = fileArg(argv, cwd); if (p) sendOpen(p); else if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
+app.on('second-instance', (_e, argv, cwd) => {
+  const p = fileArg(argv, cwd);
+  // phiên đang chạy nhưng không còn cửa sổ (đang thoát dở) → mở lại cửa sổ
+  if (!win || win.isDestroyed()) { if (p) pending.push(p); if (app.isReady()) createWindow(); return; }
+  if (p) sendOpen(p); else { if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
+});
 app.on('open-file', (e, p) => { e.preventDefault(); sendOpen(p); }); // macOS
 app.on('window-all-closed', () => app.quit());
 

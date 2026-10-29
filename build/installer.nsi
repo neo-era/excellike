@@ -52,6 +52,10 @@ FunctionEnd
 
 Section "${APP} (bắt buộc)" SecMain
   SectionIn RO
+  ; đóng ExcelLike đang chạy (kể cả tiến trình chạy ngầm) để không bị khóa tệp khi chép đè bản mới
+  nsExec::Exec 'taskkill /F /T /IM "${EXE}"'
+  Pop $0
+  Sleep 1000
   SetOutPath "$INSTDIR"
   File /r "${SRC}\*.*"
   WriteUninstaller "$INSTDIR\Uninstall ${APP}.exe"
