@@ -23,6 +23,7 @@ jobs:
       - run: npm ci
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+      - run: pip install openpyxl
       - run: npx vitest run
       - run: npx tsc --noEmit && npx vite build
       - run: rm -f dist/excellike-demo.html
