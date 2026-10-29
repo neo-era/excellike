@@ -98,7 +98,7 @@ describe('Review Đợt 2: lọc và kích thước hàng', () => {
     wb.setFilter(0, rg(0, 0, 2, 0)); wb.filterColumn(0, 0, { values: ['a'] });
     wb.setRowHeight(0, 2, 40); wb.undo();
     wb.clearFilter(0);
-    expect(wb.meta(0).rowH.get(2)).toBe(24);
+    expect(wb.meta(0).rowH.get(2)).toBe(20);
   });
   it('hàng ẩn do lọc trong tệp Excel hiện lại khi bỏ lọc', async () => {
     const buf = await excelFile((ws) => { ['K', 'a', 'b'].forEach((v, i) => (ws.getCell(i + 1, 1).value = v)); ws.autoFilter = 'A1:A3'; ws.getRow(3).hidden = true; });

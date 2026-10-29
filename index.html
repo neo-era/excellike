@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>ExcelLike</title>
   <meta name="description" content="Phần mềm bảng tính chạy trên trình duyệt và Windows">
-  <meta name="theme-color" content="#0f5e3d">
+  <meta name="theme-color" content="#107c41">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="ExcelLike">
@@ -16,42 +16,62 @@
 </head>
 <body>
   <div class="app" id="app">
-    <header class="top">
-      <div class="logo" aria-hidden="true">XL</div>
-      <div class="doc">
-        <input id="doc-name" class="doc-name" aria-label="Tên sổ tính" spellcheck="false">
-        <span id="save-state" class="save-state">Đang mở…</span>
-      </div>
+    <header class="title" id="titlebar">
+      <div class="appico" aria-hidden="true">XL</div>
+      <button class="autosave" id="autosave" role="switch" aria-checked="false" title="Tự động lưu vào tệp .xlsx đang mở"><span class="as-l">Tự động lưu</span><span class="toggle" aria-hidden="true"></span><span class="as-st">Tắt</span></button>
+      <div class="qat" id="qat" role="toolbar" aria-label="Thanh công cụ Truy nhập Nhanh"></div>
+      <button class="docname" id="docname" aria-haspopup="dialog"><span id="doc-title"></span><small id="save-state">Đang mở…</small></button>
+      <div class="search" id="search" role="search"><span data-ic="search" data-s="16"></span><input id="tell" placeholder="Tìm kiếm (Alt+Q)" aria-label="Tìm kiếm lệnh (Alt+Q)" autocomplete="off" spellcheck="false" role="combobox" aria-expanded="false" aria-controls="tell-list"></div>
       <div class="sp"></div>
-      <button class="ib install" id="btn-install" hidden data-ic="install" title="Cài đặt ứng dụng"><span>Cài đặt</span></button>
-      <button class="ib" id="btn-undo" data-ic="undo" title="Hoàn tác (Ctrl+Z)" aria-label="Hoàn tác"></button>
-      <button class="ib" id="btn-redo" data-ic="redo" title="Làm lại (Ctrl+Y)" aria-label="Làm lại"></button>
-      <button class="ib" id="btn-save" data-ic="save" title="Lưu (Ctrl+S)" aria-label="Lưu"></button>
-      <button class="ib" id="btn-theme" data-ic="moon" title="Đổi giao diện sáng/tối" aria-label="Đổi giao diện sáng/tối"></button>
+      <button class="tb-ic" id="tell-btn" data-ic="search" title="Tìm kiếm (Alt+Q)" aria-label="Tìm kiếm"></button>
+      <button class="install" id="btn-install" hidden data-ic="install" title="Cài đặt ứng dụng"><span>Cài đặt</span></button>
+      <div class="wco" aria-hidden="true"></div>
     </header>
     <nav class="tabs" id="tabs" role="tablist" aria-label="Thẻ lệnh"></nav>
     <section class="ribbon" id="ribbon" aria-label="Lệnh"></section>
     <div class="fbar">
-      <input class="namebox" id="namebox" aria-label="Ô đang chọn" spellcheck="false">
+      <div class="nbox"><input class="namebox" id="namebox" aria-label="Hộp Tên" spellcheck="false"><button class="dd" id="namebox-dd" tabindex="-1" data-ic="chevDown" data-s="10" aria-label="Danh sách tên"></button></div>
       <div class="fx-btns">
-        <button class="fxb" id="fx-cancel" data-ic="x" data-s="16" title="Hủy (Esc)" aria-label="Hủy"></button>
-        <button class="fxb" id="fx-ok" data-ic="validate" data-s="16" title="Nhập (Enter)" aria-label="Nhập"></button>
+        <span class="grip" aria-hidden="true"></span>
+        <button class="fxb" id="fx-cancel" data-ic="x" data-s="15" title="Hủy (Esc)" aria-label="Hủy" disabled></button>
+        <button class="fxb" id="fx-ok" data-ic="check" data-s="15" title="Nhập (Enter)" aria-label="Nhập" disabled></button>
+        <button class="fxb fx" id="fx-fn" title="Chèn Hàm (Shift+F3)" aria-label="Chèn Hàm">fx</button>
       </div>
-      <span class="fx" aria-hidden="true">fx</span>
       <textarea id="fx-input" class="fx-input" rows="1" aria-label="Thanh công thức" spellcheck="false"></textarea>
+      <button class="fx-exp" id="fx-exp" data-ic="chevDown" data-s="14" title="Mở rộng thanh công thức (Ctrl+Shift+U)" aria-label="Mở rộng thanh công thức"></button>
     </div>
     <main class="grid-wrap" id="gridwrap"></main>
-    <footer class="foot">
-      <div class="sheets" id="sheets" role="tablist" aria-label="Các sheet"></div>
+    <div class="sheetbar">
+      <div class="snav"><button id="sheet-prev" data-ic="back" data-s="14" title="Trang tính trước" aria-label="Trang tính trước"></button><button id="sheet-next" data-ic="fwd" data-s="14" title="Trang tính sau" aria-label="Trang tính sau"></button></div>
+      <div class="sheets" id="sheets" role="tablist" aria-label="Các trang tính"></div>
+      <button class="add" id="sheet-add" data-ic="plus" data-s="16" title="Trang tính mới (Shift+F11)" aria-label="Trang tính mới"></button>
+      <div class="sp"></div>
+    </div>
+    <footer class="status" id="status">
       <span class="mode" id="mode">Sẵn sàng</span>
+      <span class="sp"></span>
       <span class="agg" id="agg" aria-live="polite"></span>
-      <div class="zoom">
-        <button id="zoom-out" data-ic="minus" data-s="14" aria-label="Thu nhỏ"></button>
-        <button id="zoom-val" title="Về 100%">100%</button>
-        <button id="zoom-in" data-ic="plus" data-s="14" aria-label="Phóng to"></button>
+      <div class="views" id="views" role="group" aria-label="Dạng xem">
+        <button data-view="normal" data-ic="normalView" data-s="15" title="Thường" aria-label="Thường" aria-pressed="true"></button>
+        <button data-view="layout" data-ic="pageView" data-s="15" title="Bố trí Trang" aria-label="Bố trí Trang" aria-pressed="false"></button>
+        <button data-view="break" data-ic="breakView" data-s="15" title="Xem trước Ngắt Trang" aria-label="Xem trước Ngắt Trang" aria-pressed="false"></button>
+      </div>
+      <div class="zoom" id="zoom">
+        <button id="zoom-out" data-ic="minus" data-s="12" aria-label="Thu nhỏ"></button>
+        <input type="range" id="zoom-slider" min="0" max="100" step="1" value="50" aria-label="Thu phóng">
+        <button id="zoom-in" data-ic="plus" data-s="12" aria-label="Phóng to"></button>
+        <button id="zoom-val" title="Thu phóng…">100%</button>
       </div>
     </footer>
+    <nav class="mob-cmd" id="mob-cmd" aria-label="Lệnh nhanh">
+      <button data-m="edit"><span data-ic="kbd" data-s="21"></span>Nhập</button>
+      <button data-m="fn"><span data-ic="sigma" data-s="21"></span>Hàm</button>
+      <button data-m="sort"><span data-ic="filter" data-s="21"></span>Lọc</button>
+      <button data-m="chart"><span data-ic="chart" data-s="21"></span>Biểu đồ</button>
+      <button data-m="more"><span data-ic="more" data-s="21"></span>Thêm</button>
+    </nav>
   </div>
+  <div id="backstage" hidden role="dialog" aria-modal="true" aria-label="Tệp"></div>
   <div id="toasts" class="toasts" aria-live="polite"></div>
   <div id="sr-cell" class="sr-only" aria-live="polite"></div>
   <noscript>ExcelLike cần bật JavaScript.</noscript>

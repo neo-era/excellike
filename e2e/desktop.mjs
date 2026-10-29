@@ -23,7 +23,8 @@ const saveAs = join(work, 'ban-moi.xlsx');
 const results = [];
 const check = (name, ok, info = '') => { results.push({ name, ok }); console.log(`${ok ? '✓' : '✗'} ${name}${info ? ' — ' + info : ''}`); };
 const py = (code, ...args) => execFileSync('python3', ['-c', code, ...args]).toString().trim();
-const env = { ...process.env, XL_USER_DATA: userData, XL_TEST_OPEN: csv, XL_TEST_SAVE: saveAs };
+const printOut = join(work, 'print.json'), pdfOut = join(work, 'xuat.pdf');
+const env = { ...process.env, XL_USER_DATA: userData, XL_TEST_OPEN: csv, XL_TEST_SAVE: saveAs, XL_TEST_PRINT: printOut, XL_TEST_PDF: pdfOut };
 
 const app = await electron.launch({ executablePath: electronBin, args: [ROOT, fx], env });
 const win = await app.firstWindow();
@@ -57,6 +58,40 @@ await win.waitForFunction(() => window.__xl.wb.sheetIds().some((i) => window.__x
 const c = await X(() => { const x = window.__xl, id = x.wb.sheetIds().find((i) => x.wb.sheetName(i) === 'vat-tu'); return id === undefined ? null : [x.wb.display(id, 1, 1).text, x.wb.value(id, 1, 2)]; });
 check('Ctrl+O mở CSV (dấu ; và số thập phân dấu phẩy) thành sheet mới', JSON.stringify(c) === '["Cáp đồng",12.5]', JSON.stringify(c));
 
+// 0.5: thanh tiêu đề tự vẽ như Excel (nút cửa sổ hệ thống nằm đè), màu theo chủ đề Office
+const wco = await X(() => ({ on: !!navigator.windowControlsOverlay?.visible, drag: getComputedStyle(document.querySelector('#titlebar')).getPropertyValue('-webkit-app-region') || getComputedStyle(document.querySelector('#titlebar')).getPropertyValue('app-region'), desk: document.documentElement.classList.contains('desktop') }));
+check('Cửa sổ không viền: thanh tiêu đề của app (kéo được) + nút cửa sổ hệ thống đè lên', wco.on && wco.drag === 'drag' && wco.desk, JSON.stringify(wco));
+await X(() => window.__xl.setTheme('black'));
+await win.waitForTimeout(300);
+const ov = await app.evaluate(() => global.__xlOverlay?.());
+check('Đổi chủ đề Đen → nút cửa sổ đổi màu theo', ov?.color === '#0a0a0a' && ov?.symbolColor === '#e6e6e6', JSON.stringify(ov));
+await win.screenshot({ path: OUT + 'v05-desktop-black.png' });
+await X(() => window.__xl.setTheme('colorful'));
+await win.waitForTimeout(200);
+check('Nhiều màu → thanh xanh #107C41', (await app.evaluate(() => global.__xlOverlay?.()))?.color === '#107c41');
+await win.screenshot({ path: OUT + 'v05-desktop.png' });
+// In: danh sách máy in của Windows, in thẳng không qua hộp thoại, xuất PDF thật
+const printers = await X(() => window.xlDesktop.printers());
+check('Lấy danh sách máy in của hệ thống', Array.isArray(printers), JSON.stringify(printers).slice(0, 120));
+await win.keyboard.press('Control+p');
+await win.waitForSelector('#backstage .bs-preview iframe');
+await win.waitForTimeout(500);
+const opts = await X(() => [...document.querySelectorAll('#bs-printer option')].map((o) => o.value));
+check('Máy in có mục “Lưu thành PDF”', opts.includes('__pdf'), opts.join(','));
+await win.fill('#bs-copies', '2');
+await win.click('#bs-print');
+await win.waitForFunction(() => document.querySelector('.toast')?.textContent.includes('Đã gửi'), null, { timeout: 15000 }).catch(() => {});
+const pj = existsSync(printOut) ? JSON.parse(execFileSync('cat', [printOut]).toString()) : null;
+check('In thẳng ra máy in (không hộp thoại), 2 bản, khổ giấy theo thiết lập', pj && pj.silent === true && pj.copies === 2 && pj.pages >= 1 && pj.pageSize === 'A4', JSON.stringify(pj));
+await win.selectOption('#bs-printer', '__pdf');
+await win.click('#bs-print');
+await win.waitForFunction(() => document.querySelector('.toast')?.textContent.includes('PDF'), null, { timeout: 20000 }).catch(() => {});
+await win.waitForTimeout(300);
+const pdfOk = existsSync(pdfOut) ? execFileSync('pdftotext', ['-layout', pdfOut, '-']).toString() : '';
+const pdfInfo = existsSync(pdfOut) ? execFileSync('pdfinfo', [pdfOut]).toString() : '';
+check('Xuất PDF thật (có chữ, đúng khổ A4)', /Cáp đồng|ĐÃ SỬA/.test(pdfOk) && /Page size:\s+59[45]/.test(pdfInfo), (pdfInfo.match(/Page.*/g) || []).join(' | '));
+await win.keyboard.press('Escape');
+
 // liên kết ngoài mở bằng trình duyệt, không mở cửa sổ mới trong app
 const nWin = app.windows().length;
 await X(() => window.open('https://example.com', '_blank'));
@@ -69,7 +104,7 @@ copyFileSync(join(ROOT, 'tests/fixtures/bieudo.xlsx'), fx2);
 const second = spawn(electronBin, [...(process.getuid?.() === 0 ? ['--no-sandbox'] : []), ROOT, fx2], { env, stdio: 'ignore' });
 const secondExit = await new Promise((r) => { second.on('exit', (code) => r(code)); setTimeout(() => r('timeout'), 15000); });
 await win.waitForFunction(() => window.__xl && window.__xl.fileName === 'bieu-do.xlsx', null, { timeout: 15000 }).catch(() => {});
-const charts = await X(() => (window.__xl ? window.__xl.wb.meta(window.__xl.grid.sheet).charts.length : -1));
+const charts = await X(() => (window.__xl ? window.__xl.wb.sheetIds().reduce((a, i) => a + window.__xl.wb.meta(i).charts.length, 0) : -1));
 check('Mở tệp thứ hai: chuyển vào cửa sổ đang chạy, có biểu đồ', secondExit === 0 && charts > 0, `exit=${secondExit} charts=${charts}`);
 check('Chỉ một cửa sổ', app.windows().length === 1);
 
@@ -78,6 +113,14 @@ await X(() => { const x = window.__xl; x.wb.setInput(x.grid.sheet, 31, 0, 'lần
 const both = await X(() => Promise.all([window.__xl.saveXlsx(false), window.__xl.saveXlsx(false), window.__xl.saveXlsx(false)]));
 const okFile = py('import openpyxl,sys;print(openpyxl.load_workbook(sys.argv[1]).worksheets[0]["A32"].value)', join(work, 'bieu-do.xlsx'));
 check('Lưu dồn dập: chỉ ghi một lần, tệp hợp lệ', both.every(Boolean) && okFile === 'lần 2', `${JSON.stringify(both)} ${okFile}`);
+// Tự động lưu (công tắc trên thanh tiêu đề): sửa ô → tự ghi vào tệp đang mở
+await win.click('#autosave');
+check('Bật Tự động lưu khi đang mở tệp .xlsx', (await win.getAttribute('#autosave', 'aria-checked')) === 'true');
+await X(() => { const x = window.__xl; x.wb.setInput(x.grid.sheet, 32, 0, 'tự lưu'); });
+await win.waitForTimeout(4500);
+const auto = py('import openpyxl,sys;print(openpyxl.load_workbook(sys.argv[1]).worksheets[0]["A33"].value)', join(work, 'bieu-do.xlsx'));
+check('Tự động lưu ghi thay đổi vào tệp sau vài giây', auto === 'tự lưu', auto);
+await win.click('#autosave');
 // trang không tự ghi được vào đường dẫn lạ
 const evil = join(work, 'khong-duoc-ghi.xlsx');
 await X((p) => window.xlDesktop.save({ path: p, name: 'x.xlsx', kind: 'xlsx', data: new Uint8Array([1, 2, 3]) }), evil);

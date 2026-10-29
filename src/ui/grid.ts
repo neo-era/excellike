@@ -1,5 +1,6 @@
 import { MAX_COLS, MAX_ROWS, type Range, colName, normRange, toA1, rangeToA1, inRange } from '../core/address';
 import type { Workbook, Style, Border } from '../core/workbook';
+import { normPrint, paginate } from '../core/paginate';
 
 export interface Selection { ar: number; ac: number; fr: number; fc: number }
 export interface EditHost {
@@ -19,8 +20,12 @@ type Drag =
   | { kind: 'fill'; src: Range; tgt: Range }
   | { kind: 'point'; r0: number; c0: number };
 
-const FONT = "'Be Vietnam Pro', system-ui, 'Segoe UI', sans-serif";
-const HDR_H = 24;
+// phông ô và phông tiêu đề lấy từ CSS (--font-cell: Aptos Narrow/Calibri; --font-ui: Segoe UI)
+let FONT = "'Aptos Narrow', Calibri, 'Segoe UI', sans-serif";
+let UIFONT = "'Segoe UI', system-ui, sans-serif";
+const HDR_H = 20;
+/** cỡ chữ pt → px (96 dpi) như Excel: 11 pt = 14,67 px */
+export const ptPx = (fs?: number) => ((fs ?? 11) * 4) / 3;
 const ROW_STEP = 200, COL_STEP = 30;
 const MAX_SCROLL_PX = 15_000_000;
 
@@ -43,7 +48,7 @@ export class Grid {
   private lastTap = { t: 0, r: -1, c: -1 };
   private longPress = 0;
   onSelect: (s: Selection) => void = () => {};
-  onContext: (x: number, y: number) => void = () => {};
+  onContext: (x: number, y: number, zone: 'cell' | 'row' | 'col') => void = () => {};
   onDraw: () => void = () => {};
   edit!: EditHost;
 
@@ -83,24 +88,35 @@ export class Grid {
   // ---------- màu theo theme ----------
   readColors() {
     const cs = getComputedStyle(this.host);
-    for (const k of ['cell', 'line', 'hdr', 'hdr-fg', 'hdr-on', 'accent', 'sel-bg', 'fg', 'muted', 'freeze', 'hdr-line', 'err'])
+    this.fontCache.clear(); this.mCache?.clear();
+    for (const k of ['cell', 'line', 'hdr', 'hdr-fg', 'hdr-on', 'hdr-on-fg', 'accent', 'sel-bg', 'fg', 'muted', 'freeze', 'hdr-line', 'err'])
       this.colors[k] = cs.getPropertyValue('--' + k).trim() || '#888';
+    FONT = cs.getPropertyValue('--font-cell').trim() || FONT;
+    UIFONT = cs.getPropertyValue('--font-ui').trim() || UIFONT;
     this.invalidate();
   }
 
   // ---------- hình học ----------
   private get m() { return this.wb.meta(this.sheet); }
   private hdrCache = { key: '', w: 0 };
+  /** Hiện đầu đề hàng/cột (Xem ▸ Đầu đề) */
+  headings = true;
+  /** Hiện Công thức (Ctrl+`) */
+  showFormulas = false;
+  /** Dạng xem: Thường / Xem trước Ngắt Trang */
+  view: 'normal' | 'break' = 'normal';
   get hdrW() {
+    if (!this.headings) return 0;
+    if (this.frame) return this.frame.hw;
     const k = this.scroller.scrollTop + '|' + this.zoom + '|' + this.sheet + '|' + this.height;
     if (this.hdrCache.key === k) return this.hdrCache.w;
     const z = this.zoom;
     const lastRow = this.m.rowH.indexAt((this.scroller.scrollTop + this.height) / z + this.m.rowH.offset(this.fz.rows));
     const digits = String(Math.max(lastRow + 1, 100)).length;
-    this.hdrCache = { key: k, w: Math.round((12 + digits * 7.5) * z) };
+    this.hdrCache = { key: k, w: Math.round((10 + digits * 7) * z) };
     return this.hdrCache.w;
   }
-  get hdrH() { return Math.round(HDR_H * this.zoom); }
+  get hdrH() { return this.headings ? Math.round(HDR_H * this.zoom) : 0; }
   colX(c: number) { return this.m.colW.offset(c) * this.zoom; }
   rowY(r: number) { return this.m.rowH.offset(r) * this.zoom; }
   colWpx(c: number) { return this.m.colW.get(c) * this.zoom; }
@@ -108,15 +124,17 @@ export class Grid {
   private get fz() { return this.m.freeze; }
   private get frozenW() { return this.colX(this.fz.cols); }
   private get frozenH() { return this.rowY(this.fz.rows); }
-  get width() { return this.scroller.clientWidth; }
-  get height() { return this.scroller.clientHeight; }
+  /** Giá trị đọc một lần cho mỗi khung hình (tránh đọc lại bố cục DOM cho từng ô) */
+  private frame: { left: number; top: number; w: number; h: number; hw: number } | null = null;
+  get width() { return this.frame?.w ?? this.scroller.clientWidth; }
+  get height() { return this.frame?.h ?? this.scroller.clientHeight; }
 
   /** Toạ độ màn hình (trong lưới) của cạnh trái cột c */
   sx(c: number) {
-    return c < this.fz.cols ? this.hdrW + this.colX(c) : this.hdrW + this.frozenW + this.colX(c) - this.colX(this.fz.cols) - this.scroller.scrollLeft;
+    return c < this.fz.cols ? this.hdrW + this.colX(c) : this.hdrW + this.frozenW + this.colX(c) - this.colX(this.fz.cols) - (this.frame?.left ?? this.scroller.scrollLeft);
   }
   sy(r: number) {
-    return r < this.fz.rows ? this.hdrH + this.rowY(r) : this.hdrH + this.frozenH + this.rowY(r) - this.rowY(this.fz.rows) - this.scroller.scrollTop;
+    return r < this.fz.rows ? this.hdrH + this.rowY(r) : this.hdrH + this.frozenH + this.rowY(r) - this.rowY(this.fz.rows) - (this.frame?.top ?? this.scroller.scrollTop);
   }
   colAt(x: number) {
     const z = this.zoom;
@@ -288,6 +306,13 @@ export class Grid {
     requestAnimationFrame(() => { this.dirty = false; this.draw(); });
   }
   draw() {
+    this.frame = null;
+    const hw = this.hdrW;
+    this.frame = { left: this.scroller.scrollLeft, top: this.scroller.scrollTop, w: this.scroller.clientWidth, h: this.scroller.clientHeight, hw };
+    try { this.draw0(); } finally { this.frame = null; }
+  }
+  private draw0() {
+    this.lastFont = '';
     const ctx = this.ctx, dpr = window.devicePixelRatio || 1, W = this.width, H = this.height, C = this.colors;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.fillStyle = C.cell;
@@ -306,6 +331,7 @@ export class Grid {
       if (!rows.length || !cols.length || w <= 0 || h <= 0) continue;
       ctx.save(); ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
       this.drawCells(rows, cols, x + w);
+      if (this.view === 'break') this.drawBreaks(rows, cols);
       this.drawSelection();
       ctx.restore();
     }
@@ -320,17 +346,76 @@ export class Grid {
     this.onDraw();
   }
 
+  // ---------- Xem trước Ngắt Trang ----------
+  private brk: { key: string; pages: { r1: number; r2: number; c1: number; c2: number; n: number }[]; area: Range | null; manR: Set<number>; manC: Set<number> } | null = null;
+  private breakLayout() {
+    const key = this.sheet + ':' + this.wb.ver;
+    if (this.brk?.key === key) return this.brk;
+    const L = paginate(this.wb, this.sheet, normPrint(this.wb.meta(this.sheet).print));
+    const pages = L.pages.map((p, i) => ({ r1: p.rows[0], r2: p.rows[p.rows.length - 1], c1: p.cols[0], c2: p.cols[p.cols.length - 1], n: i + 1 }));
+    const b = this.wb.meta(this.sheet).breaks;
+    this.brk = { key, pages, area: L.area, manR: new Set(b.rows), manC: new Set(b.cols) };
+    return this.brk;
+  }
+  private drawBreaks(rows: number[], cols: number[]) {
+    const ctx = this.ctx, z = this.zoom, W = this.width, H = this.height;
+    const L = this.breakLayout();
+    void rows; void cols;
+    // ngoài vùng in: tô xám như Excel
+    ctx.save();
+    ctx.fillStyle = 'rgba(128,128,128,.28)';
+    if (!L.area) { ctx.fillRect(0, 0, W, H); ctx.restore(); return; }
+    const ax1 = this.sx(L.area.c1), ay1 = this.sy(L.area.r1), ax2 = this.sx(L.area.c2) + this.colWpx(L.area.c2), ay2 = this.sy(L.area.r2) + this.rowHpx(L.area.r2);
+    ctx.beginPath(); ctx.rect(0, 0, W, H); ctx.rect(ax1, ay1, ax2 - ax1, ay2 - ay1); ctx.fill('evenodd');
+    // số trang mờ ở giữa mỗi trang
+    ctx.font = `600 ${Math.round(44 * z)}px ${UIFONT}`;
+    this.lastFont = '';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = 'rgba(120,120,120,.35)';
+    for (const p of L.pages) {
+      const x1 = this.sx(p.c1), y1 = this.sy(p.r1), x2 = this.sx(p.c2) + this.colWpx(p.c2), y2 = this.sy(p.r2) + this.rowHpx(p.r2);
+      if (x2 < 0 || y2 < 0 || x1 > W || y1 > H) continue;
+      ctx.fillText('Trang ' + p.n, (x1 + x2) / 2, (y1 + y2) / 2);
+    }
+    // đường ngắt: thủ công/biên vùng in nét liền, tự động nét đứt (màu xanh như Excel)
+    ctx.strokeStyle = '#1f5fbf'; ctx.lineWidth = 2;
+    ctx.strokeRect(ax1 + 1, ay1 + 1, ax2 - ax1 - 2, ay2 - ay1 - 2);
+    const seenR = new Set<number>(), seenC = new Set<number>();
+    for (const p of L.pages) {
+      if (p.r1 !== L.area.r1 && !seenR.has(p.r1)) { seenR.add(p.r1); const y = Math.round(this.sy(p.r1)); ctx.setLineDash(L.manR.has(p.r1) ? [] : [6, 4]); ctx.beginPath(); ctx.moveTo(ax1, y); ctx.lineTo(ax2, y); ctx.stroke(); }
+      if (p.c1 !== L.area.c1 && !seenC.has(p.c1)) { seenC.add(p.c1); const x = Math.round(this.sx(p.c1)); ctx.setLineDash(L.manC.has(p.c1) ? [] : [6, 4]); ctx.beginPath(); ctx.moveTo(x, ay1); ctx.lineTo(x, ay2); ctx.stroke(); }
+    }
+    ctx.restore();
+  }
+
   /** Kiểu hiệu lực của ô: định dạng ô + định dạng có điều kiện */
   private eff(r: number, c: number) {
-    const d = this.wb.display(this.sheet, r, c);
+    let d = this.wb.display(this.sheet, r, c);
+    if (this.showFormulas) { const t = this.wb.rawText(this.sheet, r, c); if (t.startsWith('=')) d = { ...d, text: t, align: 'l', value: t }; }
     const cf = this.wb.cfStyle(this.sheet, r, c);
     const st = cf.fg || cf.bg || cf.b || cf.i ? { ...d.style, ...(cf.fg ? { fg: cf.fg } : {}), ...(cf.bg ? { bg: cf.bg } : {}), ...(cf.b ? { b: true } : {}), ...(cf.i ? { i: true } : {}) } : d.style;
     return { d, st, bar: cf.bar };
   }
+  private lastFont = '';
+  private mCache = new Map<string, number>();
+  /** Đo độ rộng chữ với phông đang đặt (có bộ nhớ đệm) */
+  private measure(t: string) {
+    const k = this.lastFont + '\u0001' + t;
+    let w = this.mCache.get(k);
+    if (w === undefined) { w = this.ctx.measureText(t).width; if (this.mCache.size > 20000) this.mCache.clear(); this.mCache.set(k, w); }
+    return w;
+  }
+  private fontCache = new Map<string, { px: number; css: string }>();
   private fontOf(st: Style) {
-    const px = (st.fs ? (st.fs * 13) / 11 : 13) * this.zoom;
+    const k = (st.fs ?? 11) + '|' + (st.b ? 1 : 0) + (st.i ? 1 : 0) + '|' + (st.fn ?? '') + '|' + this.zoom;
+    let f = this.fontCache.get(k);
+    if (!f) { f = this.fontOf0(st); if (this.fontCache.size > 500) this.fontCache.clear(); this.fontCache.set(k, f); }
+    return f;
+  }
+  private fontOf0(st: Style) {
+    const px = ptPx(st.fs) * this.zoom;
     const fam = st.fn ? `"${st.fn.replace(/"/g, '')}", ${FONT}` : FONT;
-    return { px, css: `${st.i ? 'italic ' : ''}${st.b ? 600 : 400} ${px}px ${fam}` };
+    return { px, css: `${st.i ? 'italic ' : ''}${st.b ? 700 : 400} ${px}px ${fam}` };
   }
   /** Hình chữ nhật của ô (gộp thì cả vùng gộp) */
   cellRectM(r: number, c: number) {
@@ -473,9 +558,10 @@ export class Grid {
       const d = this.wb.display(this.sheet, r, c);
       if (!d.text) continue;
       const st = d.style;
-      const px = st.fs ? (st.fs * 13) / 11 : 13;
-      if (!st.wr) { need = Math.max(need, px + 10); continue; }
-      ctx.font = `${st.i ? 'italic ' : ''}${st.b ? 600 : 400} ${px}px ${st.fn ? `"${st.fn}", ` : ''}${FONT}`;
+      const px = ptPx(st.fs);
+      if (!st.wr) { need = Math.max(need, Math.ceil(px * 1.36)); continue; }
+      ctx.font = `${st.i ? 'italic ' : ''}${st.b ? 700 : 400} ${px}px ${st.fn ? `"${st.fn}", ` : ''}${FONT}`;
+      this.lastFont = '';
       const m = this.wb.mergeAt(this.sheet, r, c);
       const w = m ? this.m.colW.offset(m.c2 + 1) - this.m.colW.offset(m.c1) : this.m.colW.get(c);
       let lines = 0;
@@ -487,7 +573,7 @@ export class Grid {
           if (ctx.measureText(t).width > w - 8 && line.trim()) { lines++; line = word.trimStart(); } else line = t;
         }
       }
-      need = Math.max(need, Math.ceil(lines * px * 1.25 + 8));
+      need = Math.max(need, Math.ceil(lines * px * 1.22 + 4));
     }
     return need;
   }
@@ -504,7 +590,8 @@ export class Grid {
     const { d, st } = e;
     if (w <= 0) return;
     const f = this.fontOf(st);
-    ctx.font = f.css;
+    // đặt phông chỉ khi đổi (gán ctx.font tốn thời gian phân tích chuỗi)
+    if (this.lastFont !== f.css) { ctx.font = f.css; this.lastFont = f.css; }
     const pad = 4 * z;
     const color = d.error ? C.err : st.fg || (st.bg ? autoText(st.bg) : C.fg);
     const al = d.align;
@@ -537,7 +624,7 @@ export class Grid {
       return;
     }
     let text = d.text.replace(/\n/g, ' ');
-    let tw = ctx.measureText(text).width;
+    let tw = this.measure(text);
     let clipW = w;
     if (isNum && tw > w - 2 * pad) {
       text = '#'.repeat(Math.max(1, Math.floor((w - 2 * pad) / ctx.measureText('#').width)));
@@ -629,7 +716,8 @@ export class Grid {
     ctx.fillStyle = C.hdr;
     ctx.fillRect(0, 0, W, hh);
     ctx.fillRect(0, 0, hw, H);
-    ctx.font = `500 ${11.5 * z}px ${FONT}`;
+    ctx.font = `400 ${11 * z}px ${UIFONT}`;
+    this.lastFont = '';
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'center';
     ctx.lineWidth = 1;
@@ -640,7 +728,7 @@ export class Grid {
       if (w <= 0) continue;
       const on = c >= g.c1 && c <= g.c2;
       if (on) { ctx.fillStyle = full.cols ? C.accent : C['hdr-on']; ctx.fillRect(x, 0, w, hh); }
-      ctx.fillStyle = on ? (full.cols ? C.cell : C.accent) : C['hdr-fg'];
+      ctx.fillStyle = on ? (full.cols ? C.cell : C['hdr-on-fg']) : C['hdr-fg'];
       ctx.fillText(colName(c), x + w / 2, hh / 2 + 0.5);
       ctx.strokeStyle = C['hdr-line'];
       ctx.beginPath(); ctx.moveTo(Math.round(x + w) - 0.5, 0); ctx.lineTo(Math.round(x + w) - 0.5, hh); ctx.stroke();
@@ -654,7 +742,7 @@ export class Grid {
       if (h <= 0) continue;
       const on = r >= g.r1 && r <= g.r2;
       if (on) { ctx.fillStyle = full.rows ? C.accent : C['hdr-on']; ctx.fillRect(0, y, hw, h); }
-      ctx.fillStyle = on ? (full.rows ? C.cell : C.accent) : C['hdr-fg'];
+      ctx.fillStyle = on ? (full.rows ? C.cell : C['hdr-on-fg']) : C['hdr-fg'];
       ctx.fillText(String(r + 1), hw / 2, y + h / 2 + 0.5);
       ctx.strokeStyle = C['hdr-line'];
       ctx.beginPath(); ctx.moveTo(0, Math.round(y + h) - 0.5); ctx.lineTo(hw, Math.round(y + h) - 0.5); ctx.stroke();
@@ -892,22 +980,37 @@ export class Grid {
     if (h.zone === 'resizeC') { this.autoFit(h.c); return; }
     if (h.zone === 'cell' && !this.edit.isEditing()) this.edit.begin(null, 'edit');
   }
-  autoFit(c: number) {
+  autoFit(c: number) { this.wb.setColWidth(this.sheet, c, this.fitWidth(c)); }
+  /** Độ rộng vừa nội dung cột (px ở 100%) */
+  fitWidth(c: number): number {
     const ctx = this.ctx, u = this.wb.used(this.sheet);
     let w = 0;
     for (let r = 0; r < Math.min(u.rows, 5000); r++) {
+      if (this.m.rowH.get(r) <= 0) continue;
       const d = this.wb.display(this.sheet, r, c);
-      if (!d.text) continue;
-      ctx.font = `${d.style.i ? 'italic ' : ''}${d.style.b ? 600 : 400} 13px ${FONT}`;
-      w = Math.max(w, ctx.measureText(d.text).width);
+      if (!d.text || this.wb.mergeAt(this.sheet, r, c)) continue;
+      const st = d.style;
+      ctx.font = `${st.i ? 'italic ' : ''}${st.b ? 700 : 400} ${ptPx(st.fs)}px ${st.fn ? `"${st.fn}", ` : ''}${FONT}`;
+      this.lastFont = '';
+      w = Math.max(w, ctx.measureText(d.text).width + (st.ind ?? 0) * 9);
     }
-    this.wb.setColWidth(this.sheet, c, w ? Math.ceil(w + 12) : 88);
+    return w ? Math.ceil(w + 10) : this.m.colW.def;
   }
   private contextAt(cx: number, cy: number) {
     const { x, y } = this.local({ clientX: cx, clientY: cy });
     const h = this.hit(x, y);
+    const g = this.range;
+    // như Excel: chuột phải tiêu đề hàng/cột chọn cả hàng/cột (nếu chưa nằm trong vùng chọn)
+    if (h.zone === 'rowh') {
+      if (!(g.c1 === 0 && g.c2 === MAX_COLS - 1 && h.r >= g.r1 && h.r <= g.r2)) this.selectRange({ r1: h.r, c1: 0, r2: h.r, c2: MAX_COLS - 1 });
+      this.onContext(cx, cy, 'row'); return;
+    }
+    if (h.zone === 'colh') {
+      if (!(g.r1 === 0 && g.r2 === MAX_ROWS - 1 && h.c >= g.c1 && h.c <= g.c2)) this.selectRange({ r1: 0, c1: h.c, r2: MAX_ROWS - 1, c2: h.c });
+      this.onContext(cx, cy, 'col'); return;
+    }
     if (h.zone === 'cell' && !inRange(this.range, h.r, h.c)) this.select(h.r, h.c);
-    this.onContext(cx, cy);
+    this.onContext(cx, cy, 'cell');
   }
 }
 

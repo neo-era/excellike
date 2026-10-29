@@ -37,8 +37,8 @@ const menu = (page, label) => page.click(`.menu .mi:has-text("${label}")`);
 // ---------------- Mở tệp .xlsx ----------------
 {
   const { ctx, page } = await newPage();
-  await tab(page, 'Tệp');
-  const [fc] = await Promise.all([page.waitForEvent('filechooser'), btn(page, 'xlsx-open')]);
+  await tab(page, 'Tệp'); await page.click('#backstage [data-bs="open"]');
+  const [fc] = await Promise.all([page.waitForEvent('filechooser'), page.click('#backstage [data-a="browse"]')]);
   await fc.setFiles(FIX);
   await page.waitForEvent('load');
   await page.waitForFunction(() => window.__xl);
@@ -74,8 +74,8 @@ const menu = (page, label) => page.click(`.menu .mi:has-text("${label}")`);
   check('Nhập sai danh sách bị chặn và báo lỗi', stillEditing && /danh sách/i.test(toast) && (await disp(page, 2, 2)) === 'm', toast);
 
   // Lưu .xlsx (tải xuống) rồi kiểm tra bằng openpyxl
-  await tab(page, 'Tệp');
-  const [dl] = await Promise.all([page.waitForEvent('download'), btn(page, 'xlsx-save')]);
+  await tab(page, 'Tệp'); await page.click('#backstage [data-bs="saveas"]');
+  const [dl] = await Promise.all([page.waitForEvent('download'), page.click('#backstage [data-a="xlsx"]')]);
   const out = OUT + 'luu-lai.xlsx';
   await dl.saveAs(out);
   const py = execFileSync('python3', ['-c', `
@@ -100,7 +100,7 @@ print(json.dumps({'sheets':wb.sheetnames,'F2':ws['F2'].value,'H3':ws['H3'].value
   });
   // Viền tất cả
   await goto(page, 'A1:D5');
-  await btn(page, 'border'); await menu(page, 'Tất cả viền');
+  await page.click('#ribbon [data-id="border"] .dd'); await menu(page, 'Tất cả Viền');
   check('Kẻ viền tất cả', await X(page, () => Object.keys(window.__xl.wb.style(window.__xl.grid.sheet, 2, 2).bd ?? {}).length === 4));
   // Xuống dòng cột A
   await goto(page, 'A2:A5');
@@ -111,7 +111,7 @@ print(json.dumps({'sheets':wb.sheetnames,'F2':ws['F2'].value,'H3':ws['H3'].value
   await page.evaluate(() => window.__xl.wb.insertRows(window.__xl.grid.sheet, 0, 1));
   await page.evaluate(() => window.__xl.wb.setInput(window.__xl.grid.sheet, 0, 0, 'BẢNG DỰ TOÁN VẬT TƯ CHIẾU SÁNG'));
   await goto(page, 'A1:D1');
-  await btn(page, 'merge'); await menu(page, 'Gộp và căn giữa');
+  await page.click('#ribbon [data-id="merge"] .dd'); await menu(page, 'Gộp & Căn giữa');
   check('Gộp và căn giữa', await X(page, () => { const x = window.__xl; const m = x.wb.mergeAt(x.grid.sheet, 0, 3); return !!m && x.wb.style(x.grid.sheet, 0, 0).al === 'c'; }));
   // Chọn ô trong vùng gộp → nhảy về ô đầu, mũi tên xuống đi ra khỏi vùng
   await goto(page, 'C1');
@@ -143,9 +143,8 @@ print(json.dumps({'sheets':wb.sheetnames,'F2':ws['F2'].value,'H3':ws['H3'].value
   check('Đặt kiểm tra dữ liệu qua hộp thoại', await X(page, () => window.__xl.wb.validate(window.__xl.grid.sheet, 3, 2, '150') !== null));
   await page.screenshot({ path: OUT + 'd2-format.png' });
   // Xuất CSV
-  await tab(page, 'Tệp');
-  await btn(page, 'csv');
-  const [dl] = await Promise.all([page.waitForEvent('download'), menu(page, 'chấm phẩy')]);
+  await tab(page, 'Tệp'); await page.click('#backstage [data-bs="saveas"]');
+  const [dl] = await Promise.all([page.waitForEvent('download'), page.click('#backstage [data-a="csv1"]')]);
   const csvPath = OUT + 'xuat.csv';
   await dl.saveAs(csvPath);
   const csv = readFileSync(csvPath, 'utf8');
@@ -167,7 +166,7 @@ for (const [name, vp] of [['doc', { width: 390, height: 844 }], ['ngang', { widt
   const { ctx, page } = await newPage({ viewport: vp, hasTouch: true, isMobile: true });
   await X(page, () => { const x = window.__xl, s = x.grid.sheet; [['Loại', 'SL'], ['Vật tư', '1'], ['Thiết bị', '2']].forEach((row, r) => row.forEach((v, c) => x.wb.setInput(s, r, c, v))); x.toggleFilter(); });
   await page.waitForTimeout(200);
-  await tab(page, 'Dữ liệu');
+  await page.click('#tabsel'); await page.click('.menu .mi:has-text("Dữ liệu")');
   await btn(page, 'd-sort');
   await page.waitForSelector('.dlg');
   const fits = await X(page, () => { const r = document.querySelector('.dlg').getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.bottom <= innerHeight + 1; });
@@ -179,7 +178,7 @@ for (const [name, vp] of [['doc', { width: 390, height: 844 }], ['ngang', { widt
 }
 
 await browser.close();
-process.kill(-srv.pid);
+try { process.kill(-srv.pid); } catch { /* đã dừng */ }
 const fail = results.filter((r) => !r.ok);
 console.log(`\n${results.length - fail.length}/${results.length} đạt`);
 process.exit(fail.length ? 1 : 0);

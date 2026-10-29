@@ -21,11 +21,23 @@ export interface Style {
   fn?: string; fs?: number;          // phông chữ, cỡ chữ (pt)
   wr?: boolean; va?: 't' | 'm' | 'b'; // xuống dòng, căn dọc
   bd?: { t?: Border; r?: Border; b?: Border; l?: Border };
+  ind?: number;                       // thụt lề (bậc)
 }
 export interface FilterCond { values?: string[]; text?: string }
 export interface SheetFilter { range: Range; conds: Record<number, FilterCond> }
 export interface PivotDef extends PivotSpec { id?: string; src: Ref; at: { r: number; c: number }; area?: Range | null }
-export interface PrintSetup { orientation: 'portrait' | 'landscape'; paper: 'A4' | 'A3' | 'Letter'; fitWidth: boolean; titleRows: number; gridlines: boolean; margins?: 'normal' | 'narrow' | 'wide'; area?: Range | null }
+export type PaperName = 'A3' | 'A4' | 'A5' | 'B4' | 'B5' | 'Letter' | 'Legal' | 'Tabloid';
+/** Lề trang (inch, như Excel): trên, dưới, trái, phải, đầu trang, chân trang */
+export interface Margins { t: number; b: number; l: number; r: number; h: number; f: number }
+export interface PrintSetup {
+  orientation: 'portrait' | 'landscape'; paper: PaperName; gridlines: boolean;
+  fitWidth?: boolean; titleRows?: number;           // dạng cũ (0.3–0.4)
+  margins?: 'normal' | 'narrow' | 'wide' | 'custom'; mg?: Margins; area?: Range | null;
+  scale?: number; fit?: { w: number; h: number } | null;   // % hoặc vừa w × h trang (0 = tự động)
+  titleRowRange?: [number, number] | null; titleColRange?: [number, number] | null;
+  headings?: boolean; center?: { h?: boolean; v?: boolean }; firstPage?: number | null; order?: 'down' | 'over';
+  header?: string; footer?: string;                 // mã Excel &L &C &R &P &N…
+}
 export interface SheetMeta {
   styles: Map<string, Style>;
   colW: AxisSizes;
@@ -38,6 +50,9 @@ export interface SheetMeta {
   charts: Chart[];
   pivots: PivotDef[];
   print: PrintSetup | null;
+  breaks: { rows: number[]; cols: number[] };   // ngắt trang thủ công (trước hàng/cột)
+  tabColor?: string;
+  hidden?: boolean;                              // trang tính ẩn
 }
 export type BorderKind = 'all' | 'outer' | 'none' | 'top' | 'bottom' | 'left' | 'right' | 'inner';
 export interface SortKey { col: number; desc?: boolean }
@@ -46,8 +61,9 @@ interface Entry { hf: boolean; undo?: () => void; redo?: () => void; parts?: Ent
 interface Clip { sheet: number; range: Range; cut: boolean }
 export interface Changed { r: number; c: number }
 
-export const DEFAULT_COL_W = 88;
-export const DEFAULT_ROW_H = 24;
+const NO_STYLE: Style = Object.freeze({}) as Style;
+export const DEFAULT_COL_W = 64;   // 8,43 ký tự như Excel
+export const DEFAULT_ROW_H = 20;   // 15 pt
 const HISTORY = 300;
 
 export const HF_CONFIG: Partial<ConfigParams> = {
@@ -237,7 +253,17 @@ export class Workbook {
 
   // ---------- sheet ----------
   /** Sheet người dùng thấy (bỏ sheet đệm giá trị của liên kết ngoài “[n]Tên”) */
-  sheetIds(): number[] { return this.hf.getSheetNames().filter((n) => !isExtName(n)).map((n) => this.hf.getSheetId(n)!); }
+  sheetIds(): number[] {
+    const ids = this.hf.getSheetNames().filter((n) => !isExtName(n)).map((n) => this.hf.getSheetId(n)!);
+    if (!this.order.length) return ids;
+    const pos = new Map(this.order.map((id, i) => [id, i]));
+    return ids.map((id, i) => [id, pos.get(id) ?? this.order.length + i] as const).sort((a, b) => a[1] - b[1]).map((x) => x[0]);
+  }
+  /** Thứ tự sheet khi đã di chuyển (rỗng = theo thứ tự tạo) */
+  private order: number[] = [];
+  /** Các trang tính đang hiện (thẻ sheet) */
+  visibleSheetIds(): number[] { return this.sheetIds().filter((id) => !this.meta(id).hidden); }
+  isSheetHidden(id: number) { return !!this.meta(id).hidden; }
   /** Mọi sheet trong bộ tính, kể cả sheet đệm liên kết ngoài */
   allSheetIds(): number[] { return this.hf.getSheetNames().map((n) => this.hf.getSheetId(n)!); }
   /** Liên kết sang tệp khác (giữ nguyên phần XML để ghi lại khi lưu .xlsx) */
@@ -259,17 +285,26 @@ export class Workbook {
     }
     return t;
   }
-  addSheet(name?: string): number {
+  /** Thêm trang tính (index: vị trí trong thứ tự; bỏ trống = cuối) — một bước hoàn tác */
+  addSheet(name?: string, index?: number): number {
     let n = name;
     if (!n) { let i = this.sheetIds().length + 1; while (this.hasName('Sheet' + i)) i++; n = 'Sheet' + i; }
     n = this.checkName(n);
     let id = -1;
     let old: MetaSnap | null = null;
     const fresh = snapMeta(newMeta());
+    const before = this.sheetIds(), oOrder = [...this.order];
+    let nOrder: number[] = [];
     this.record(() => { this.hf.addSheet(n); id = this.hf.getSheetId(n)!; }, {
-      undo: () => old && restoreMeta(this.meta(id), old),
-      redo: () => restoreMeta(this.meta(id), fresh),
-    }, { post: () => { const m = this.meta(id); old = snapMeta(m); restoreMeta(m, fresh); } });
+      undo: () => { if (old) restoreMeta(this.meta(id), old); this.order = oOrder; },
+      redo: () => { restoreMeta(this.meta(id), fresh); this.order = nOrder; },
+    }, { post: () => {
+      const m = this.meta(id); old = snapMeta(m); restoreMeta(m, fresh);
+      // mã sheet có thể được HyperFormula dùng lại: luôn đặt rõ vị trí trong thứ tự
+      const ids = before.filter((x) => x !== id);
+      ids.splice(index === undefined ? ids.length : Math.max(0, Math.min(index, ids.length)), 0, id);
+      this.order = nOrder = ids;
+    } });
     return id;
   }
   private hasName(n: string) { return this.sheetIds().some((id) => this.sheetName(id).toLowerCase() === n.toLowerCase()); }
@@ -283,11 +318,156 @@ export class Workbook {
     const snap = snapMeta(this.meta(id));
     const xBefore = this.snapRefs();
     let xAfter = xBefore;
+    const oOrder = [...this.order], nOrder = this.sheetIds().filter((x) => x !== id);
     this.record(() => this.hf.removeSheet(id), {
-      undo: () => { restoreMeta(this.meta(id), snap); this.restoreRefs(xBefore); },
-      redo: () => this.restoreRefs(xAfter),
-    }, { post: () => { this.dropRefsTo(id); xAfter = this.snapRefs(); } });
+      undo: () => { restoreMeta(this.meta(id), snap); this.restoreRefs(xBefore); this.order = oOrder; },
+      redo: () => { this.restoreRefs(xAfter); this.order = nOrder; },
+    }, { post: () => { this.dropRefsTo(id); xAfter = this.snapRefs(); this.order = nOrder; } });
     if (this.clip?.sheet === id) this.clip = null;
+  }
+
+  // ---------- thuộc tính trang tính: màu thẻ, ẩn, thứ tự, sao chép ----------
+  private metaProp<K extends 'tabColor' | 'hidden'>(id: number, k: K, v: SheetMeta[K]) {
+    const m = this.meta(id), o = m[k];
+    if (o === v) return;
+    m[k] = v;
+    this.record(null, { undo: () => { this.meta(id)[k] = o; }, redo: () => { this.meta(id)[k] = v; } });
+  }
+  setTabColor(id: number, color: string | undefined) { this.metaProp(id, 'tabColor', color || undefined); }
+  setSheetHidden(id: number, hide: boolean) {
+    if (hide && this.visibleSheetIds().filter((x) => x !== id).length === 0) throw new Error('Sổ làm việc phải còn ít nhất một trang tính hiển thị.');
+    this.metaProp(id, 'hidden', hide || undefined);
+  }
+  moveSheet(id: number, index: number) {
+    const before = this.sheetIds();
+    const after = before.filter((x) => x !== id);
+    after.splice(Math.max(0, Math.min(index, after.length)), 0, id);
+    if (after.join() === before.join()) return;
+    const o = [...this.order];
+    this.order = after;
+    this.record(null, { undo: () => { this.order = o; }, redo: () => { this.order = after; } });
+  }
+  /** Tạo bản sao (Di chuyển hoặc Sao chép… ▸ Tạo bản sao) */
+  copySheet(id: number, index?: number): number {
+    const base = this.sheetName(id).replace(/ \(\d+\)$/, '');
+    let k = 2, n = '';
+    do { const suf = ` (${k++})`; n = base.slice(0, 31 - suf.length) + suf; } while (this.hasName(n));
+    const cells = this.hf.getSheetSerialized(id);
+    const src = snapMeta(this.meta(id));
+    let nid = -1;
+    const oOrder = [...this.order];
+    let nOrder: number[] = [];
+    let fresh: MetaSnap | null = null;
+    this.record(() => { this.hf.addSheet(n); nid = this.hf.getSheetId(n)!; this.hf.setSheetContent(nid, cells); }, {
+      undo: () => { this.order = oOrder; },
+      redo: () => { if (fresh) restoreMeta(this.meta(nid), fresh); this.order = nOrder; },
+    }, {
+      post: () => {
+        const m = this.meta(nid);
+        const sm = this.meta(id);
+        m.colW = new AxisSizes(sm.colW.def, MAX_COLS); m.rowH = new AxisSizes(sm.rowH.def, MAX_ROWS);
+        restoreMeta(m, { ...src, styles: new Map([...src.styles].map(([k2, v]) => [k2, { ...v }])), merges: src.merges.map((g) => ({ ...g })), charts: [], pivots: [] });
+        // biểu đồ trỏ vào chính sheet gốc → trỏ sang bản sao
+        m.charts = this.meta(id).charts.map((ch) => ({ ...ch, id: this.uid(), series: ch.series.map((x) => { const mv = (r?: Ref) => (r && r.sheet === id ? { ...r, sheet: nid } : r); return { ...x, vals: mv(x.vals)!, name: mv(x.name), cats: mv(x.cats) }; }) }));
+        fresh = snapMeta(m);
+        const ids = this.sheetIds().filter((x) => x !== nid);
+        ids.splice(index ?? ids.indexOf(id) + 1, 0, nid);
+        this.order = nOrder = ids;
+      },
+    });
+    return nid;
+  }
+
+  // ---------- ẩn / bỏ ẩn hàng, cột ----------
+  private hideAxis(s: number, ax: 'r' | 'c', a: number, b: number, hide: boolean) {
+    const m = this.meta(s), A = ax === 'r' ? m.rowH : m.colW;
+    const before = A.hidden(), sizes = A.entries();
+    const set = new Set(before);
+    for (let i = a; i <= b; i++) { if (hide) set.add(i); else { set.delete(i); if (A.base(i) === 0) A.set(i, A.def); } }
+    const after = [...set].sort((x, y) => x - y), sizesAfter = A.entries();
+    A.setHidden(after);
+    this.record(null, { undo: () => { A.load(sizes, before); }, redo: () => { A.load(sizesAfter, after); } });
+  }
+  hideRows(s: number, r1: number, r2: number, hide: boolean) { this.hideAxis(s, 'r', r1, r2, hide); }
+  hideCols(s: number, c1: number, c2: number, hide: boolean) { this.hideAxis(s, 'c', c1, c2, hide); }
+  isColHidden(s: number, c: number) { const A = this.meta(s).colW; return A.isHidden(c) || A.base(c) === 0; }
+
+  // ---------- ngắt trang ----------
+  private breaksChange(s: number, f: (b: { rows: number[]; cols: number[] }) => { rows: number[]; cols: number[] }) {
+    const m = this.meta(s), before = m.breaks;
+    const n = f({ rows: [...before.rows], cols: [...before.cols] });
+    const after = { rows: [...new Set(n.rows)].filter((x) => x > 0).sort((a, b) => a - b), cols: [...new Set(n.cols)].filter((x) => x > 0).sort((a, b) => a - b) };
+    if (JSON.stringify(after) === JSON.stringify(before)) return;
+    m.breaks = after;
+    this.record(null, { undo: () => { this.meta(s).breaks = before; }, redo: () => { this.meta(s).breaks = after; } });
+  }
+  /** Như Excel: chèn ngắt trang phía trên hàng và bên trái cột của ô hiện hành */
+  insertPageBreak(s: number, r: number, c: number) { this.breaksChange(s, (b) => ({ rows: r > 0 ? [...b.rows, r] : b.rows, cols: c > 0 ? [...b.cols, c] : b.cols })); }
+  removePageBreak(s: number, r: number, c: number) { this.breaksChange(s, (b) => ({ rows: b.rows.filter((x) => x !== r), cols: b.cols.filter((x) => x !== c) })); }
+  resetPageBreaks(s: number) { this.breaksChange(s, () => ({ rows: [], cols: [] })); }
+
+  // ---------- chèn / xóa ô có dồn ----------
+  insertCells(s: number, g: Range, dir: 'down' | 'right') { this.shiftCells(s, g, dir === 'down' ? 'r' : 'c', 1); }
+  deleteCells(s: number, g: Range, dir: 'up' | 'left') { this.shiftCells(s, g, dir === 'up' ? 'r' : 'c', -1); }
+  private shiftCells(s: number, g: Range, ax: 'r' | 'c', sign: 1 | -1) {
+    const m = this.meta(s), u = this.used(s);
+    const n = ax === 'r' ? g.r2 - g.r1 + 1 : g.c2 - g.c1 + 1;
+    // dải bị dồn: cùng các cột (dồn dọc) hoặc cùng các hàng (dồn ngang) từ vùng chọn trở đi
+    const band = (x: Range) => (ax === 'r' ? x.c2 >= g.c1 && x.c1 <= g.c2 && x.r2 >= g.r1 : x.r2 >= g.r1 && x.r1 <= g.r2 && x.c2 >= g.c1);
+    const inside = (x: Range) => (ax === 'r' ? x.c1 >= g.c1 && x.c2 <= g.c2 && x.r1 >= g.r1 : x.r1 >= g.r1 && x.r2 <= g.r2 && x.c1 >= g.c1);
+    for (const mg of m.merges) if (band(mg) && (!inside(mg) || (sign < 0 && (ax === 'r' ? mg.r1 <= g.r2 : mg.c1 <= g.c2)))) throw new Error('Không thể thực hiện thao tác này với ô đã gộp. Hãy bỏ gộp ô trước.');
+    for (const p of m.pivots) if (p.area && band(p.area)) throw new Error('Không thể chèn/xóa ô làm dịch chuyển PivotTable.');
+    const last = ax === 'r' ? u.rows - 1 : u.cols - 1;
+    const max = ax === 'r' ? MAX_ROWS : MAX_COLS;
+    if (sign > 0 && last + n >= max) throw new Error('Không thể chèn: dữ liệu sẽ bị đẩy ra ngoài trang tính.');
+    const A = (r: number, c: number) => this.A(s, r, c);
+    // Như Excel: chèn/xóa cả hàng (hoặc cột) để mọi tham chiếu dời đúng (vùng giãn ra, ô bị xóa → #REF!),
+    // rồi đưa phần ngoài dải về chỗ cũ bằng moveCells (tham chiếu tới chúng đi theo).
+    const lastR = u.rows - 1, lastC = u.cols - 1;
+    const outside: [number, number][] = ax === 'r' ? [[0, g.c1 - 1], [g.c2 + 1, lastC]] : [[0, g.r1 - 1], [g.r2 + 1, lastR]];
+    const blocks = outside.filter(([a, b]) => b >= a);
+    const lo = ax === 'r' ? g.r1 : g.c1;
+    const hfOp = () => {
+      const blk = (a: number, b: number, from: number, to: number) => (ax === 'r' ? { start: A(from, a), end: A(to, b) } : { start: A(a, from), end: A(b, to) });
+      const at = (a: number, pos: number) => (ax === 'r' ? A(pos, a) : A(a, pos));
+      if (sign > 0) {
+        if (ax === 'r') this.hf.addRows(s, [lo, n]); else this.hf.addColumns(s, [lo, n]);
+        if (last >= lo) for (const [a, b] of blocks) this.hf.moveCells(blk(a, b, lo + n, last + n), at(a, lo));
+      } else {
+        if (last >= lo) {
+          if (last + n >= max) throw new Error('Không thể xóa: trang tính quá đầy.');
+          for (const [a, b] of blocks) this.hf.moveCells(blk(a, b, lo, last), at(a, lo + n));
+        }
+        if (ax === 'r') this.hf.removeRows(s, [lo, n]); else this.hf.removeColumns(s, [lo, n]);
+      }
+    };
+    const before = snapMeta(m);
+    let after = before;
+    this.record(hfOp, { undo: () => restoreMeta(m, before), redo: () => restoreMeta(m, after) }, {
+      post: () => {
+        const hit = (r: number, c: number) => (ax === 'r' ? c >= g.c1 && c <= g.c2 && r >= lo : r >= g.r1 && r <= g.r2 && c >= lo);
+        setAll(m.styles, remapStyles(m.styles, (r, c) => {
+          if (!hit(r, c)) return { r, c };
+          const v = ax === 'r' ? r : c;
+          const nv = sign > 0 ? v + n : v < lo + n ? -1 : v - n;
+          if (nv < 0) return null;
+          return ax === 'r' ? { r: nv, c } : { r, c: nv };
+        }));
+        m.merges = m.merges.map((x) => (band(x) && inside(x) ? (ax === 'r' ? { ...x, r1: x.r1 + sign * n, r2: x.r2 + sign * n } : { ...x, c1: x.c1 + sign * n, c2: x.c2 + sign * n }) : x));
+        // quy tắc CF / kiểm tra dữ liệu nằm gọn trong dải: dời theo (bị xóa hết thì bỏ)
+        const mv = (x: Range): Range | null => {
+          if (!(band(x) && inside(x))) return x;
+          const a1 = ax === 'r' ? x.r1 : x.c1, a2 = ax === 'r' ? x.r2 : x.c2;
+          let b1 = a1, b2 = a2;
+          if (sign > 0) { b1 += n; b2 += n; }
+          else { const end = lo + n; if (a2 < end) return null; b1 = a1 < end ? lo : a1 - n; b2 = a2 - n; }
+          return ax === 'r' ? { ...x, r1: b1, r2: b2 } : { ...x, c1: b1, c2: b2 };
+        };
+        m.cf = m.cf.map((x) => { const r = mv(x.range); return r ? { ...x, range: r } : null; }).filter(Boolean) as CFRule[];
+        m.dv = m.dv.map((x) => { const r = mv(x.range); return r ? { ...x, range: r } : null; }).filter(Boolean) as DVRule[];
+        after = snapMeta(m);
+      },
+    });
   }
 
   // ---------- đọc ô ----------
@@ -365,7 +545,7 @@ export class Workbook {
       if (change < this.iterate.delta) break;
     }
   }
-  style(s: number, r: number, c: number): Style { return this.meta(s).styles.get(String(key(r, c))) ?? {}; }
+  style(s: number, r: number, c: number): Style { const m = this.meta(s).styles; return m.size ? m.get(String(key(r, c))) ?? NO_STYLE : NO_STYLE; }
   isFormula(s: number, r: number, c: number) { return this.hf.doesCellHaveFormula(this.A(s, r, c)); }
   /** Định dạng hiệu lực: style.fmt hoặc suy ra từ kiểu giá trị (ngày, %) */
   effFmt(s: number, r: number, c: number, st = this.style(s, r, c)): string | undefined {
@@ -451,6 +631,15 @@ export class Workbook {
     const apply = (m: Map<string, Style | undefined>) => m.forEach((v, k) => setOrDel(st, k, v));
     apply(after);
     this.record(null, { undo: () => apply(before), redo: () => apply(after) });
+  }
+  /** Đặt kích thước nhiều hàng/cột trong một bước hoàn tác */
+  setSizes(s: number, ax: 'r' | 'c', list: [number, number][]) {
+    const A = ax === 'r' ? this.meta(s).rowH : this.meta(s).colW;
+    const before = A.entries(), hid = A.hidden();
+    for (const [i, v] of list) A.set(i, v);
+    const after = A.entries();
+    if (JSON.stringify(before) === JSON.stringify(after)) return;
+    this.record(null, { undo: () => A.load(before, hid), redo: () => A.load(after, hid) });
   }
   setColWidth(s: number, c: number, w: number) { this.sizeChange(this.meta(s).colW, c, w); }
   setRowHeight(s: number, r: number, h: number) { this.sizeChange(this.meta(s).rowH, r, h); }
@@ -649,7 +838,9 @@ export class Workbook {
     this.record(() => ops.forEach((f) => f()), tx.hist, { post: () => tx.apply() });
   }
 
-  autoSum(s: number, r: number, c: number): string {
+  /** Tổng Tự động (hoặc Trung bình, Đếm Số, Tối đa, Tối thiểu): tìm vùng số liền kề phía trên/bên trái */
+  autoSum(s: number, r: number, c: number, fn = 'SUM', write = true): string {
+    if (fn !== 'SUM') { const f0 = this.autoSum(s, r, c, 'SUM', false); const f1 = f0.replace('=SUM(', `=${fn}(`); if (write && f1 !== `=${fn}()`) this.setInput(s, r, c, f1); return f1; }
     const isNum = (rr: number, cc: number) => rr >= 0 && cc >= 0 && typeof this.value(s, rr, cc) === 'number';
     let f = '=SUM()';
     if (isNum(r - 1, c)) {
@@ -661,7 +852,7 @@ export class Workbook {
       while (isNum(r, t - 1)) t--;
       f = `=SUM(${colLetters(t)}${r + 1}:${colLetters(c - 1)}${r + 1})`;
     }
-    if (f !== '=SUM()') this.setInput(s, r, c, f);
+    if (f !== '=SUM()' && write) this.setInput(s, r, c, f);
     return f;
   }
 
@@ -842,11 +1033,11 @@ export class Workbook {
     if (g.r2 >= u.rows) g = { ...g, r2: Math.max(g.r1 + 1, u.rows - 1) };
     if (g.c2 >= u.cols && u.cols > 0) g = { ...g, c2: Math.max(g.c1, u.cols - 1) };
     if (g.r1 === g.r2) g = { ...g, r2: Math.min(MAX_ROWS - 1, g.r2 + 1) };
-    this.filterChange(s, () => { this.meta(s).filter = { range: g, conds: {} }; this.meta(s).rowH.setHidden([]); });
+    this.filterChange(s, () => { const m = this.meta(s); if (m.filter) this.setFilterHidden(s, m.filter.range, []); m.filter = { range: g, conds: {} }; this.setFilterHidden(s, g, []); });
   }
   clearFilter(s: number) {
     if (!this.meta(s).filter) return;
-    this.filterChange(s, () => { this.meta(s).filter = null; this.meta(s).rowH.setHidden([]); });
+    this.filterChange(s, () => { const m = this.meta(s); this.setFilterHidden(s, m.filter!.range, []); m.filter = null; });
   }
   filterValues(s: number, col: number): string[] {
     const f = this.meta(s).filter;
@@ -881,7 +1072,12 @@ export class Workbook {
         if ((cd.values && !cd.values.includes(t)) || (cd.text && !t.toLowerCase().includes(cd.text.toLowerCase()))) { hidden.push(r); break; }
       }
     }
-    m.rowH.setHidden(hidden);
+    this.setFilterHidden(s, f.range, hidden);
+  }
+  /** Đặt các hàng ẩn trong vùng lọc, giữ nguyên hàng ẩn thủ công ngoài vùng lọc */
+  private setFilterHidden(s: number, g: Range, hidden: number[]) {
+    const A = this.meta(s).rowH;
+    A.setHidden([...A.hidden().filter((r) => r <= g.r1 || r > g.r2), ...hidden]);
   }
   reapplyFilter(s: number) { if (this.meta(s).filter) this.filterChange(s, () => this.applyFilter(s)); }
 
@@ -1181,6 +1377,10 @@ export class Workbook {
           colDef: m.colW.def,
           rowDef: m.rowH.def,
           hiddenRows: m.rowH.hidden(),
+          hiddenCols: m.colW.hidden().length ? m.colW.hidden() : undefined,
+          breaks: m.breaks.rows.length || m.breaks.cols.length ? m.breaks : undefined,
+          tabColor: m.tabColor,
+          state: m.hidden ? 'hidden' : undefined,
           merges: m.merges,
           cf: m.cf,
           dv: m.dv,
@@ -1202,7 +1402,10 @@ export class Workbook {
       setAll(m.styles, new Map((sh.styles as [number, Style][]).map(([k, v]) => [String(k), v])));
       if (sh.colDef) m.colW = new AxisSizes(sh.colDef, MAX_COLS);
       if (sh.rowDef) m.rowH = new AxisSizes(sh.rowDef, MAX_ROWS);
-      m.colW.load((sh.colW ?? []) as [number, number][]);
+      m.colW.load((sh.colW ?? []) as [number, number][], sh.hiddenCols ?? []);
+      m.breaks = { rows: sh.breaks?.rows ?? [], cols: sh.breaks?.cols ?? [] };
+      if (sh.tabColor) m.tabColor = sh.tabColor;
+      if (sh.state === 'hidden') m.hidden = true;
       m.rowH.load((sh.rowH ?? []) as [number, number][], sh.hiddenRows ?? []);
       m.freeze = sh.freeze ?? { rows: 0, cols: 0 };
       m.merges = sh.merges ?? [];
@@ -1246,6 +1449,7 @@ function colLetters(c: number) {
 export interface SheetJSON {
   name: string; cells: unknown[][]; styles: unknown[]; colW?: [number, number][]; rowH?: [number, number][];
   freeze?: { rows: number; cols: number }; colDef?: number; rowDef?: number; hiddenRows?: number[];
+  hiddenCols?: number[]; breaks?: { rows: number[]; cols: number[] }; tabColor?: string; state?: 'hidden';
   merges?: Range[]; cf?: CFRule[]; dv?: DVRule[]; filter?: SheetFilter | null;
   charts?: unknown[]; pivots?: unknown[]; print?: PrintSetup | null;
 }
@@ -1303,7 +1507,7 @@ function lit(v: unknown, inArray = false): string {
 }
 
 function newMeta(): SheetMeta {
-  return { styles: new Map(), colW: new AxisSizes(DEFAULT_COL_W, MAX_COLS), rowH: new AxisSizes(DEFAULT_ROW_H, MAX_ROWS), freeze: { rows: 0, cols: 0 }, merges: [], cf: [], dv: [], filter: null, charts: [], pivots: [], print: null };
+  return { styles: new Map(), colW: new AxisSizes(DEFAULT_COL_W, MAX_COLS), rowH: new AxisSizes(DEFAULT_ROW_H, MAX_ROWS), freeze: { rows: 0, cols: 0 }, merges: [], cf: [], dv: [], filter: null, charts: [], pivots: [], print: null, breaks: { rows: [], cols: [] } };
 }
 function clean(st: Style): Style | undefined {
   const o: any = {};
@@ -1350,6 +1554,16 @@ function shiftAll(m: SheetMeta, ax: 'r' | 'c', pt: (x: number) => number, span: 
     const nat = pt(at) >= 0 ? pt(at) : delSpanStart(at, span);
     return { ...p, at: ax === 'r' ? { ...p.at, r: nat } : { ...p.at, c: nat }, area: p.area ? mv(p.area) : null };
   }).filter((p, i) => !(m.pivots[i].area && !p.area)); // xóa hết vùng Pivot → bỏ luôn PivotTable
+  {
+    const k = ax === 'r' ? 'rows' : 'cols';
+    m.breaks = { ...m.breaks, [k]: [...new Set(m.breaks[k].map(pt).filter((x) => x > 0))].sort((a, b) => a - b) };
+  }
+  // hàng/cột lặp lại khi in dời theo
+  if (m.print) {
+    const key2 = ax === 'r' ? 'titleRowRange' : 'titleColRange';
+    const t = m.print[key2];
+    if (t) { const x = span(t[0], t[1]); m.print = { ...m.print, [key2]: x ? [x.a, x.b] : null }; }
+  }
   if (m.print?.area) {
     const g = mv(m.print.area);
     const pr = { ...m.print };
@@ -1375,14 +1589,15 @@ function remapStyles(m: Map<string, Style>, f: (r: number, c: number) => { r: nu
 // Bảng định dạng của mỗi sheet luôn là MỘT đối tượng Map cố định (chỉ sửa tại chỗ),
 // để các mục hoàn tác giữ tham chiếu tới nó không bị "lạc" sang bản cũ.
 function setAll(m: Map<string, Style>, src: Map<string, Style>) { if (m === src) return; m.clear(); src.forEach((v, k) => m.set(k, v)); }
-type MetaSnap = { styles: Map<string, Style>; colW: [number, number][]; rowH: [number, number][]; hidden: number[]; freeze: { rows: number; cols: number }; merges: Range[]; cf: CFRule[]; dv: DVRule[]; filter: SheetFilter | null; charts: Chart[]; pivots: PivotDef[]; print: PrintSetup | null };
+type MetaSnap = { styles: Map<string, Style>; colW: [number, number][]; rowH: [number, number][]; hidden: number[]; colHidden: number[]; freeze: { rows: number; cols: number }; merges: Range[]; cf: CFRule[]; dv: DVRule[]; filter: SheetFilter | null; charts: Chart[]; pivots: PivotDef[]; print: PrintSetup | null; breaks: { rows: number[]; cols: number[] }; tabColor?: string; sheetHidden?: boolean };
 function snapMeta(m: SheetMeta): MetaSnap {
-  return { styles: new Map(m.styles), colW: m.colW.entries(), rowH: m.rowH.entries(), hidden: m.rowH.hidden(), freeze: { ...m.freeze }, merges: m.merges, cf: m.cf, dv: m.dv, filter: m.filter ? JSON.parse(JSON.stringify(m.filter)) : null, charts: m.charts, pivots: m.pivots, print: m.print };
+  return { styles: new Map(m.styles), colW: m.colW.entries(), rowH: m.rowH.entries(), hidden: m.rowH.hidden(), colHidden: m.colW.hidden(), freeze: { ...m.freeze }, merges: m.merges, cf: m.cf, dv: m.dv, filter: m.filter ? JSON.parse(JSON.stringify(m.filter)) : null, charts: m.charts, pivots: m.pivots, print: m.print, breaks: { rows: [...m.breaks.rows], cols: [...m.breaks.cols] }, tabColor: m.tabColor, sheetHidden: m.hidden };
 }
 function restoreMeta(m: SheetMeta, s: MetaSnap) {
-  setAll(m.styles, new Map(s.styles)); m.colW.load(s.colW, []); m.rowH.load(s.rowH, s.hidden); m.freeze = { ...s.freeze };
+  setAll(m.styles, new Map(s.styles)); m.colW.load(s.colW, s.colHidden ?? []); m.rowH.load(s.rowH, s.hidden); m.freeze = { ...s.freeze };
   m.merges = s.merges; m.cf = s.cf; m.dv = s.dv; m.filter = s.filter ? JSON.parse(JSON.stringify(s.filter)) : null;
   m.charts = s.charts ?? []; m.pivots = s.pivots ?? []; m.print = s.print ?? null;
+  m.breaks = { rows: [...(s.breaks?.rows ?? [])], cols: [...(s.breaks?.cols ?? [])] }; m.tabColor = s.tabColor; m.hidden = s.sheetHidden;
 }
 
 /** Một nhóm thay đổi định dạng: chỉ lưu các ô bị đổi (trước/sau), không chép cả bảng */

@@ -194,9 +194,26 @@ export function formatNumber(n: number, fmt: string): string {
   if (/^\s*general\s*$/i.test(codeOf(tokens(sec)))) return (neg ? '-' : '') + formatGeneral(Math.abs(n));
   const a = secs.length > 1 && n < 0 ? Math.abs(n) : n;
   if (isDateFmt(sec)) return formatDate(a, sec);
+  const fr = /(#*0*)\s+(\?+|0+)\/(\?+|\d+)/.exec(sec);
+  if (fr) return (neg ? '-' : '') + formatFraction(Math.abs(a), fr[3]);
   const t = formatNum(Math.abs(a), sec);
   const isZero = !/[1-9]/.test(t);
   return (neg && !isZero ? '-' : '') + t;
+}
+
+/** Phân số như Excel: "# ?/?" (mẫu số tối đa 1 chữ số), "# ??/??", "# ?/4" (mẫu cố định) */
+function formatFraction(x: number, den: string): string {
+  const int = Math.floor(x), f = x - int;
+  let bn = 0, bd = 1;
+  if (/^\d+$/.test(den)) { bd = +den; bn = Math.round(f * bd); }
+  else {
+    const max = 10 ** den.length - 1;
+    let best = Infinity;
+    for (let d = 1; d <= max; d++) { const n = Math.round(f * d), e = Math.abs(f - n / d); if (e < best - 1e-12) { best = e; bn = n; bd = d; } }
+  }
+  if (bn === bd) return String(int + 1);
+  if (bn === 0) return String(int);
+  return (int ? int + ' ' : '') + bn + '/' + bd;
 }
 
 export function formatValue(v: unknown, fmt?: string): { text: string; align: Align } {

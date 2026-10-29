@@ -100,11 +100,12 @@ const cellCenter = (page, r, c) => page.evaluate(({ r, c }) => {
 
   // Cố định ngăn + chụp ảnh
   await page.click('#sheets .st >> nth=0');
-  await page.click('[role="tab"]:has-text("Xem")');
+  await page.click('[role="tab"]:text-is("Xem")');
   await page.click('#namebox'); await page.keyboard.type('B2'); await page.keyboard.press('Enter');
   await page.click('#ribbon [data-id="fz"]');
+  await page.click('.menu .mi:has-text("Cố định Ngăn")');
   check('Cố định ngăn', await page.evaluate(() => JSON.stringify(window.__xl.wb.meta(window.__xl.grid.sheet).freeze)) === '{"rows":1,"cols":1}');
-  await page.click('[role="tab"]:has-text("Trang chủ")');
+  await page.click('[role="tab"]:has-text("Trang đầu")');
 
   // Trỏ ô ở sheet khác khi đang gõ công thức
   await page.click('#namebox'); await page.keyboard.type('J1'); await page.keyboard.press('Enter');
@@ -118,7 +119,8 @@ const cellCenter = (page, r, c) => page.evaluate(({ r, c }) => {
   // Chèn hàng theo số hàng đang chọn
   const before = await page.evaluate(() => window.__xl.wb.value(window.__xl.grid.sheet, 2, 0));
   await page.click('#namebox'); await page.keyboard.type('A3:A5'); await page.keyboard.press('Enter');
-  await page.click('#ribbon [data-id="ins-r"]');
+  await page.click('#ribbon [data-id="ins"]');
+  await page.click('.menu .mi:has-text("Chèn Hàng Trang tính")');
   const moved = await page.evaluate(() => window.__xl.wb.value(window.__xl.grid.sheet, 5, 0));
   await page.keyboard.press('Control+z');
   check('Chèn đúng số hàng đang chọn (3 hàng)', moved === before, `A3 cũ → A6 = ${moved}`);
@@ -219,7 +221,7 @@ for (const [name, vp] of Object.entries(devices)) {
       check(`Mobile ${name}: không tràn ngang`, !overflow);
       check(`Mobile ${name}: chạm 2 lần → sửa trên thanh công thức`, editing);
       // vùng chạm tối thiểu
-      const small = await page.evaluate(() => [...document.querySelectorAll('.rb, .ib:not([hidden]), .sheets .st, .fxb')].filter((b) => { const r = b.getBoundingClientRect(); return r.width && r.height && (r.width < 40 || r.height < 36); }).length);
+      const small = await page.evaluate(() => [...document.querySelectorAll('#ribbon button, #titlebar button:not([hidden]), .sheets .st, .fxb')].filter((b) => { const r = b.getBoundingClientRect(); return r.width && r.height && (r.width < 40 || r.height < 36); }).length);
       check(`Mobile ${name}: nút đủ lớn để chạm`, small === 0, small ? `${small} nút nhỏ` : '');
     }
     check(`Mobile ${name} (${scheme}): không có lỗi JavaScript`, page.errors.length === 0, page.errors.slice(0, 2).join(' | '));

@@ -5,6 +5,7 @@ const fs = require('node:fs/promises');
 const fsSync = require('node:fs');
 const crypto = require('node:crypto');
 const { pathToFileURL } = require('node:url');
+const os = require('node:os');
 
 // biến môi trường chỉ dùng cho kiểm thử, bản đóng gói bỏ qua
 const TEST = !app.isPackaged ? process.env : {};
@@ -60,13 +61,20 @@ function forceClose() { clearTimeout(closeTimer); if (win && !win.isDestroyed())
 function createWindow() {
   win = new BrowserWindow({
     width: 1366, height: 860, minWidth: 360, minHeight: 480,
-    title: 'ExcelLike', backgroundColor: '#eef2ef', show: false,
+    title: 'ExcelLike', backgroundColor: '#f3f3f3', show: false,
+    // thanh tiêu đề kiểu Excel 365: app tự vẽ (QAT, tên tệp, Tìm kiếm), nút cửa sổ của Windows nằm đè bên phải
+    titleBarStyle: 'hidden',
+    titleBarOverlay: { color: '#107c41', symbolColor: '#ffffff', height: 44 },
     icon: path.join(__dirname, '..', 'build', 'icon.png'),
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false },
   });
   win.once('ready-to-show', () => win.show());
   win.loadURL('app://excellike/index.html');
-  win.webContents.on('did-start-loading', () => { closeReady = false; rendererReady = false; });
+  // chỉ khi chính trang app nạp lại (không tính khung con như bản xem trước khi in)
+  win.webContents.on('did-start-navigation', (e, _url, isInPlace, isMainFrame) => {
+    const main = e?.isMainFrame ?? isMainFrame, same = e?.isSameDocument ?? isInPlace;
+    if (main && !same) { closeReady = false; rendererReady = false; }
+  });
   // tệp nhấp đúp trong lúc trang đang nạp → gửi khi nạp xong
   // liên kết ngoài → trình duyệt mặc định; không cho mở cửa sổ con hay điều hướng ra ngoài
   win.webContents.setWindowOpenHandler(({ url }) => { if (/^https?:/i.test(url)) shell.openExternal(url); return { action: 'deny' }; });
@@ -86,6 +94,72 @@ function createWindow() {
 }
 
 ipcMain.on('xl:close-ready', () => { closeReady = true; });
+// màu nút cửa sổ theo chủ đề Office (Nhiều màu / Trắng / Xám Đậm / Đen)
+let lastOverlay = null;
+ipcMain.on('xl:titlebar', (_e, o) => {
+  if (!win || !o || !/^#[0-9a-f]{6}$/i.test(String(o.color)) || !/^#[0-9a-f]{6}$/i.test(String(o.symbolColor))) return;
+  lastOverlay = { color: o.color, symbolColor: o.symbolColor };
+  try { win.setTitleBarOverlay({ ...lastOverlay, height: 44 }); } catch { /* hệ điều hành không hỗ trợ */ }
+  win.setBackgroundColor(o.color);
+});
+if (!app.isPackaged) global.__xlOverlay = () => lastOverlay;
+
+// ---- In ấn: in thẳng ra máy in đã chọn (không qua hộp thoại), xuất PDF thật ----
+async function renderJob(html) {
+  const tmp = path.join(os.tmpdir(), `excellike-print-${crypto.randomUUID().slice(0, 8)}.html`);
+  await fs.writeFile(tmp, String(html));
+  const w = new BrowserWindow({ show: false, width: 1000, height: 1400, webPreferences: { sandbox: true, javascript: false, contextIsolation: true, nodeIntegration: false } });
+  try {
+    await w.loadFile(tmp);
+    // đợi ảnh biểu đồ (data:) và phông tải xong
+    await new Promise((r) => setTimeout(r, 150));
+    return { w, done: () => { if (!w.isDestroyed()) w.destroy(); fs.rm(tmp, { force: true }).catch(() => {}); } };
+  } catch (e) {
+    if (!w.isDestroyed()) w.destroy();
+    fs.rm(tmp, { force: true }).catch(() => {});
+    throw e;
+  }
+}
+const PAPER = { A3: 'A3', A4: 'A4', A5: 'A5', Letter: 'Letter', Legal: 'Legal', Tabloid: 'Tabloid' };
+ipcMain.handle('xl:printers', async () => {
+  if (!win) return [];
+  try { return (await win.webContents.getPrintersAsync()).map((p) => ({ name: p.name, displayName: p.displayName, isDefault: !!p.isDefault })); } catch { return []; }
+});
+ipcMain.handle('xl:print', async (_e, o) => {
+  if (!o || typeof o.html !== 'string' || o.html.length > 200e6) return { ok: false, error: 'Dữ liệu in không hợp lệ' };
+  let job;
+  try { job = await renderJob(o.html); } catch (e) { return { ok: false, error: String(e.message || e) }; }
+  return new Promise((resolve) => {
+    const opts = {
+      silent: o.silent !== false, printBackground: true, deviceName: typeof o.deviceName === 'string' ? o.deviceName : '',
+      copies: Math.max(1, Math.min(999, o.copies | 0 || 1)), collate: o.collate !== false,
+      margins: { marginType: 'none' }, landscape: !!o.landscape,
+      ...(PAPER[o.paper] ? { pageSize: PAPER[o.paper] } : {}),
+    };
+    if (TEST.XL_TEST_PRINT) { fs.writeFile(TEST.XL_TEST_PRINT, JSON.stringify({ ...opts, pages: (o.html.match(/class="page"/g) || []).length })).then(() => { job.done(); resolve({ ok: true }); }); return; }
+    try { job.w.webContents.print(opts, (ok, err) => { job.done(); resolve({ ok, error: ok ? undefined : err }); }); }
+    catch (e) { job.done(); resolve({ ok: false, error: String(e.message || e) }); }
+  });
+});
+ipcMain.handle('xl:pdf', async (_e, o) => {
+  if (!o || typeof o.html !== 'string' || o.html.length > 200e6) return { error: 'Dữ liệu không hợp lệ' };
+  let target = TEST.XL_TEST_PDF;
+  if (!target) {
+    const safeName = String(o.name || 'So tinh.pdf').replace(/[\\/:*?"<>|]/g, '_');
+    const r = await dialog.showSaveDialog(win, { title: 'Xuất PDF', defaultPath: safeName, filters: [{ name: 'PDF', extensions: ['pdf'] }] });
+    if (r.canceled || !r.filePath) return null;
+    target = r.filePath;
+  }
+  let job;
+  try {
+    job = await renderJob(o.html);
+    const pdf = await job.w.webContents.printToPDF({ preferCSSPageSize: true, printBackground: true, margins: { marginType: 'none' } });
+    await serial(target, () => writeAtomic(target, pdf));
+    return { path: target };
+  } catch (e) {
+    return { error: String(e.message || e) };
+  } finally { job?.done(); }
+});
 ipcMain.on('xl:close-pending', () => clearTimeout(closeTimer)); // trang đang hỏi người dùng
 ipcMain.on('xl:close-ok', () => forceClose());
 ipcMain.on('xl:close-cancel', () => { clearTimeout(closeTimer); closeTimer = null; });

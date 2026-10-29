@@ -6,10 +6,11 @@ import { shiftFormula } from './formula';
 import { toEn, toVi } from './locale';
 import { normalizeInput } from './input';
 import { numOf } from './rules';
-import { Workbook, dateSerial, type ExtLink, type BookJSON, type Border, type BorderStyle, type SheetJSON, type Style } from './workbook';
+import { Workbook, dateSerial, type ExtLink, type BookJSON, type Border, type BorderStyle, type SheetJSON, type Style, type PrintSetup } from './workbook';
 import type { CFRule, DVRule } from './rules';
 import { cellsOf, type Chart, type ChartType, type Ref } from './chart';
 import { quoteSheet } from './formula';
+import { MARGIN_PRESETS, normPrint, PAPERS, paperByCode, storePrint, type NPrint } from './paginate';
 
 const EPOCH = Date.UTC(1899, 11, 30);
 // Độ rộng cột Excel tính theo số ký tự; phông của app rộng hơn Calibri nên lấy 8px/ký tự để số không bị ####
@@ -130,6 +131,7 @@ export async function readXlsx(buf: ArrayBuffer | Uint8Array): Promise<{ wb: Wor
   const rels = new Map<string, string>();
   for (const m of relXml.matchAll(/<Relationship\b([^>]*)\/?>/g)) { const a = attrs(m[1]); rels.set(a.Id, a.Target); }
   const dvBySheet = new Map<string, RawDV[]>();
+  const breaksBySheet = new Map<string, { rows: number[]; cols: number[] }>();
   const chartsBySheet = new Map<string, RawChart[]>();
   // tính lặp (File → Options → Formulas → Enable iterative calculation)
   const calcTag = /<(?:\w+:)?calcPr\b[^>]*>/.exec(wbXml)?.[0] ?? '';
@@ -206,6 +208,12 @@ export async function readXlsx(buf: ArrayBuffer | Uint8Array): Promise<{ wb: Wor
       rezip = true;
     }
     dvBySheet.set(a.name, found);
+    // ngắt trang thủ công (ExcelJS không đọc)
+    {
+      const br = (tag: string) => [...(new RegExp(`<${tag}\\b[\\s\\S]*?</${tag}>`).exec(xml)?.[0] ?? '').matchAll(/<brk\b([^>]*)\/?>/g)].map((b) => +(attrs(b[1]).id ?? 0)).filter((n) => n > 0);
+      const rows = br('rowBreaks'), cols = br('colBreaks');
+      if (rows.length || cols.length) breaksBySheet.set(a.name, { rows, cols });
+    }
     // biểu đồ: tự đọc bản vẽ + biểu đồ rồi gỡ thẻ <drawing> (ExcelJS không đọc được biểu đồ)
     // ghi chú ở vị trí không chuẩn (openpyxl: xl/comments/comment1.xml) làm ExcelJS lỗi → tự đếm rồi gỡ
     {
@@ -306,10 +314,11 @@ export async function readXlsx(buf: ArrayBuffer | Uint8Array): Promise<{ wb: Wor
     const colDef = props.defaultColWidth ? w2px(props.defaultColWidth) : w2px(8.43);
     const rowDef = props.defaultRowHeight ? pt2px(props.defaultRowHeight) : 20;
     const colW: [number, number][] = [];
+    const hiddenCols: number[] = [];
     for (let i = 1; i <= Math.max(ws.columnCount, 1); i++) {
       const col: any = ws.getColumn(i);
-      if (col.hidden) colW.push([i - 1, 0]);
-      else if (col.width && w2px(col.width) !== colDef) colW.push([i - 1, w2px(col.width)]);
+      if (col.hidden) hiddenCols.push(i - 1);
+      if (col.width && w2px(col.width) !== colDef && w2px(col.width) > 0) colW.push([i - 1, w2px(col.width)]);
     }
     const af: any = ws.autoFilter;
     const afRef = typeof af === 'string' ? af : af?.from ? `${typeof af.from === 'string' ? af.from : colName(af.from.column - 1) + af.from.row}:${typeof af.to === 'string' ? af.to : colName(af.to.column - 1) + af.to.row}` : null;
@@ -319,8 +328,8 @@ export async function readXlsx(buf: ArrayBuffer | Uint8Array): Promise<{ wb: Wor
     ws.eachRow({ includeEmpty: true }, (row, rn) => {
       const r = rn - 1;
       // hàng ẩn trong vùng lọc là do lọc → bỏ lọc sẽ hiện lại
-      if (row.hidden) { if (fr && r > fr.r1 && r <= fr.r2) hiddenRows.push(r); else rowH.push([r, 0]); }
-      else if (row.height && pt2px(row.height) !== rowDef) rowH.push([r, pt2px(row.height)]);
+      if (row.hidden) hiddenRows.push(r);
+      if (row.height && pt2px(row.height) !== rowDef && pt2px(row.height) > 0) rowH.push([r, pt2px(row.height)]);
     });
     const view: any = ws.views?.[0];
     const freeze = view?.state === 'frozen' ? { rows: view.ySplit ?? 0, cols: view.xSplit ?? 0 } : { rows: 0, cols: 0 };
@@ -335,20 +344,10 @@ export async function readXlsx(buf: ArrayBuffer | Uint8Array): Promise<{ wb: Wor
     }
     const dv: DVRule[] = [];
     for (const d of dvBySheet.get(ws.name) ?? []) for (const ref of d.sqref.split(/\s+/)) { const g = parseRef(ref); if (g) dv.push(dvRuleIn(d, g)); }
-    const pgs: any = ws.pageSetup ?? {};
-    const tr = /\$?(\d+):\$?(\d+)/.exec(String(pgs.printTitlesRow ?? ''));
-    const ml = pgs.margins?.left;
-    const print = {
-      orientation: pgs.orientation === 'landscape' ? 'landscape' as const : 'portrait' as const,
-      paper: (({ 8: 'A3', 1: 'Letter' } as Record<number, 'A3' | 'Letter'>)[pgs.paperSize] ?? 'A4') as 'A4' | 'A3' | 'Letter',
-      fitWidth: !!pgs.fitToPage && (pgs.fitToWidth ?? 1) === 1,
-      titleRows: tr && +tr[1] === 1 ? +tr[2] : 0,
-      gridlines: !!pgs.showGridLines,
-      margins: (ml !== undefined && ml < 0.4 ? 'narrow' : ml !== undefined && ml >= 0.95 ? 'wide' : 'normal') as 'normal' | 'narrow' | 'wide',
-      area: pgs.printArea ? parseRef(String(pgs.printArea).split(/[,&]/)[0]) : null,
-    };
-    const hasPrint = pgs.orientation === 'landscape' || (pgs.paperSize && pgs.paperSize !== 9) || print.fitWidth || print.titleRows || print.gridlines || print.area;
-    sheets.push({ name: ws.name, cells, styles, colW, rowH, freeze, colDef, rowDef, hiddenRows, merges, cf, dv, filter: fr ? { range: fr, conds: {} } : null, print: hasPrint ? print : null });
+    const print = printIn(ws);
+    const props2: any = ws.properties ?? {};
+    const tc = props2.tabColor?.argb ? '#' + String(props2.tabColor.argb).slice(-6).toLowerCase() : undefined;
+    sheets.push({ name: ws.name, cells, styles, colW, rowH, freeze, colDef, rowDef, hiddenRows, hiddenCols, merges, cf, dv, filter: fr ? { range: fr, conds: {} } : null, print, breaks: breaksBySheet.get(ws.name), tabColor: tc, state: (ws as any).state === 'hidden' || (ws as any).state === 'veryHidden' ? 'hidden' : undefined });
   });
   if (!sheets.length) throw new Error('Tệp không có trang tính nào.');
   // danh sách dài do app ghi ra sheet ẩn → đưa về danh sách gõ sẵn
@@ -473,12 +472,15 @@ export async function writeXlsx(wb: Workbook): Promise<Uint8Array> {
     const fz = sh.freeze ?? { rows: 0, cols: 0 };
     const ws = x.addWorksheet(sh.name, {
       views: fz.rows || fz.cols ? [{ state: 'frozen', xSplit: fz.cols, ySplit: fz.rows, topLeftCell: colName(fz.cols) + (fz.rows + 1) } as any] : [{}],
-      properties: { defaultColWidth: px2w(sh.colDef ?? 88), defaultRowHeight: px2pt(sh.rowDef ?? 24) } as any,
-    });
+      properties: { defaultColWidth: px2w(sh.colDef ?? 64), defaultRowHeight: px2pt(sh.rowDef ?? 20), ...(sh.tabColor ? { tabColor: { argb: 'FF' + sh.tabColor.replace('#', '').toUpperCase() } } : {}) } as any,
+      ...(sh.state === 'hidden' ? { state: 'hidden' } : {}),
+    } as any);
     for (const [c, w] of sh.colW ?? []) { const col = ws.getColumn(c + 1); if (w === 0) col.hidden = true; else col.width = px2w(w); }
+    for (const c of sh.hiddenCols ?? []) { const col = ws.getColumn(c + 1); if (!col.width) col.width = px2w(sh.colDef ?? 64); col.hidden = true; }
     if (sh.colDef) for (let c = 1; c <= Math.max(1, wb.used(id).cols); c++) { const col = ws.getColumn(c); if (!col.width && !col.hidden) col.width = px2w(sh.colDef); }
     for (const [r, h] of sh.rowH ?? []) { const row = ws.getRow(r + 1); if (h === 0) row.hidden = true; else row.height = px2pt(h); }
     for (const r of sh.hiddenRows ?? []) ws.getRow(r + 1).hidden = true;
+    for (const r of sh.breaks?.rows ?? []) ws.getRow(r).addPageBreak();
     // giá trị
     sh.cells.forEach((row, r) => row?.forEach((raw, c) => {
       if (raw === null || raw === undefined || raw === '') return;
@@ -506,19 +508,11 @@ export async function writeXlsx(wb: Workbook): Promise<Uint8Array> {
     }
     for (const rule of sh.dv ?? []) (ws as any).dataValidations.add(refOut(rule.range), dvOut(rule, dsLists));
     if (sh.filter) ws.autoFilter = rangeToA1(sh.filter.range);
-    const ps = sh.print;
-    if (ps) {
-      const mg = { normal: [0.7, 0.75], narrow: [0.25, 0.75], wide: [1, 1] }[ps.margins ?? 'normal'];
-      ws.pageSetup = {
-        ...ws.pageSetup,
-        orientation: ps.orientation, paperSize: ({ A4: 9, A3: 8, Letter: 1 } as const)[ps.paper], showGridLines: ps.gridlines,
-        fitToPage: ps.fitWidth, fitToWidth: 1, fitToHeight: 0,
-        margins: { left: mg[0], right: mg[0], top: mg[1], bottom: mg[1], header: 0.3, footer: 0.3 },
-        ...(ps.titleRows ? { printTitlesRow: `1:${ps.titleRows}` } : {}),
-        ...(ps.area ? { printArea: rangeToA1(ps.area) } : {}),
-      } as any;
-    }
+    if (sh.print) printOut(ws, sh.print);
   });
+  // trang tính đang mở khi mở tệp: trang hiện đầu tiên (không trỏ vào trang ẩn)
+  const firstVis = json.sheets.findIndex((sh) => sh.state !== 'hidden');
+  if (firstVis > 0) (x as any).views = [{ x: 0, y: 0, width: 10000, height: 20000, firstSheet: firstVis, activeTab: firstVis, visibility: 'visible' }];
   if (dsLists.length) {
     const ds = x.addWorksheet(DS_SHEET, { state: 'hidden' } as any);
     dsLists.forEach((items, c) => items.forEach((v, r) => { ds.getCell(r + 1, c + 1).value = v; }));
@@ -527,6 +521,7 @@ export async function writeXlsx(wb: Workbook): Promise<Uint8Array> {
   const withCharts = wb.sheetIds().some((id) => wb.meta(id).charts.length);
   let out = withCharts ? await addChartsToZip(buf, wb) : buf;
   if (wb.extLinks.length || wb.iterate.on) out = await addWorkbookExtras(out, wb);
+  if (json.sheets.some((sh) => sh.breaks?.cols.length)) out = await addColBreaks(out, json.sheets.map((sh) => sh.breaks?.cols ?? []));
   return out;
 }
 
@@ -850,5 +845,70 @@ async function addChartsToZip(buf: Uint8Array, wb: Workbook): Promise<Uint8Array
     zip.file(spath, sx);
   }
   zip.file('[Content_Types].xml', ct);
+  return zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });
+}
+
+// =================== thiết lập in ===================
+function printIn(ws: ExcelJS.Worksheet): PrintSetup | null {
+  const pgs: any = ws.pageSetup ?? {};
+  const hf: any = (ws as any).headerFooter ?? {};
+  const tr = /\$?(\d+):\$?(\d+)/.exec(String(pgs.printTitlesRow ?? ''));
+  const tc = /\$?([A-Z]+):\$?([A-Z]+)/i.exec(String(pgs.printTitlesColumn ?? ''));
+  const m = pgs.margins;
+  const mg = m ? { t: +m.top, b: +m.bottom, l: +m.left, r: +m.right, h: +m.header, f: +m.footer } : MARGIN_PRESETS.normal;
+  const preset = (Object.entries(MARGIN_PRESETS).find(([, v]) => JSON.stringify(v) === JSON.stringify(mg))?.[0] ?? 'custom') as NPrint['margins'];
+  const fit = pgs.fitToPage ? { w: pgs.fitToWidth ?? 1, h: pgs.fitToHeight ?? 1 } : null;
+  const p: NPrint = {
+    ...normPrint(null),
+    orientation: pgs.orientation === 'landscape' ? 'landscape' : 'portrait',
+    paper: paperByCode(pgs.paperSize ?? 9),
+    gridlines: !!pgs.showGridLines,
+    headings: !!pgs.showRowColHeaders,
+    margins: preset, mg,
+    scale: pgs.scale && !pgs.fitToPage ? +pgs.scale : 100,
+    fit,
+    titleRowRange: tr ? [+tr[1] - 1, +tr[2] - 1] : null,
+    titleColRange: tc ? [colIdx(tc[1]), colIdx(tc[2])] : null,
+    center: { h: !!pgs.horizontalCentered, v: !!pgs.verticalCentered },
+    firstPage: pgs.useFirstPageNumber || (pgs.firstPageNumber && pgs.firstPageNumber !== 1) ? +pgs.firstPageNumber : null,
+    order: pgs.pageOrder === 'overThenDown' ? 'over' : 'down',
+    header: hf.oddHeader ?? '',
+    footer: hf.oddFooter ?? '',
+    area: pgs.printArea ? parseRef(String(pgs.printArea).split(/[,&]/)[0]) : null,
+  };
+  const def = normPrint(null);
+  const same = JSON.stringify({ ...p, margins: def.margins, mg: def.mg }) === JSON.stringify(def) && preset === 'normal';
+  return same ? null : storePrint(p);
+}
+function printOut(ws: ExcelJS.Worksheet, ps0: PrintSetup) {
+  const ps = normPrint(ps0);
+  ws.pageSetup = {
+    ...ws.pageSetup,
+    orientation: ps.orientation, paperSize: PAPERS[ps.paper].code as any, showGridLines: ps.gridlines, showRowColHeaders: ps.headings,
+    fitToPage: !!ps.fit, ...(ps.fit ? { fitToWidth: ps.fit.w, fitToHeight: ps.fit.h } : { scale: ps.scale }),
+    margins: { left: ps.mg.l, right: ps.mg.r, top: ps.mg.t, bottom: ps.mg.b, header: ps.mg.h, footer: ps.mg.f },
+    horizontalCentered: ps.center.h, verticalCentered: ps.center.v,
+    pageOrder: ps.order === 'over' ? 'overThenDown' : 'downThenOver',
+    ...(ps.firstPage ? { firstPageNumber: ps.firstPage } : {}),
+    ...(ps.titleRowRange ? { printTitlesRow: `${ps.titleRowRange[0] + 1}:${ps.titleRowRange[1] + 1}` } : {}),
+    ...(ps.titleColRange ? { printTitlesColumn: `${colName(ps.titleColRange[0])}:${colName(ps.titleColRange[1])}` } : {}),
+    ...(ps.area ? { printArea: rangeToA1(ps.area) } : {}),
+  } as any;
+  if (ps.header || ps.footer) (ws as any).headerFooter = { ...(ws as any).headerFooter, oddHeader: ps.header || undefined, oddFooter: ps.footer || undefined };
+}
+function colIdx(s: string) { let c = 0; for (const ch of s.toUpperCase()) c = c * 26 + ch.charCodeAt(0) - 64; return c - 1; }
+/** Ngắt trang theo cột (ExcelJS chỉ ghi được ngắt theo hàng) */
+async function addColBreaks(buf: Uint8Array, cols: number[][]): Promise<Uint8Array> {
+  const zip = await JSZip.loadAsync(buf);
+  for (let i = 0; i < cols.length; i++) {
+    if (!cols[i].length) continue;
+    const path = `xl/worksheets/sheet${i + 1}.xml`;
+    let xml = await zip.file(path)?.async('string');
+    if (!xml) continue;
+    const blk = `<colBreaks count="${cols[i].length}" manualBreakCount="${cols[i].length}">${cols[i].map((c) => `<brk id="${c}" max="1048575" man="1"/>`).join('')}</colBreaks>`;
+    const after = /<\/rowBreaks>|<rowBreaks[^>]*\/>/.exec(xml) ?? /<\/headerFooter>|<headerFooter[^>]*\/>/.exec(xml) ?? /<pageSetup[^>]*\/>/.exec(xml) ?? /<pageMargins[^>]*\/>/.exec(xml);
+    xml = after ? xml.slice(0, after.index + after[0].length) + blk + xml.slice(after.index + after[0].length) : xml.replace('</worksheet>', blk + '</worksheet>');
+    zip.file(path, xml);
+  }
   return zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });
 }

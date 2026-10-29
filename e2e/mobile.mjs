@@ -41,26 +41,15 @@ for (const [name, vp, minGrid] of SIZES) {
   });
   check(`${name}: vùng lưới cao ≥ ${minGrid}px`, m.gridH >= minGrid, `${m.gridH}px`);
   check(`${name}: trang không tràn ngang`, m.overflow <= 0, String(m.overflow));
-  if (landscape) check(`${name}: ribbon thu gọn mặc định khi nằm ngang`, m.ribbon === 'none', m.ribbon);
   await page.screenshot({ path: OUT + `d4-mobile-${name}.png` });
-
-  // chạm thẻ “Trang chủ” → ribbon hiện tạm; chạm nút Đậm; chạm lưới → ribbon ẩn
-  if (landscape) {
-    await page.tap('[role="tab"]:has-text("Trang chủ")');
-    const peek = await page.evaluate(() => getComputedStyle(document.querySelector('#ribbon')).display);
-    check(`${name}: chạm thẻ lệnh thì ribbon hiện tạm`, peek !== 'none', peek);
-    await page.screenshot({ path: OUT + `d4-mobile-${name}-peek.png` });
-    await page.tap('#ribbon [data-id="b"]');
-    const bold = await page.evaluate(() => !!window.__xl.wb.style(window.__xl.grid.sheet, 0, 0).b);
-    check(`${name}: dùng lệnh từ ribbon tạm (Đậm)`, bold);
-    const box = await page.locator('#gridwrap').boundingBox();
-    await page.touchscreen.tap(box.x + box.width - 30, box.y + box.height - 20);
-    const after = await page.evaluate(() => getComputedStyle(document.querySelector('#ribbon')).display);
-    check(`${name}: chạm vào lưới thì ribbon thu lại`, after === 'none', after);
-  }
+  // 0.5: ribbon đơn giản một hàng; khi nằm ngang chung hàng với thanh tiêu đề (theo bản mẫu đã duyệt)
+  const lay = await page.evaluate(() => { const t = document.querySelector('#titlebar').getBoundingClientRect(), r = document.querySelector('#ribbon').getBoundingClientRect(); return { same: Math.abs(t.top - r.top) < 2, simple: document.querySelector('#ribbon').classList.contains('simple') }; });
+  check(`${name}: ribbon đơn giản${landscape ? ', chung hàng với thanh tiêu đề' : ''}`, lay.simple && (!landscape || lay.same), JSON.stringify(lay));
+  await page.tap('#ribbon [data-id="b"]');
+  check(`${name}: dùng lệnh Đậm từ ribbon đơn giản`, await page.evaluate(() => !!window.__xl.wb.style(window.__xl.grid.sheet, 0, 0).b));
 
   // vùng chạm
-  const small = await page.evaluate(() => [...document.querySelectorAll('#ribbon .rb, .tabs button, .top .ib:not([hidden]), .sheets .st, .fxb')]
+  const small = await page.evaluate(() => [...document.querySelectorAll('#ribbon button, #titlebar button:not([hidden]), .sheets .st, .fxb, .mob-cmd button')]
     .filter((b) => b.offsetParent).map((b) => [b.id || b.className || b.textContent, b.getBoundingClientRect()]).filter(([, r]) => r.width < 36 || r.height < 30).map(([n, r]) => `${n} ${Math.round(r.width)}×${Math.round(r.height)}`));
   check(`${name}: nút đủ lớn để chạm`, small.length === 0, small.join(', '));
 
@@ -92,7 +81,7 @@ for (const [name, vp, minGrid] of SIZES) {
   await ctx.close();
 }
 await browser.close();
-process.kill(-srv.pid);
+try { process.kill(-srv.pid); } catch { /* đã dừng */ }
 const bad = results.filter((r) => !r.ok);
 console.log(`\n${results.length - bad.length}/${results.length} kiểm thử điện thoại đạt`);
 writeFileSync(OUT + 'd4-mobile-results.json', JSON.stringify(results, null, 1));

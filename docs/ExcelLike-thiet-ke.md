@@ -201,6 +201,74 @@ Quyết định kỹ thuật Đợt 4:
 
 Review độc lập Đợt 4: 1 lỗi nặng (Esc ở hộp thoại hỏi lưu làm không đóng được cửa sổ), 4 lỗi vừa (lưu chồng nhau có thể hỏng tệp; nút Lưu trong hộp thoại đóng; trạng thái chưa lưu mất khi mở lại; trang có thể ghi vào đường dẫn bất kỳ), 7 lỗi nhẹ — đã sửa, có kiểm thử.
 
+## 6f. Bản 0.5 (29/10/2026) — giao diện như Excel 365 + in ấn như Excel 365
+
+**Yêu cầu:** “giao diện và chức năng hoàn toàn giống Excel 365” (lộ trình 0.5–1.0, đã duyệt) và “chức năng in ấn nâng cấp hoàn toàn giống Excel 365” (gộp phần in của 0.8 vào 0.5). Chốt giao diện: phương án A – Nhiều màu.
+
+**Đã làm**
+- Thanh tiêu đề tự vẽ:
+  - Tự động lưu ghi thẳng vào tệp .xlsx đang mở.
+  - QAT tùy biến được 9 lệnh.
+  - Bấm tên tệp để đổi tên.
+  - Tìm kiếm lệnh Alt+Q, tìm được cả khi gõ không dấu.
+- Bản Windows là cửa sổ không viền. Nút cửa sổ của hệ thống đổi màu theo chủ đề.
+- 9 thẻ đúng thứ tự Excel. Ribbon 3 tầng gồm nút lớn, nút nhỏ có chữ, nút biểu tượng, nút tách đôi, hộp chọn phông/cỡ/định dạng số và nút ↘ mở hộp thoại.
+  - Nhóm tự co thành một nút khi cửa sổ hẹp, theo thứ tự ưu tiên như Excel.
+  - Lệnh chưa làm vẫn hiện nhưng mờ, ghi rõ “có ở bản 0.x”.
+- KeyTips: Alt hoặc F10, Alt+chữ, gõ nhiều ký tự (Alt, H, A, C), Esc để lùi một cấp. Mã phím dùng theo Excel.
+- Backstage: Trang đầu, Mới, Mở, Thông tin, Lưu, Lưu thành, In, Xuất, Đóng, Tài khoản (Chủ đề Office: Nhiều màu / Xám Đậm / Đen / Trắng / Hệ thống), Tùy chọn (tính lặp, hướng Enter).
+- **In ấn:**
+  - App tự chia trang (`core/paginate.ts`), nên xem trước và bản in là cùng một HTML, mỗi trang một khối đúng khổ giấy.
+  - Thiết lập in:
+    - 8 khổ giấy.
+    - Lề Thường/Rộng/Hẹp/Tùy chỉnh (inch như Excel).
+    - Co giãn % hoặc vừa X × Y trang (tìm tỷ lệ nguyên lớn nhất như Excel).
+    - Ngắt trang thủ công.
+    - Hàng và cột lặp lại, không cắt ngang ô gộp.
+    - Thứ tự trang xuống-rồi-ngang hoặc ngang-rồi-xuống.
+    - Căn giữa trang, in đường lưới, in đầu đề hàng/cột.
+    - Đầu trang và chân trang 3 phần với mã &P &N &D &T &A &F, số trang đầu tiên.
+    - Số không vừa ô in thành ####.
+  - Trang In trong Backstage có:
+    - Số bản, Máy in, In trang tính / cả sổ / vùng chọn, Trang từ–đến, Đối chiếu, Hướng, Khổ, Lề, Co giãn.
+    - Liên kết Thiết lập Trang.
+    - Xem trước ◀ 1/N ▶, Hiện Lề, Thu phóng Trang.
+  - Hộp Thiết lập Trang có 4 thẻ.
+  - Thẻ Bố trí Trang gồm Lề, Hướng, Kích thước, Vùng In, Ngắt, In Tiêu đề, Co giãn và Tùy chọn Trang tính.
+  - Dạng xem Xem trước Ngắt Trang.
+  - **Bản Windows:**
+    - Đọc danh sách máy in của Windows và in thẳng không qua hộp thoại hệ thống (số bản, đối chiếu, khổ giấy).
+    - Nút “Thuộc tính Máy in” mở hộp thoại của Windows.
+    - “Lưu thành PDF” ghi tệp .pdf thật bằng printToPDF.
+  - **Bản web:** in qua hộp thoại của trình duyệt, có “Lưu dưới dạng PDF”.
+  - Khứ hồi .xlsx toàn bộ thiết lập in. Ngắt trang theo cột được tự ghi vì ExcelJS không hỗ trợ.
+- Thẻ sheet:
+  - Có ◀ ▶ ⊕.
+  - Menu chuột phải: Chèn…, Xóa, Đổi tên, Di chuyển hoặc Sao chép… (tạo bản sao), Màu Tab (bảng màu Excel), Ẩn, Bỏ ẩn…
+  - Ctrl+PgUp/PgDn chuyển sheet, Shift+F11 tạo sheet mới.
+- Thanh trạng thái:
+  - Chế độ, Trung bình/Số đếm/Số đếm Số/Tối thiểu/Tối đa/Tổng (bấm chuột phải để chọn mục).
+  - 3 nút dạng xem.
+  - Thanh trượt thu phóng 10–100–400%, hộp Thu phóng.
+- Menu chuột phải ô, tiêu đề hàng, tiêu đề cột theo Excel, kèm thanh mini.
+- Hộp Chèn… / Xóa… dồn ô. Chiều cao hàng tính theo điểm, độ rộng cột tính theo ký tự. Ẩn/Bỏ ẩn hàng và cột (giữ kích thước gốc).
+- Lưới:
+  - Ô mặc định 64×20 px.
+  - Phông giao diện Segoe UI, phông ô Aptos Narrow → Calibri, 11 pt = 14,67 px, đậm 700.
+  - Màu tiêu đề/đường lưới/vùng chọn như Excel.
+  - Hiện Công thức, ẩn/hiện Đầu đề và Thanh công thức.
+- Điện thoại:
+  - Ribbon đơn giản một hàng, chọn thẻ bằng nút chọn thẻ.
+  - Khi dọc có thanh lệnh dưới (Nhập, Hàm, Lọc, Biểu đồ, Thêm). Khi nằm ngang, ribbon chung hàng với thanh tiêu đề.
+- Định dạng Phân số (`# ?/?`, `# ?/4`).
+
+**Quyết định kỹ thuật**
+- Chia trang trong app thay vì để trình duyệt chia. Lý do: số trang trong đầu/chân trang, “Trang 1 / N”, xem trước từng trang và in thẳng ra máy in phải cho cùng một kết quả.
+- `@page { size: <khổ>; margin: 0 }` và mỗi `.page` có kích thước mm cố định. Lề nằm bên trong trang (inch như Excel) nên Chromium/Electron không tự thêm lề.
+- Lấy số trang `&N` theo số trang cuối, tính cả “Số trang đầu tiên”. Chưa đối chiếu với Excel thật, cần kiểm khi có Excel.
+- Vẽ lưới nhanh hơn khoảng 2 lần, bù cho việc có nhiều ô hơn vì ô nhỏ như Excel. Cách làm: mỗi khung hình chỉ đọc bố cục DOM một lần, có bộ nhớ đệm phông và độ rộng chữ, `style()` không tạo đối tượng mới. Kết quả: trung vị 3 ms / khung khi cuộn sổ 2 triệu ô.
+- Sửa lỗi tiềm ẩn ở bản Windows: khung xem trước in (iframe) làm tiến trình chính tưởng trang đang nạp lại. Hệ quả là tệp nhấp đúp lúc đó không được mở và lần đóng cửa sổ sau đó không hỏi lưu. Nay chỉ tính lần nạp lại của khung chính.
+
 ## 7. Kiểm chứng cuối theo tiêu chí Bước 0
 
 | # | Tiêu chí | Kết quả |

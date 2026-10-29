@@ -130,9 +130,9 @@ const inkVariety = (page, sel) => X(page, (sel) => {
   check('Chèn nhanh biểu đồ Đường từ vùng liền kề ô hiện hành', ch.length === 2 && ch[1].type === 'line' && ch[1].series.length === 2 && ch[1].series[0].cats?.range.c1 === 1, JSON.stringify(ch[1]?.series.map((s) => s.vals.range)));
 
   // lưu .xlsx có biểu đồ + thiết lập in ngang
-  await X(page, () => window.__xl.wb.setPrint(0, { orientation: 'landscape', paper: 'A4', fitWidth: true, titleRows: 1, gridlines: false }));
-  await tab(page, 'Tệp');
-  const [dl] = await Promise.all([page.waitForEvent('download'), btn(page, 'xlsx-save')]);
+  await X(page, () => { window.__xl.wb.setPrint(0, { orientation: 'landscape', paper: 'A4', fitWidth: true, titleRows: 1, gridlines: false }); window.__xl.wb.setColWidth(0, 1, 110); window.__xl.wb.setColWidth(0, 2, 100); });
+  await tab(page, 'Tệp'); await page.click('#backstage [data-bs="saveas"]');
+  const [dl] = await Promise.all([page.waitForEvent('download'), page.click('#backstage [data-a="xlsx"]')]);
   const path = OUT + 'd3-charts.xlsx';
   await dl.saveAs(path);
   const py = execFileSync('python3', ['-c', `
@@ -146,12 +146,13 @@ print(','.join(type(c).__name__ for c in ws._charts), ws.page_setup.orientation,
   await page.keyboard.press('Escape');
   await goto(page, 'A1');
   await page.keyboard.press('Control+p');
-  await page.waitForSelector('.dlg h2:has-text("In / Lưu PDF")');
+  await page.waitForSelector('#backstage .bs-preview iframe');
+  await page.waitForTimeout(400);
   await page.screenshot({ path: OUT + 'd3-print-dialog.png' });
-  await page.click('.dlg .btn.primary');
+  await page.click('#bs-print');
   await page.waitForFunction(() => window.__printed, null, { timeout: 5000 }).catch(() => {});
   const html = await X(page, () => window.__printed || '');
-  check('In: tạo trang in có bảng và ảnh biểu đồ', html.includes('Đèn LED') && (html.match(/<img /g) || []).length === 2 && /size: A4 landscape/.test(html));
+  check('In: tạo trang in có bảng và ảnh biểu đồ', html.includes('Đèn LED') && (html.match(/<img /g) || []).length === 2 && /size: 297mm 210mm/.test(html));
   if (html) {
     const pp = await ctx.newPage();
     await pp.setContent(html);
@@ -166,6 +167,7 @@ print(','.join(type(c).__name__ for c in ws._charts), ws.page_setup.orientation,
     await pp.close();
   }
 
+  await page.keyboard.press('Escape');
   // giao diện tối
   await X(page, () => window.__xl.setTheme('dark'));
   await page.waitForTimeout(250);
@@ -251,7 +253,7 @@ for (const [name, vp] of [['portrait', { width: 390, height: 844 }], ['landscape
 }
 
 await browser.close();
-process.kill(-srv.pid);
+try { process.kill(-srv.pid); } catch { /* đã dừng */ }
 const bad = results.filter((r) => !r.ok);
 console.log(`\n${results.length - bad.length}/${results.length} kiểm thử Đợt 3 đạt`);
 writeFileSync(OUT + 'd3-results.json', JSON.stringify(results, null, 1));

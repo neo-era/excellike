@@ -4,14 +4,33 @@ Phần mềm bảng tính chức năng tương tự Excel 365 (dùng cá nhân).
 
 **Dùng ngay trên web:** https://neo-era.github.io/excellike/ (cài được như ứng dụng từ Chrome/Edge, chạy cả khi mất mạng).
 
-## Cài trên Windows (Đợt 4)
+## Bản 0.5 — giao diện và in ấn như Excel 365
 
-- **ExcelLike-Setup-0.4.1.exe**: bộ cài cho tài khoản đang dùng, không cần quyền quản trị. Có lối tắt Start/màn hình, mục “Mở bằng…” cho .xlsx và .csv; tùy chọn đặt ExcelLike làm ứng dụng mặc định. Gỡ trong Cài đặt → Ứng dụng (dữ liệu sổ tính được giữ lại).
-- **ExcelLike-Portable-0.4.1.zip**: giải nén rồi chạy `ExcelLike.exe`, không cần cài.
+- **Giao diện:**
+  - Thanh tiêu đề xanh có Tự động lưu, Thanh công cụ Truy nhập Nhanh tùy chỉnh được, tên tệp và ô **Tìm kiếm (Alt+Q)** (gõ không dấu vẫn tìm được).
+  - 9 thẻ: Tệp, Trang đầu, Chèn, Bố trí Trang, Công thức, Dữ liệu, Xem lại, Xem, Trợ giúp.
+  - Ribbon 3 tầng có nút tách đôi và nút ↘. **KeyTips** bằng Alt hoặc F10 (ví dụ Alt, H, 1 để in đậm).
+  - Tệp mở trang **Backstage**.
+  - Chủ đề Office: Nhiều màu, Xám Đậm, Đen, Trắng.
+  - Thẻ trang tính có màu thẻ, ẩn/bỏ ẩn, di chuyển hoặc sao chép.
+  - Thanh trạng thái có Trung bình, Số đếm, Tổng, Tối thiểu, Tối đa và thanh trượt thu phóng.
+  - Menu chuột phải có thanh mini. Có Chèn/Xóa ô dồn ô, Chiều cao hàng / Độ rộng cột, Ẩn/Bỏ ẩn hàng, cột.
+- **In ấn:**
+  - Tệp ▸ In (Ctrl+P) có xem trước từng trang. Chọn được số bản, máy in, in trang tính / cả sổ / vùng chọn, trang từ–đến, khổ giấy, hướng, lề, co giãn (vừa 1 trang, vừa cột, vừa hàng, % hoặc X × Y trang).
+  - **Thiết lập Trang** có đầu trang/chân trang (Trang 1 / N, tên trang tính, ngày, tên tệp), hàng và cột lặp lại, căn giữa trang, in đường lưới và đầu đề, thứ tự trang.
+  - Có **ngắt trang thủ công** và dạng xem **Xem trước Ngắt Trang**.
+  - Bản Windows in thẳng ra máy in đã chọn (không qua hộp thoại) và xuất **PDF** thật.
+
+Lệnh Excel chưa làm vẫn hiện trên ribbon (mờ), ghi rõ “có ở bản 0.x”.
+
+## Cài trên Windows
+
+- **ExcelLike-Setup-0.5.0.exe**: bộ cài cho tài khoản đang dùng, không cần quyền quản trị. Có lối tắt Start/màn hình, mục “Mở bằng…” cho .xlsx và .csv; tùy chọn đặt ExcelLike làm ứng dụng mặc định. Gỡ trong Cài đặt → Ứng dụng (dữ liệu sổ tính được giữ lại).
+- **ExcelLike-Portable-0.5.0.zip**: giải nén rồi chạy `ExcelLike.exe`, không cần cài.
 - Nhấp đúp tệp .xlsx/.csv để mở (đang mở thì chuyển vào cửa sổ hiện có). **Ctrl+S** lưu đè đúng tệp đã mở; **Lưu thành…** chọn nơi lưu; đóng cửa sổ khi còn thay đổi chưa lưu vào tệp sẽ được hỏi.
 - Windows SmartScreen có thể cảnh báo vì bộ cài chưa ký số: bấm “Thông tin thêm” → “Vẫn chạy”.
 
-Điện thoại: khi xoay ngang, ribbon tự thu gọn (chạm thẻ lệnh để hiện tạm), thanh tiêu đề và thẻ lệnh chung một hàng để lưới rộng hơn. Nút ⌃/⌄ cuối hàng thẻ (hoặc Ctrl+F1, nhấp đúp thẻ) để ghim/thu gọn ribbon.
+Điện thoại: ribbon đơn giản một hàng, chọn thẻ bằng nút “Trang đầu ▾”. Khi dọc có thanh lệnh dưới (Nhập, Hàm, Lọc, Biểu đồ, Thêm). Khi nằm ngang, ribbon chung hàng với thanh tiêu đề. Trên máy tính, Ctrl+F1 thu gọn hoặc ghim ribbon.
 
 ## Đợt 3 thêm gì
 
@@ -94,7 +113,8 @@ Mỗi lần đẩy mã lên nhánh `main`, GitHub Actions (`.github/workflows/pa
 
 ```
 src/core/   address · numfmt · input · tsv · csv · sizes · series · formula · locale · rules · pivot · chart · print · xlsx · workbook (lõi)
-src/ui/     grid (lưới Canvas) · app (ribbon, thanh công thức, sheet, menu) · dialogs · charts + chartdraw (biểu đồ) · pivotui · printui · files · store (IndexedDB) · icons · funcs
+src/core/paginate (chia trang in, đầu/chân trang)
+src/ui/     grid (lưới Canvas) · app (lệnh, ribbon, thanh tiêu đề/trạng thái, menu) · ribbon (ribbon, KeyTips) · menu · backstage · printui (trang In) · pagesetup · dialogs · charts + chartdraw (biểu đồ) · pivotui · printui · files · store (IndexedDB) · icons · funcs
 tests/      unit test        e2e/   kiểm thử trình duyệt, điện thoại, bản máy tính       public/  manifest, service worker, icon
 electron/   main.cjs (cửa sổ, mở/lưu tệp, một phiên) · preload.cjs (cầu nối an toàn)
 build/      icon, installer.nsi (bộ cài NSIS), afterPack.cjs (gắn icon vào .exe)      tools/  build-win.mjs, artifact.mjs

@@ -11,4 +11,8 @@ contextBridge.exposeInMainWorld('xlDesktop', {
   closeOk: () => ipcRenderer.send('xl:close-ok'),
   closePending: () => ipcRenderer.send('xl:close-pending'),
   closeCancel: () => ipcRenderer.send('xl:close-cancel'),
+  setTitleBar: (o) => ipcRenderer.send('xl:titlebar', { color: String(o?.color ?? ''), symbolColor: String(o?.symbolColor ?? '') }),
+  printers: () => ipcRenderer.invoke('xl:printers'),
+  print: (o) => ipcRenderer.invoke('xl:print', o),
+  pdf: (o) => ipcRenderer.invoke('xl:pdf', o),
 });

@@ -165,7 +165,7 @@ describe('Biểu đồ trong tệp .xlsx', () => {
     expect(bar.anchor).toMatchObject({ r: 1, c: 4 });
     expect(bar.w).toBeGreaterThan(300);
     expect(warnings).toEqual([]);
-    expect(wb.meta(0).print).toMatchObject({ orientation: 'landscape', paper: 'A4', titleRows: 1 });
+    expect(wb.meta(0).print).toMatchObject({ orientation: 'landscape', paper: 'A4', titleRowRange: [0, 0] });
   });
   it('ghi biểu đồ vào .xlsx đúng chuẩn (có phần biểu đồ, bản vẽ, liên kết) rồi đọc lại', async () => {
     const wb = book();
@@ -192,7 +192,7 @@ describe('Biểu đồ trong tệp .xlsx', () => {
     expect(c0).toMatchObject({ title: 'Theo hạng mục', legend: 'r', labels: true, anchor: { r: 2, c: 6 } });
     expect(Math.abs(c0.w - 480)).toBeLessThan(3);
     expect(chartData(back, c0).series[0].values).toEqual(chartData(wb, wb.meta(0).charts[0]).series[0].values);
-    expect(back.meta(0).print).toMatchObject({ orientation: 'landscape', paper: 'A3', fitWidth: true, titleRows: 1, gridlines: true });
+    expect(back.meta(0).print).toMatchObject({ orientation: 'landscape', paper: 'A3', fit: { w: 1, h: 0 }, titleRowRange: [0, 0], gridlines: true });
   });
 });
 
@@ -205,14 +205,15 @@ describe('Trang in', () => {
     wb.setInput(0, 0, 0, 'BẢNG DỰ TOÁN <thử>');
     wb.merge(0, rg(0, 0, 0, 4));
     wb.setColWidth(0, 4, 0);
+    wb.setColWidth(0, 3, 110);
     wb.setPrint(0, { orientation: 'landscape', paper: 'A4', fitWidth: true, titleRows: 2, gridlines: false });
     const html = buildPrintHtml(wb, 0, {});
-    expect(html).toContain('size: A4 landscape');
+    expect(html).toContain('size: 297mm 210mm');
     expect(html).toContain('204.000.000');
     expect(html).toContain('BẢNG DỰ TOÁN &lt;thử&gt;');
     expect(html).toMatch(/colspan="4"/);
     expect(html).not.toContain('1260');
-    expect(html).toContain('<thead>');
+    expect((html.match(/class="page"/g) ?? []).length).toBe(1);
     expect(html).toMatch(/background:#dcefe5/);
   });
 });

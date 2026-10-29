@@ -5,6 +5,7 @@ import { Workbook } from '../src/core/workbook';
 import { computePivot } from '../src/core/pivot';
 import { chartData } from '../src/core/chart';
 import { buildPrintHtml } from '../src/core/print';
+import { normPrint, paginate } from '../src/core/paginate';
 import { writeXlsx, readXlsx } from '../src/core/xlsx';
 
 const rg = (r1: number, c1: number, r2: number, c2: number) => ({ r1, c1, r2, c2 });
@@ -96,11 +97,12 @@ describe('Review Đợt 3', () => {
 
   it('M7: lặp hàng tiêu đề không cắt ngang ô gộp', () => {
     const wb = mk([['A', 'B'], ['', 'b2'], ['c', 'd']]);
+    for (let r = 3; r < 80; r++) wb.setInput(0, r, 1, String(r));
     wb.merge(0, rg(0, 0, 1, 0));
+    const L = paginate(wb, 0, normPrint({ orientation: 'portrait', paper: 'A4', fitWidth: true, titleRows: 1, gridlines: false }));
+    expect(L.pages[1].titleRows).toEqual([0, 1]);
     const html = buildPrintHtml(wb, 0, { setup: { orientation: 'portrait', paper: 'A4', fitWidth: true, titleRows: 1, gridlines: false } });
-    const thead = /<thead>([\s\S]*?)<\/thead>/.exec(html)![1];
-    expect((thead.match(/<tr/g) || []).length).toBe(2);
-    expect(/<tbody>([\s\S]*?)<\/tbody>/.exec(html)![1]).toMatch(/>c<\/td><td[^>]*>d</);
+    expect(html).toMatch(/>c<\/td><td[^>]*>d</);
   });
 
   it('L1: tạo Pivot ở sheet mới là một bước hoàn tác', () => {
