@@ -269,6 +269,12 @@ Review độc lập Đợt 4: 1 lỗi nặng (Esc ở hộp thoại hỏi lưu l
 - Vẽ lưới nhanh hơn khoảng 2 lần, bù cho việc có nhiều ô hơn vì ô nhỏ như Excel. Cách làm: mỗi khung hình chỉ đọc bố cục DOM một lần, có bộ nhớ đệm phông và độ rộng chữ, `style()` không tạo đối tượng mới. Kết quả: trung vị 3 ms / khung khi cuộn sổ 2 triệu ô.
 - Sửa lỗi tiềm ẩn ở bản Windows: khung xem trước in (iframe) làm tiến trình chính tưởng trang đang nạp lại. Hệ quả là tệp nhấp đúp lúc đó không được mở và lần đóng cửa sổ sau đó không hỏi lưu. Nay chỉ tính lần nạp lại của khung chính.
 
+## 6g. Bản 0.5.1 (29/10/2026) — sửa #ERROR! khi mở tệp dự toán (OFFSET động, tính lặp)
+- **Nguyên nhân:** tệp TMDT (THKP hạng mục R12/R17) dùng `FORECAST(x;OFFSET(K12;0;MATCH(...);1;2);…)`. HyperFormula chỉ nhận OFFSET khi số hàng/cột là hằng → lỗi phân tích → #ERROR! lan sang Chi phí chung, LT, tổng cộng (535 ô).
+- **Cách sửa (src/core/offset.ts):** khi đưa vào bộ tính, OFFSET động đổi thành hàm nội bộ `XOFSn(…; khung phụ thuộc)` (volatile như Excel); khi hiển thị/lưu đổi ngược lại → người dùng và tệp .xlsx luôn thấy OFFSET. Khung phụ thuộc = ô gốc + các *vùng* trong đối số (bỏ ô đơn để không tạo vòng lặp giả), không chứa chính ô công thức.
+- **Tính lặp:** tệp bật iterative calculation (vòng R11→H20→…→R12). Ô phụ thuộc vòng lặp nhưng bọc IFERROR (HyperFormula không báo #CYCLE!) nay cũng được đưa vào tập tính lặp (duyệt getCellDependents) → TT38!R18/S18… đúng như Excel.
+- **Kiểm chứng:** 2.748/2.748 ô công thức trong tệp khớp giá trị Excel lưu sẵn (trước: 563 sai). tests/offset.test.ts (4 ca: đổi qua lại, tính & tính lại, chèn hàng/hoàn tác/lưu .xlsx, tính lặp qua IFERROR). vitest 173, e2e v05 120, run 38, dot2 21, dot3 32, mobile 32.
+
 ## 7. Kiểm chứng cuối theo tiêu chí Bước 0
 
 | # | Tiêu chí | Kết quả |

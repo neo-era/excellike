@@ -1,3 +1,4 @@
+import { DynamicOffsetPlugin, offsetIn, offsetOut } from './offset';
 import { HyperFormula, FunctionPlugin, FunctionArgumentType, CellError, ErrorType } from 'hyperformula';
 import { shiftFormula, fixSheetQuotes, needsQuote } from './formula';
 import type { ConfigParams, RawCellContent, SimpleCellAddress } from 'hyperformula';
@@ -145,7 +146,32 @@ function ensurePlugins() {
   HyperFormula.unregisterFunction('MOD');
   HyperFormula.registerFunctionPlugin(ExcelIntPlugin as any, { enGB: { INT: 'INT', MOD: 'MOD' } } as any);
   HyperFormula.registerFunctionPlugin(ExcelForecastPlugin as any, { enGB: { FORECAST: 'FORECAST', 'FORECAST.LINEAR': 'FORECAST.LINEAR', INTERCEPT: 'INTERCEPT' } } as any);
+  HyperFormula.registerFunctionPlugin(DynamicOffsetPlugin as any, { enGB: { XOFS3: 'XOFS3', XOFS4: 'XOFS4', XOFS5: 'XOFS5' } } as any);
   pluginsReady = true;
+}
+/** OFFSET động: đổi công thức khi vào bộ tính và đổi ngược khi đọc ra (xem offset.ts) */
+function mapRows(cells: RawCellContent[][], sheet: string, r0 = 0, c0 = 0): RawCellContent[][] {
+  let hit = false;
+  for (const row of cells) { if (row) for (const v of row) if (typeof v === 'string' && v[0] === '=' && /OFFSET\s*\(/i.test(v)) { hit = true; break; } if (hit) break; }
+  if (!hit) return cells;
+  return cells.map((row, i) => row && row.map((v, j) => (typeof v === 'string' ? (offsetIn(v, { r: r0 + i, c: c0 + j }, sheet) as RawCellContent) : v)));
+}
+function patchOffset(hf: HyperFormula): HyperFormula {
+  const h: any = hf;
+  const set = h.setCellContents.bind(hf), sheetSet = h.setSheetContent.bind(hf);
+  const gf = h.getCellFormula.bind(hf), gs = h.getCellSerialized.bind(hf), gss = h.getSheetSerialized.bind(hf);
+  h.setCellContents = (a: any, c: any) => {
+    const name = hf.getSheetName(a.sheet) ?? '';
+    if (Array.isArray(c)) return set(a, mapRows(c, name, a.row, a.col));
+    return set(a, typeof c === 'string' ? offsetIn(c, { r: a.row, c: a.col }, name) : c);
+  };
+  const calc = h.calculateFormula.bind(hf);
+  h.calculateFormula = (f: string, sheet: number) => calc(offsetIn(f, undefined, hf.getSheetName(sheet) ?? ''), sheet);
+  h.setSheetContent = (id: number, cells: RawCellContent[][]) => sheetSet(id, mapRows(cells, hf.getSheetName(id) ?? ''));
+  h.getCellFormula = (a: any) => { const f = gf(a); return f === undefined ? f : offsetOut(f); };
+  h.getCellSerialized = (a: any) => { const v = gs(a); return typeof v === 'string' ? offsetOut(v) : v; };
+  h.getSheetSerialized = (id: number) => gss(id).map((row: any[]) => row.map((v) => (typeof v === 'string' ? offsetOut(v) : v)));
+  return hf;
 }
 // Excel cho phép viết TRUE/FALSE không có ngoặc
 const NAMES = [{ name: 'TRUE', expression: '=TRUE()' }, { name: 'FALSE', expression: '=FALSE()' }];
@@ -154,10 +180,10 @@ function buildHF(sheets?: { name: string; cells: RawCellContent[][] }[]) {
   // buildFromSheets nhanh hơn ~2,5 lần khi mở sổ lớn; thứ tự key của object phải giữ đúng thứ tự sheet
   if (sheets && sheets.length && !sheets.some((x) => /^\d+$/.test(x.name))) {
     const obj: Record<string, RawCellContent[][]> = Object.create(null);
-    for (const x of sheets) obj[x.name] = x.cells;
-    return HyperFormula.buildFromSheets(obj, HF_CONFIG, NAMES);
+    for (const x of sheets) obj[x.name] = mapRows(x.cells, x.name);
+    return patchOffset(HyperFormula.buildFromSheets(obj, HF_CONFIG, NAMES));
   }
-  const hf = HyperFormula.buildEmpty(HF_CONFIG);
+  const hf = patchOffset(HyperFormula.buildEmpty(HF_CONFIG));
   for (const n of NAMES) hf.addNamedExpression(n.name, n.expression);
   if (sheets) {
     hf.suspendEvaluation();
@@ -475,9 +501,9 @@ export class Workbook {
   value(s: number, r: number, c: number) {
     const v = this.hf.getCellValue(this.A(s, r, c));
     // như Excel: công thức trả về ô trống thì hiện 0 (=A1 khi A1 trống)
+    // tính lặp: ô thuộc vòng tham chiếu (hoặc phụ thuộc vào nó) lấy giá trị đã hội tụ
+    if (this.over.size) { const o = this.over.get(s + ':' + r + ':' + c); if (o !== undefined) return (o === null ? 0 : o) as typeof v; }
     if (v === null) return (this.hf.doesCellHaveFormula(this.A(s, r, c)) ? 0 : null) as typeof v;
-    // tính lặp: ô thuộc vòng tham chiếu lấy giá trị đã hội tụ
-    if (this.over.size && v && typeof v === 'object' && (v as any).type === 'CYCLE') { const o = this.over.get(s + ':' + r + ':' + c); if (o !== undefined) return o as typeof v; }
     return v;
   }
 
@@ -509,7 +535,24 @@ export class Workbook {
       }
     }
     if (!D.length) { this.over.clear(); return; }
-    if (D.length > 20000) return; // quá lớn: giữ #CYCLE! như cũ
+    // ô phụ thuộc vòng lặp nhưng không hiện #CYCLE! (vd. bọc trong IFERROR) cũng phải tính lặp
+    {
+      const q: any[] = D.map((d) => this.A(d.s, d.r, d.c));
+      const seenR = new Set<string>();
+      while (q.length && D.length <= 20000) {
+        const a = q.pop();
+        let deps: any[] = [];
+        try { deps = this.hf.getCellDependents(a) as any[]; } catch { deps = []; }
+        for (const x of deps) {
+          if (x.start) { const rk = JSON.stringify(x); if (!seenR.has(rk)) { seenR.add(rk); q.push(x); } continue; }
+          const k = x.sheet + ':' + x.row + ':' + x.col;
+          if (inD.has(k) || !this.hf.doesCellHaveFormula(x)) continue;
+          inD.add(k); D.push({ s: x.sheet, r: x.row, c: x.col, k, parts: [] }); q.push(x);
+        }
+      }
+    }
+    if (D.length > 20000) { this.over.clear(); return; }
+    for (const k of [...this.over.keys()]) if (!inD.has(k)) this.over.delete(k); // quá lớn: giữ #CYCLE! như cũ
     const sheetOf = (name: string | undefined, s: number) => (name === undefined ? s : this.hf.getSheetId(name));
     for (const d of D) d.parts = compileRefs(this.hf.getCellFormula(this.A(d.s, d.r, d.c)) ?? '', (n) => sheetOf(n, d.s));
     const cur = (s: number, r: number, c: number): unknown => {
