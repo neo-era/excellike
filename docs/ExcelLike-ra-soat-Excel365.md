@@ -1,6 +1,6 @@
 # ExcelLike – Rà soát tính năng & phím tắt so với Excel 365 (Bước 0 cho v2)
 
-Ngày tra: 28/10/2026 (cập nhật 29/10/2026 cho bản 0.6). Đối chiếu **ExcelLike 0.4.1 → 0.6.0** với **Excel 365 cho Windows (Current Channel)**.
+Ngày tra: 28/10/2026 (cập nhật 29/10/2026 cho bản 0.6). Đối chiếu **ExcelLike 0.4.1 → 0.6.1** với **Excel 365 cho Windows (Current Channel)**.
 
 **Nguồn chính thức**
 - Microsoft Support – “Keyboard shortcuts in Excel” (tab Windows): https://support.microsoft.com/office/keyboard-shortcuts-in-excel-1798d9d5-842a-42b8-9c99-9b7213f0040f — 298 dòng phím tắt, 13 mục.
@@ -426,6 +426,7 @@ Tổng 180 mục: ✅ 167 · ◐ 9 · — 4
 | Phiên bản | Nội dung |
 |---|---|
 | **0.5 – Giao diện giống hệt Excel 365 + In ấn (đã làm)** | Thanh tiêu đề + QAT + ô Tìm lệnh; Ribbon 3 tầng có nút tách đôi và nút ↘ hộp thoại; đủ 9 tab (thêm Bố trí Trang, Xem lại, Trợ giúp); Backstage toàn màn hình; lưới/tiêu đề/vùng chọn/chấm điền đúng màu và nét Excel; thẻ sheet + thanh trạng thái đầy đủ (Chế độ, Trung bình/Đếm/Tổng tùy chọn, 3 nút dạng xem, thanh trượt thu phóng); menu chuột phải đầy đủ + thanh mini; KeyTips (Alt/F10); phông Segoe UI/Aptos (Calibri khi không có). Giữ chạy tốt trên điện thoại (dạng ribbon đơn giản hóa). |
+| **0.6.1 – Giao diện theo ảnh Excel 365 + ngôn ngữ (đã làm)** | Ribbon đủ nhóm như ảnh (Kiểu Ô dạng bộ sưu tập, Phần bổ trợ, Kiểu Dữ liệu, Hiệu suất, Dạng xem Trang tính, Ô Tiêu điểm, Dẫn hướng, thẻ Tự động hóa), Tệp ▸ Trang đầu (mẫu, Ưa thích, Tìm tệp, ngày tương đối, Chia sẻ), Trợ năng ở thanh trạng thái, chọn Tiếng Việt/English trong Tùy chọn. |
 | **0.6 – Bàn phím giống hệt (đã làm)** | 167/180 mục phím của trang Microsoft trong phạm vi (bảng ở mục C), Tìm & Thay thế, Đi tới/Đặc biệt, Dán Đặc biệt, Chổi định dạng, Định dạng Ô (Ctrl+1), F4, Ctrl+`, Điền Nhanh, Chuỗi, Liên kết, chọn nhiều vùng, nhóm trang tính, Phân tích Nhanh, Bảng tạm Office, bảng phím tắt F1. Test bấm thật từng phím: 164/164 + 3 phím bản Windows. |
 | **0.7 – Dữ liệu dự toán** | Tên vùng (đọc/ghi .xlsx), Bảng (Table) + tham chiếu có cấu trúc, Nhóm hàng/cột + Tổng phụ, Văn bản thành cột, Xóa trùng lặp, Ghi chú ô (đọc/ghi), hằng mảng nhiều cột, mảng động FILTER/SORT/UNIQUE. |
 | **0.8 – In ấn hồ sơ** | Phần lớn đã kéo lên 0.5 theo yêu cầu “in ấn giống Excel 365”. Còn lại: Dạng xem Bố trí trang (thước, sửa đầu/chân trang tại chỗ), kéo đường ngắt trang, trang đầu/chẵn lẻ khác, ảnh trong đầu trang. |

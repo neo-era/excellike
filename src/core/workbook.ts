@@ -269,6 +269,8 @@ export class Workbook {
     this.past = []; this.future = [];
     this.emit();
   }
+  /** Xóa lịch sử Hoàn tác (sau khi dựng sổ từ mẫu) */
+  clearHistory() { this.past = []; this.future = []; this.hf.clearUndoStack(); this.emit(); }
   canUndo() { return this.past.length > 0; }
   canRedo() { return this.future.length > 0; }
   undo() {

@@ -283,6 +283,35 @@ Review độc lập Đợt 4: 1 lỗi nặng (Esc ở hộp thoại hỏi lưu l
 - **Hộp thoại**: Định dạng Ô 6 thẻ (`ui/fmtcells.ts`, chỉ áp các trường đã đổi, Ctrl+Tab chuyển thẻ), Tìm & Thay thế không chặn trang tính (kéo di chuyển, Tìm Tất cả có danh sách), Đi tới / Đặc biệt, Dán Đặc biệt (phím chữ), Liên kết, Chuỗi, Đối số Hàm, Phân tích Nhanh, Bảng tạm Office (24 mục), bảng phím tắt F1 có ô tìm không dấu (`ui/dlg06.ts`). Ribbon: mọi mục “có ở bản 0.6” đã thành lệnh thật; bỏ chú thích phím sai (Ctrl+E ở Căn giữa, Ctrl+Shift+> <). Điều hướng Ribbon bằng bàn phím (Alt rồi mũi tên/Tab, Ctrl+←/→ giữa nhóm, Alt+↓ mở menu, Esc về lưới). Nhóm trang tính (Ctrl+Shift+PgDn/PgUp, tiêu đề “[Nhóm]”). Bản Windows: Ctrl+F9/Ctrl+F10 (IPC `xl:win`), mở liên kết bằng ứng dụng mặc định (IPC `xl:open-external`, chỉ http/https/mailto).
 - **Kiểm chứng**: vitest 199 (tests/v06.test.ts 26 ca mới), e2e/v06.mjs bấm thật **164/164** phím trong phạm vi trên trình duyệt + 3 phím bản Windows ở desktop.mjs (35/35), v05 120, run 39, dot2 21, dot3 32, mobile 32.
 
+## 6i. Bản 0.6.1 (29/10/2026) — giao diện theo ảnh Excel 365 của anh + chọn ngôn ngữ
+
+- **Ribbon theo 8 ảnh chụp Excel 365:**
+  - Trang đầu: bộ sưu tập Kiểu Ô ngay trên ribbon (6 kiểu + nút mở rộng 14 kiểu) và nhóm Phần bổ trợ.
+  - Góc phải: nút Chú thích và Chia sẻ.
+  - Chèn: Biểu mẫu, Mô hình 3D, SmartArt, Ảnh chụp màn hình, nhóm Điều khiển (Hộp kiểm), Bản đồ.
+  - Bố trí Trang: Căn / Nhóm / Xoay.
+  - Công thức: Dùng Gần đây (nhớ 10 hàm vừa chèn) và Hàm Khác. Bỏ nút Tính lặp (vẫn có trong Tùy chọn).
+  - Dữ liệu: Từ Ảnh, Nguồn Gần đây, Kết nối Hiện có, Truy vấn & Kết nối, Thuộc tính, nhóm Kiểu Dữ liệu, Mô hình Dữ liệu, Phân tích Dữ liệu.
+  - Xem lại: Hiệu suất (Kiểm tra Hiệu suất chạy thật), Ngôn ngữ, Thay đổi, đủ nút Chú thích, Hủy chia sẻ, Mực.
+  - Xem: nhóm Dạng xem Trang tính, Dạng xem Tùy chỉnh, Dẫn hướng (ngăn liệt kê trang tính), Thước, Biểu tượng Kiểu Dữ liệu, **Ô Tiêu điểm** (tô dải hàng/cột ô hiện hành), Xem Cạnh nhau, Cuộn Đồng bộ, Đặt lại Vị trí, Chuyển Cửa sổ.
+  - Thẻ mới **Tự động hóa** (Office Scripts, Power Automate).
+  - Lệnh cần dịch vụ trực tuyến (OneDrive, Bing, Power Query, Office Store…) ghi rõ "ngoài phạm vi" thay vì hẹn phiên bản.
+- **Tệp ▸ Trang đầu như Excel 365:**
+  - Lời chào và hàng mẫu: Sổ trống, Dự toán xây dựng, Bảng tính khối lượng, Bảng chấm công, kèm "Thêm mẫu →". Trang Mới có thêm mẫu Theo dõi thu chi.
+  - Thẻ Gần đây / Ưa thích (ghim ☆) / Được chia sẻ, ô Tìm tệp, cột Ngày sửa đổi dạng tương đối (Vừa xong, 5 phút trước, Hôm qua lúc…).
+  - Liên kết Khôi phục sổ làm việc chưa lưu và Thêm sổ làm việc →.
+  - Thanh trái thêm trang Chia sẻ (gửi .xlsx/PDF).
+- **Thanh trạng thái:** mục "Trợ năng: Mọi thứ đều ổn", bấm vào để kiểm tra.
+- **Ngôn ngữ (Tệp ▸ Tùy chọn ▸ Ngôn ngữ):**
+  - Tiếng Việt (mặc định) hoặc English theo thuật ngữ Excel 365 bản Mỹ.
+  - Từ điển `i18n-en.ts` (≈1.300 mục, 95 mẫu) + `i18n-extra.ts`.
+  - Mẫu "nghiêm" (STRICT) chỉ dịch khi phần ghép cũng dịch được, để không ra chữ nửa Anh nửa Việt.
+  - Nội dung ô, tên trang tính, tên tệp không dịch.
+  - Công thức giữ dấu ; và dấu phẩy thập phân.
+- **Kiểm chứng:**
+  - `tests/v061.test.ts`: dịch, mẫu nghiêm, ngày tương đối, 4 mẫu không lỗi công thức, tổng dự toán đúng.
+  - `e2e/i18n.mjs` (90 kiểm thử): có đủ nhóm và lệnh theo ảnh, bộ sưu tập Kiểu Ô, Ô Tiêu điểm, Dẫn hướng, Kiểm tra Hiệu suất, Backstage, tạo từ mẫu. Chế độ English quét mọi thẻ, 10 trang Backstage và 4 hộp thoại: **0 chữ tiếng Việt sót**.
+
 ## 7. Kiểm chứng cuối theo tiêu chí Bước 0
 
 | # | Tiêu chí | Kết quả |

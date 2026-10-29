@@ -8,10 +8,28 @@ import { buildJob } from '../core/print';
 import { chartImgs, printViaFrame } from './printui';
 import type { App } from './app';
 import { VERSION } from './version';
+import { lang, setLang, tr, type Lang } from './i18n';
+import { TEMPLATES } from './templates';
 
-type Page = 'home' | 'new' | 'open' | 'info' | 'save' | 'saveas' | 'print' | 'export' | 'close' | 'account' | 'options';
+/** Ngày sửa đổi dạng tương đối như Excel 365 (Vừa xong, 5 phút trước, Hôm qua lúc 14:20…) */
+export function relTime(t: number, now = Date.now()): string {
+  const d = Math.max(0, now - t), m = Math.floor(d / 60000);
+  const hm = new Date(t).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
+  if (m < 1) return 'Vừa xong';
+  if (m < 60) return `${m} phút trước`;
+  const a = new Date(t), b = new Date(now);
+  const day = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const dd = Math.round((day(b) - day(a)) / 86400000);
+  if (dd === 0) return `Hôm nay lúc ${hm}`;
+  if (dd === 1) return `Hôm qua lúc ${hm}`;
+  return a.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric' });
+}
+const favs = (): string[] => { try { const v = JSON.parse(lsGet('xl-fav') || '[]'); return Array.isArray(v) ? v : []; } catch { return []; } };
+const setFavs = (v: string[]) => lsSet('xl-fav', JSON.stringify(v));
+
+type Page = 'home' | 'new' | 'open' | 'info' | 'save' | 'saveas' | 'print' | 'share' | 'export' | 'close' | 'account' | 'options';
 const NAV: [Page, string, string][] = [['home', 'Trang đầu', 'home'], ['new', 'Mới', 'newFile'], ['open', 'Mở', 'folder']];
-const NAV2: [Page, string, string][] = [['info', 'Thông tin', 'info2'], ['save', 'Lưu', 'save'], ['saveas', 'Lưu thành', 'download'], ['print', 'In', 'printer2'], ['export', 'Xuất', 'export'], ['close', 'Đóng', 'close']];
+const NAV2: [Page, string, string][] = [['info', 'Thông tin', 'info2'], ['save', 'Lưu', 'save'], ['saveas', 'Lưu thành', 'download'], ['print', 'In', 'printer2'], ['share', 'Chia sẻ', 'share'], ['export', 'Xuất', 'export'], ['close', 'Đóng', 'close']];
 const NAV3: [Page, string, string][] = [['account', 'Tài khoản', 'account'], ['options', 'Tùy chọn', 'gear']];
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!));
 
@@ -92,26 +110,55 @@ export class Backstage {
       b.onclick = act;
       return b;
     };
-    const blank = () => {
+    const blank = (n = TEMPLATES.length, more = false) => {
       const t = document.createElement('div');
       t.className = 'bs-tiles';
       const b = document.createElement('button');
       b.className = 'bs-tile';
       b.dataset.a = 'blank';
-      b.innerHTML = `<span class="thumb">${ic('table', 40)}</span><span>Sổ làm việc trống</span>`;
+      b.innerHTML = `<span class="thumb blank">${ic('table', 40)}</span><span>Sổ làm việc trống</span>`;
       b.onclick = () => { this.close(); app.newBook(); };
       t.appendChild(b);
+      for (const tp of TEMPLATES.slice(0, n)) {
+        const x = document.createElement('button');
+        x.className = 'bs-tile';
+        x.dataset.a = 'tpl-' + tp.id;
+        x.title = tp.desc;
+        x.innerHTML = `<span class="thumb tpl">${ic(tp.icon, 34)}<i></i><i></i><i></i></span><span>${esc(tp.name)}</span>`;
+        x.onclick = () => { this.close(); app.newFromTemplate(tp.id); };
+        t.appendChild(x);
+      }
+      if (more) {
+        const a = document.createElement('button');
+        a.className = 'bs-more'; a.dataset.a = 'more-tpl';
+        a.innerHTML = `<span>Thêm mẫu</span>${ic('arrowR', 16)}`;
+        a.onclick = () => this.show('new');
+        t.appendChild(a);
+      }
       return t;
     };
     if (page === 'home') {
       const hr = new Date().getHours();
       h1(hr < 11 ? 'Chào buổi sáng' : hr < 18 ? 'Chào buổi chiều' : 'Chào buổi tối');
-      m.appendChild(blank());
-      const h2 = document.createElement('h2'); h2.textContent = 'Gần đây'; m.appendChild(h2);
-      this.recent(m, 8);
+      m.appendChild(blank(3, true));
+      this.fileList(m);
     } else if (page === 'new') {
       h1('Mới');
       m.appendChild(blank());
+      const p = document.createElement('p'); p.className = 'muted'; p.style.marginTop = '14px';
+      p.textContent = 'Mẫu dựng sẵn công thức theo cách tính thông dụng ở Việt Nam (dấu ; giữa đối số). Sửa đơn giá, tỷ lệ theo hồ sơ của anh/chị.';
+      m.appendChild(p);
+    } else if (page === 'share') {
+      h1('Chia sẻ');
+      const p = document.createElement('p'); p.className = 'muted';
+      p.textContent = 'Chia sẻ trực tuyến và cộng tác cùng lúc cần OneDrive/SharePoint, ngoài phạm vi của ExcelLike. Gửi tệp cho người khác bằng một trong các cách dưới đây.';
+      m.appendChild(p);
+      const c = document.createElement('div'); c.className = 'bs-cmds'; c.style.marginTop = '16px';
+      c.append(
+        cmd('download', 'Gửi bản sao dạng Sổ làm việc (.xlsx)', 'Lưu một bản .xlsx để đính kèm email, Zalo…', () => { this.close(); app.saveXlsx(true); }, 'share-xlsx'),
+        cmd('pdf', 'Gửi dạng PDF', 'Giữ nguyên bố cục trang in', () => this.show('print'), 'share-pdf'),
+      );
+      m.appendChild(c);
     } else if (page === 'open') {
       h1('Mở');
       const c = document.createElement('div'); c.className = 'bs-cmds';
@@ -191,7 +238,10 @@ export class Backstage {
 <h2>Nâng cao</h2>
 <label class="chk"><input type="checkbox" id="opt-enter-on"${dir !== 'none' ? ' checked' : ''}> Sau khi nhấn Enter, di chuyển vùng chọn</label>
 <label class="fld"><span>Hướng</span><select id="opt-enter"><option value="down">Xuống</option><option value="right">Phải</option><option value="up">Lên</option><option value="left">Trái</option></select></label>
-<label class="chk"><input type="checkbox" id="opt-status"${lsGet('xl-status') !== null ? '' : ' checked'}> Thanh trạng thái mặc định (Trung bình, Số đếm, Tổng)</label>`;
+<label class="chk"><input type="checkbox" id="opt-status"${lsGet('xl-status') !== null ? '' : ' checked'}> Thanh trạng thái mặc định (Trung bình, Số đếm, Tổng)</label>
+<h2>Ngôn ngữ</h2>
+<label class="fld"><span>Ngôn ngữ hiển thị (giao diện)</span><select id="opt-lang"><option value="vi">Tiếng Việt</option><option value="en">English</option></select></label>
+<p class="muted">Đổi ngôn ngữ giao diện như Excel bản tiếng Anh. Công thức vẫn dùng dấu chấm phẩy (;) và dấu phẩy thập phân theo cài đặt vùng Việt Nam.</p>`;
       m.appendChild(f);
       const q = <T extends HTMLElement>(id: string) => f.querySelector('#' + id) as T;
       q<HTMLSelectElement>('opt-enter').value = dir === 'none' ? 'down' : dir;
@@ -204,28 +254,74 @@ export class Backstage {
       const enter = () => lsSet('xl-enter', q<HTMLInputElement>('opt-enter-on').checked ? q<HTMLSelectElement>('opt-enter').value : 'none');
       q('opt-enter').onchange = enter; q('opt-enter-on').onchange = enter;
       q('opt-status').onchange = () => { if (q<HTMLInputElement>('opt-status').checked) localStorage.removeItem('xl-status'); };
+      q<HTMLSelectElement>('opt-lang').value = lang();
+      q('opt-lang').onchange = async () => { setLang(q<HTMLSelectElement>('opt-lang').value as Lang); await app.saveNow(false); location.reload(); };
     }
   }
-  private recent(m: HTMLElement, n: number) {
+  /** Trang đầu: Gần đây / Ưa thích / Được chia sẻ + ô Tìm tệp như Excel 365 */
+  private fileList(m: HTMLElement) {
+    const bar = document.createElement('div');
+    bar.className = 'bs-fbar';
+    bar.innerHTML = `<div class="bs-pills" role="group" aria-label="Danh sách tệp"><button data-f="recent" aria-pressed="true">Gần đây</button><button data-f="fav" aria-pressed="false">Ưa thích</button><button data-f="shared" aria-pressed="false">Được chia sẻ</button></div><label class="bs-find">${ic('search', 15)}<input id="bs-find" placeholder="Tìm tệp" aria-label="Tìm tệp" autocomplete="off"></label>`;
+    m.appendChild(bar);
+    const host = document.createElement('div');
+    m.appendChild(host);
+    const foot = document.createElement('div');
+    foot.className = 'bs-foot';
+    foot.innerHTML = `<button data-a="recover">Khôi phục sổ làm việc chưa lưu</button><span class="sp"></span><button data-a="more-books">Thêm sổ làm việc ${ic('arrowR', 15)}</button>`;
+    m.appendChild(foot);
+    let mode = 'recent';
+    const q = bar.querySelector('#bs-find') as HTMLInputElement;
+    const draw = () => {
+      host.innerHTML = '';
+      bar.querySelectorAll<HTMLElement>('[data-f]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.f === mode)));
+      if (mode === 'shared') { host.innerHTML = '<p class="muted bs-empty">Chưa có sổ làm việc nào được chia sẻ với bạn. (Cần OneDrive/SharePoint.)</p>'; return; }
+      this.recent(host, mode === 'fav' ? 200 : 12, { filter: q.value.trim().toLowerCase(), fav: mode === 'fav', redraw: draw });
+    };
+    bar.querySelectorAll<HTMLElement>('[data-f]').forEach((b) => b.addEventListener('click', () => { mode = b.dataset.f!; draw(); }));
+    q.oninput = draw;
+    (foot.querySelector('[data-a=recover]') as HTMLElement).onclick = () => { this.app.toast('Sổ chưa lưu ra tệp được giữ trong ứng dụng; mở lại ở danh sách Gần đây (ghi “Trong ứng dụng”).'); mode = 'recent'; q.value = ''; draw(); };
+    (foot.querySelector('[data-a=more-books]') as HTMLElement).onclick = () => this.show('open');
+    draw();
+  }
+  private recent(m: HTMLElement, n: number, o: { filter?: string; fav?: boolean; redraw?: () => void } = {}) {
     const box = document.createElement('div');
     box.className = 'bs-recent';
     m.appendChild(box);
     listBooks().then((books0) => {
       // sổ đang mở luôn có trong danh sách (kể cả khi chưa kịp lưu lần đầu)
       const books = books0.some((b) => b.id === this.app.bookId) ? books0 : [{ id: this.app.bookId, name: this.app.wb.name, updated: Date.now(), fileName: this.app.fileName } as (typeof books0)[number], ...books0];
-      if (!books.length) { box.innerHTML = '<p class="muted" style="padding:12px 4px">Chưa có sổ làm việc nào.</p>'; return; }
-      for (const bk of books.slice(0, n)) {
+      const fv = favs();
+      const list = books.filter((b) => (!o.fav || fv.includes(b.id)) && (!o.filter || (b.name + ' ' + (b.fileName ?? '')).toLowerCase().includes(o.filter)));
+      if (!list.length) { box.innerHTML = `<p class="muted bs-empty">${o.fav ? 'Chưa có sổ ưa thích. Bấm ☆ ở một sổ trong danh sách Gần đây để ghim.' : o.filter ? 'Không tìm thấy tệp phù hợp.' : 'Chưa có sổ làm việc nào.'}</p>`; return; }
+      const hd = document.createElement('div'); hd.className = 'rr rh'; hd.innerHTML = '<span></span><span>Tên</span><span>Ngày sửa đổi</span><span></span><span></span>'; box.appendChild(hd);
+      for (const bk of list.slice(0, n)) {
         const row = document.createElement('div');
         row.className = 'rr';
         row.dataset.book = bk.id;
         row.setAttribute('role', 'button');
         row.tabIndex = 0;
-        row.innerHTML = `${ic('table', 20)}<span><b></b><br><small></small></span><small>${new Date(bk.updated).toLocaleString('vi-VN', { dateStyle: 'short', timeStyle: 'short' })}</small>`;
-        row.querySelector('b')!.textContent = bk.name + (bk.id === this.app.bookId ? ' (đang mở)' : '');
-        row.querySelector('span small')!.textContent = bk.fileName || 'Trong ứng dụng';
+        row.innerHTML = `${ic('table', 20)}<span><b><span class="nm"></span><span class="cur"></span></b><br><small class="path"></small></span><small class="when" title="${new Date(bk.updated).toLocaleString('vi-VN')}">${relTime(bk.updated)}</small>`;
+        const star = document.createElement('button');
+        const isF = fv.includes(bk.id);
+        star.className = 'fav' + (isF ? ' on' : ''); star.textContent = isF ? '★' : '☆';
+        star.title = isF ? 'Bỏ khỏi Ưa thích' : 'Thêm vào Ưa thích'; star.setAttribute('aria-label', tr(star.title)); star.setAttribute('aria-pressed', String(isF));
+        star.onclick = (e) => {
+          e.stopPropagation();
+          const cur = favs(), on = !cur.includes(bk.id);
+          setFavs(on ? [bk.id, ...cur] : cur.filter((x) => x !== bk.id));
+          if (o.redraw) { o.redraw(); return; }
+          star.textContent = on ? '★' : '☆'; star.classList.toggle('on', on);
+          star.title = tr(on ? 'Bỏ khỏi Ưa thích' : 'Thêm vào Ưa thích'); star.setAttribute('aria-label', star.title); star.setAttribute('aria-pressed', String(on));
+        };
+        row.appendChild(star);
+        row.querySelector('.nm')!.textContent = bk.name;
+        if (bk.id === this.app.bookId) row.querySelector('.cur')!.textContent = ' (đang mở)';
+        row.querySelector('.path')!.textContent = bk.fileName || '';
+        if (!bk.fileName) { const t = document.createElement('span'); t.textContent = 'Trong ứng dụng'; row.querySelector('.path')!.appendChild(t); }
         const open = () => { if (bk.id !== this.app.bookId) this.app.switchBook(bk.id); else this.close(); };
         row.onclick = open;
-        row.onkeydown = (e) => { if (e.key === 'Enter') open(); };
+        row.onkeydown = (e) => { if (e.target !== row) return; if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } };
         if (bk.id !== this.app.bookId) {
           const del = document.createElement('button');
           del.className = 'del';
@@ -236,7 +332,7 @@ export class Backstage {
             const msg = bk.fileName ? `Xóa “${bk.name}” khỏi danh sách? Bản nháp trong ứng dụng sẽ bị xóa; tệp “${bk.fileName}” trên máy vẫn còn.` : `Xóa vĩnh viễn sổ “${bk.name}”? Sổ này chưa được lưu ra tệp nên sẽ không khôi phục được.`;
             openDialog('Xóa sổ làm việc', h('p', {}, msg), [
               { label: 'Hủy', act: () => {} },
-              { label: 'Xóa', kind: 'danger', act: () => { deleteBook(bk.id).then(() => { row.remove(); this.app.toast(`Đã xóa “${bk.name}”.`); }); } },
+              { label: 'Xóa', kind: 'danger', act: () => { deleteBook(bk.id).then(() => { setFavs(favs().filter((x) => x !== bk.id)); row.remove(); this.app.toast(`Đã xóa “${bk.name}”.`); }); } },
             ]);
           };
           row.appendChild(del);

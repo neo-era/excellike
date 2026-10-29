@@ -1,6 +1,8 @@
+const laterNote = (v: string) => v.startsWith('ngoài') ? v : `có ở bản ${v}`;
 // Ribbon kiểu Excel 365: nhóm lệnh 3 tầng (nút lớn, nút nhỏ có chữ, nút biểu tượng), nút tách đôi, hộp chọn,
 // nút ↘ mở hộp thoại, nhóm tự co khi cửa sổ hẹp, KeyTips (Alt/F10), ô Tìm kiếm lệnh (Alt+Q),
 // và dạng ribbon đơn giản một hàng cho điện thoại.
+import { tr } from './i18n';
 import { ic } from './icons';
 import { closeMenu, openPopover, showMenu, type MenuItem } from './menu';
 
@@ -26,8 +28,10 @@ export interface Btn {
 export interface Combo { t: 'combo'; id: string; label: string; w: number; get: () => string; set: (v: string) => void; list: (r: DOMRect) => void; kt?: string; icon?: string }
 export interface Chk { t: 'chk'; id: string; label: string; get: () => boolean; set: (v: boolean) => void; kt?: string }
 export interface Stack { t: 'col' | 'row'; items: Item[] }
-export type Item = Btn | Combo | Chk | Stack;
-export interface Group { id: string; label: string; icon: string; items: Item[]; launch?: { id: string; tip: string; act: () => void; kt?: string; later?: string }; shrink?: number }
+/** bộ sưu tập nhỏ trên Ribbon (Kiểu Ô như Excel: 2 hàng mẫu + nút mở rộng) */
+export interface Gal { t: 'gal'; id: string; label: string; icon?: string; kt?: string; items: { label: string; css: string; act: () => void }[]; act: () => void; more: (r: DOMRect) => void }
+export type Item = Btn | Combo | Chk | Stack | Gal;
+export interface Group { id: string; label: string; icon: string; items: Item[]; launch?: { id: string; tip: string; act: () => void; kt?: string; later?: string }; shrink?: number; /** nhóm phụ: khi thiếu chỗ thì ẩn hẳn thay vì thu thành nút */ hideFirst?: boolean }
 export interface Tab { id: string; label: string; kt: string; groups: Group[] }
 
 export interface RibbonHost {
@@ -43,14 +47,16 @@ export interface RibbonHost {
   simple: boolean;
 }
 
-const flat = (items: Item[]): (Btn | Combo | Chk)[] => items.flatMap((x): (Btn | Combo | Chk)[] => (x.t === 'col' || x.t === 'row' ? flat((x as Stack).items) : [x as Btn | Combo | Chk]));
+const flat = (items: Item[]): (Btn | Combo | Chk)[] => items.flatMap((x): (Btn | Combo | Chk)[] => (x.t === 'col' || x.t === 'row' ? flat((x as Stack).items) : x.t === 'gal' ? [{ t: 'big', id: x.id, icon: x.icon ?? 'styles', label: x.label, act: x.act, kt: x.kt } as Btn] : [x as Btn | Combo | Chk]));
 export const allItems = (tabs: Tab[]) => tabs.flatMap((t) => t.groups.flatMap((g) => flat(g.items).map((it) => ({ it, tab: t, grp: g }))));
 const caret = () => `<svg class="caret" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>`;
-const tipOf = (it: { label: string; kbd?: string; later?: string }) => it.label + (it.kbd ? ` (${it.kbd})` : '') + (it.later ? ` — có ở bản ${it.later}` : '');
+const tipOf = (it: { label: string; kbd?: string; later?: string }) => it.label + (it.kbd ? ` (${it.kbd})` : '') + (it.later ? ' — ' + laterNote(it.later) : '');
 
 export class Ribbon {
   readonly el: HTMLElement;
   private collapsed = new Set<string>();
+  /** bộ sưu tập (Kiểu Ô) đang thu thành nút vì ribbon hẹp */
+  private galSmall = false;
   private ro: ResizeObserver;
   constructor(private host: RibbonHost, el: HTMLElement) {
     this.el = el;
@@ -74,7 +80,7 @@ export class Ribbon {
     this.el.querySelectorAll<HTMLElement>('[data-id]').forEach((el) => {
       const it = items.get(el.dataset.id!);
       if (!it) return;
-      if (it.t === 'combo') { const i = el.querySelector('input'); if (i && document.activeElement !== i) i.value = it.get(); }
+      if (it.t === 'combo') { const i = el.querySelector('input'); if (i && document.activeElement !== i) i.value = tr(it.get()); }
       else if (it.t === 'chk') { const i = el.querySelector('input'); if (i) i.checked = it.get(); }
       else {
         if (it.on) { const on = !!it.on(); el.classList.toggle('on', on); el.setAttribute('aria-pressed', String(on)); }
@@ -98,7 +104,7 @@ export class Ribbon {
       const b = document.createElement('button');
       b.className = 'launch' + (l.later ? ' later' : '');
       b.dataset.launch = l.id;
-      b.title = l.tip + (l.later ? ` — có ở bản ${l.later}` : '');
+      b.title = l.tip + (l.later ? ' — ' + laterNote(l.later) : '');
       b.setAttribute('aria-label', b.title);
       b.innerHTML = '<svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true"><path d="M1 1h6v6M7 7 2 2M9 4v5H4"/></svg>';
       b.onmousedown = (e) => e.preventDefault();
@@ -115,6 +121,37 @@ export class Ribbon {
       return d;
     }
     if (it.t === 'combo') return this.combo(it);
+    if (it.t === 'gal' && this.galSmall) {
+      // ribbon hẹp: bộ sưu tập thu thành một nút lớn (như Excel), bấm mở toàn bộ kiểu
+      const g = it;
+      const b = this.item({ t: 'big', id: g.id, icon: g.icon ?? 'styles', label: g.label, kt: g.kt, act: () => g.more((document.querySelector(`#ribbon [data-id="${g.id}"]`) as HTMLElement).getBoundingClientRect()) } as Btn);
+      return b;
+    }
+    if (it.t === 'gal') {
+      const d = document.createElement('div');
+      d.className = 'gal';
+      d.dataset.id = it.id;
+      const grid = document.createElement('div');
+      grid.className = 'gal-grid';
+      for (const x of it.items) {
+        const b = document.createElement('button');
+        b.className = 'gal-it';
+        b.setAttribute('style', x.css);
+        b.textContent = x.label;
+        b.title = x.label;
+        b.onmousedown = (e) => e.preventDefault();
+        b.onclick = () => { this.host.before(); x.act(); this.host.after(false); };
+        grid.appendChild(b);
+      }
+      const more = document.createElement('button');
+      more.className = 'gal-more';
+      more.title = 'Thêm: ' + it.label; more.setAttribute('aria-label', more.title); more.setAttribute('aria-haspopup', 'menu');
+      more.innerHTML = '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>';
+      more.onmousedown = (e) => e.preventDefault();
+      more.onclick = () => { this.host.before(); it.more(d.getBoundingClientRect()); };
+      d.append(grid, more);
+      return d;
+    }
     if (it.t === 'chk') {
       const l = document.createElement('label');
       l.className = 'ck';
@@ -184,14 +221,14 @@ export class Ribbon {
     inp.setAttribute('aria-label', it.label);
     inp.title = it.label;
     inp.spellcheck = false;
-    inp.value = it.get();
+    inp.value = tr(it.get());
     inp.onfocus = () => inp.select();
     inp.onkeydown = (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); this.host.before(); it.set(inp.value.trim()); inp.value = it.get(); this.host.after(false); }
-      if (e.key === 'Escape') { e.preventDefault(); inp.value = it.get(); this.host.after(false); }
+      if (e.key === 'Enter') { e.preventDefault(); this.host.before(); it.set(inp.value.trim()); inp.value = tr(it.get()); this.host.after(false); }
+      if (e.key === 'Escape') { e.preventDefault(); inp.value = tr(it.get()); this.host.after(false); }
       if (e.key === 'ArrowDown' && e.altKey) { e.preventDefault(); it.list(el.getBoundingClientRect()); }
     };
-    inp.onblur = () => { inp.value = it.get(); };
+    inp.onblur = () => { inp.value = tr(it.get()); };
     const dd = document.createElement('button');
     dd.className = 'dd';
     dd.tabIndex = -1;
@@ -213,6 +250,12 @@ export class Ribbon {
       for (const g of tab.groups) if (this.collapsed.has(g.id)) this.replace(g, false);
       this.collapsed.clear();
     }
+    // bước 1: thu bộ sưu tập thành nút trước khi co cả nhóm
+    const galGroups = tab.groups.filter((g) => g.items.some((x) => x.t === 'gal'));
+    if (galGroups.length) {
+      if (this.galSmall) { this.galSmall = false; galGroups.forEach((g) => this.replace(g, false)); }
+      if (this.el.scrollWidth > this.el.clientWidth + 1) { this.galSmall = true; galGroups.forEach((g) => this.replace(g, false)); }
+    }
     // thứ tự co như Excel: nhóm có shrink nhỏ co trước, còn lại co từ phải sang trái
     const order = tab.groups.map((g, i) => ({ g, k: g.shrink ?? 100 - i })).sort((a, b) => a.k - b.k).map((x) => x.g);
     for (const g of order) {
@@ -230,6 +273,7 @@ export class Ribbon {
     const el = document.createElement('div');
     el.className = 'grp collapsed';
     el.dataset.g = g.id;
+    if (g.hideFirst) { el.hidden = true; return el; }
     const b = document.createElement('button');
     b.className = 'big';
     b.innerHTML = `<span class="ico">${ic(g.icon, 32)}</span><span>${g.label}</span>${caret()}`;

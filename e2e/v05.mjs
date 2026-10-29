@@ -47,11 +47,11 @@ const menuItems = (page) => page.$$eval('.menu .mi span', (els) => els.map((e) =
   check('QAT: Tự động lưu (công tắc), Lưu, Hoàn tác, Làm lại, Tùy chỉnh', JSON.stringify(qat) === '[true,true,true,true,"switch"]', JSON.stringify(qat));
   check('Ô Tìm kiếm (Alt+Q) trên thanh tiêu đề', (await page.getAttribute('#tell', 'placeholder')) === 'Tìm kiếm (Alt+Q)');
   const tabs = await texts(page, '#tabs [role="tab"]');
-  check('Đủ 9 thẻ đúng thứ tự Excel', tabs.join('|') === 'Tệp|Trang đầu|Chèn|Bố trí Trang|Công thức|Dữ liệu|Xem lại|Xem|Trợ giúp', tabs.join('|'));
+  check('Đủ 10 thẻ đúng thứ tự Excel 365 (có Tự động hóa)', tabs.join('|') === 'Tệp|Trang đầu|Chèn|Bố trí Trang|Công thức|Dữ liệu|Xem lại|Xem|Tự động hóa|Trợ giúp', tabs.join('|'));
   const sel = await page.$eval('#tabs [aria-selected="true"]', (e) => e.textContent.trim());
   check('Mặc định mở thẻ Trang đầu', sel === 'Trang đầu', sel);
   const groups = await texts(page, '#ribbon .grp > .lbl');
-  check('Trang đầu: 7 nhóm như Excel', groups.join('|') === 'Bảng tạm|Phông chữ|Căn chỉnh|Số|Kiểu|Ô|Chỉnh sửa', groups.join('|'));
+  check('Trang đầu: 7 nhóm như Excel 365 (+ Phần bổ trợ khi đủ chỗ)', /^Bảng tạm\|Phông chữ\|Căn chỉnh\|Số\|Kiểu\|Ô\|Chỉnh sửa(\|Phần bổ trợ)?$/.test(groups.join('|')), groups.join('|'));
   const launch = await X(page, () => [...document.querySelectorAll('#ribbon .grp [data-launch]')].map((e) => e.dataset.launch));
   check('Nút ↘ mở hộp thoại ở Bảng tạm, Phông chữ, Căn chỉnh, Số', ['clipboard', 'font', 'align', 'number'].every((k) => launch.includes(k)), launch.join(','));
   const shapes = await X(page, () => ({ paste: document.querySelector('#ribbon [data-id="paste"]')?.classList.contains('big'), cut: document.querySelector('#ribbon [data-id="cut"]')?.classList.contains('sm'), b: document.querySelector('#ribbon [data-id="b"]')?.classList.contains('ic'), mergeSplit: !!document.querySelector('#ribbon [data-id="merge"] .dd'), rbH: document.querySelector('#ribbon').getBoundingClientRect().height }));
@@ -98,7 +98,7 @@ const menuItems = (page) => page.$$eval('.menu .mi span', (els) => els.map((e) =
   check('Định dạng ▸ Chiều cao Hàng…, Độ rộng Cột…, Ẩn & Bỏ ẩn, Đổi tên Trang tính, Màu Tab', ['Chiều cao Hàng…', 'Độ rộng Cột…', 'Ẩn & Bỏ ẩn', 'Đổi tên Trang tính', 'Màu Tab'].every((x) => fItems.includes(x)), fItems.join(','));
   await page.keyboard.press('Escape');
   const later = await X(page, () => [...document.querySelectorAll('#ribbon .later')].map((e) => e.title));
-  check('Lệnh chưa làm được đánh dấu rõ “có ở bản 0.x”', later.length > 0 && later.every((t) => /bản 0\.\d/.test(t)), later.slice(0, 3).join(' | '));
+  check('Lệnh chưa làm được đánh dấu rõ “có ở bản 0.x” hoặc “ngoài phạm vi”', later.length > 0 && later.every((t) => /bản 0\.\d|ngoài phạm vi/.test(t)), later.slice(0, 3).join(' | '));
 
   // các thẻ khác
   const want = { 'Chèn': ['Bảng', 'Hình minh họa', 'Biểu đồ'], 'Bố trí Trang': ['Chủ đề', 'Thiết lập Trang', 'Co giãn cho Vừa', 'Tùy chọn Trang tính'], 'Công thức': ['Thư viện Hàm', 'Tên đã Xác định', 'Kiểm nghiệm Công thức', 'Tính toán'], 'Dữ liệu': ['Lấy & Chuyển đổi Dữ liệu', 'Sắp xếp & Lọc', 'Công cụ Dữ liệu', 'Dự báo', 'Đại cương'], 'Xem lại': ['Soát lỗi', 'Ghi chú', 'Bảo vệ'], 'Xem': ['Dạng xem Sổ làm việc', 'Hiện', 'Thu phóng', 'Cửa sổ'], 'Trợ giúp': ['Trợ giúp'] };
@@ -413,9 +413,9 @@ const menuItems = (page) => page.$$eval('.menu .mi span', (els) => els.map((e) =
 // ================= Thu gọn ribbon, nhóm co lại khi hẹp =================
 {
   const { ctx, page } = await newPage({ viewport: { width: 1000, height: 760 } });
-  const col = await X(page, () => [...document.querySelectorAll('#ribbon .grp.collapsed')].map((e) => e.querySelector('.lbl').textContent));
+  const col = await X(page, () => [...document.querySelectorAll('#ribbon .grp.collapsed:not([hidden])')].map((e) => e.querySelector('.lbl').textContent));
   check('Cửa sổ hẹp: nhóm bên phải co thành một nút (như Excel)', col.length >= 1 && !(await X(page, () => document.querySelector('#ribbon').scrollWidth > document.querySelector('#ribbon').clientWidth + 1)), col.join(','));
-  await page.click('#ribbon .grp.collapsed >> nth=0 >> .big');
+  await page.click('#ribbon .grp.collapsed:not([hidden]) >> nth=0 >> .big');
   check('Bấm nhóm co → hiện cả nhóm trong bảng thả xuống', !!(await page.$('.grp-pop .grp')));
   await page.keyboard.press('Escape');
   await page.keyboard.press('Control+F1');

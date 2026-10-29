@@ -113,6 +113,10 @@ export class Grid {
   private hdrCache = { key: '', w: 0 };
   /** Hiện đầu đề hàng/cột (Xem ▸ Đầu đề) */
   headings = true;
+  /** Xem ▸ Ô Tiêu điểm: tô dải hàng và cột của ô hiện hành */
+  focusCell = false;
+  /** hàng/cột của vùng (ngăn cố định) đang vẽ — để dải Ô Tiêu điểm không lấn sang ngăn khác */
+  private region: { rows: number[]; cols: number[] } | null = null;
   /** Hiện Công thức (Ctrl+`) */
   showFormulas = false;
   /** Dạng xem: Thường / Xem trước Ngắt Trang */
@@ -377,6 +381,7 @@ export class Grid {
       ctx.save(); ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
       this.drawCells(rows, cols, x + w);
       if (this.view === 'break') this.drawBreaks(rows, cols);
+      this.region = { rows, cols };
       this.drawSelection();
       ctx.restore();
     }
@@ -766,6 +771,15 @@ export class Grid {
     const g = this.range;
     const x1 = this.sx(g.c1), y1 = this.sy(g.r1);
     const x2 = this.sx(g.c2) + this.colWpx(g.c2), y2 = this.sy(g.r2) + this.rowHpx(g.r2);
+    if (this.focusCell) {
+      const a = this.cellRectM(this.sel.ar, this.sel.ac);
+      const rg = this.region, rowIn = !rg || rg.rows.includes(this.sel.ar), colIn = !rg || rg.cols.includes(this.sel.ac);
+      const W = this.canvas.width, H = this.canvas.height;
+      ctx.save(); ctx.fillStyle = C.accent; ctx.globalAlpha = 0.12;
+      if (rowIn) { if (colIn) { ctx.fillRect(0, a.y, a.x, a.h); ctx.fillRect(a.x + a.w, a.y, W, a.h); } else ctx.fillRect(0, a.y, W, a.h); }
+      if (colIn) { if (rowIn) { ctx.fillRect(a.x, 0, a.w, a.y); ctx.fillRect(a.x, a.y + a.h, a.w, H); } else ctx.fillRect(a.x, 0, a.w, H); }
+      ctx.restore();
+    }
     // vùng copy (viền nét đứt)
     const cl = this.marquee ?? (this.wb.clip ? { sheet: this.wb.clip.sheet, range: this.wb.clip.range } : null);
     if (cl && cl.sheet === this.sheet) {

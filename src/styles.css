@@ -165,6 +165,7 @@ html.desktop .wco { width: calc(100vw - env(titlebar-area-x, 0px) - env(titlebar
 .ck { display: flex; align-items: center; gap: 5px; height: 22px; padding: 0 4px; font-size: 12px; white-space: nowrap; cursor: pointer; }
 .ck input { margin: 0; accent-color: var(--accent); }
 .grp.collapsed .big { height: 70px; }
+.grp.collapsed .lbl { width: 0; padding: 0; overflow: hidden; align-self: stretch; }
 .grp-pop { padding: 6px 4px 2px; background: var(--rb-bg); color: var(--rb-fg); border-radius: 6px; }
 .grp-pop .grp { border: 0; height: 88px; }
 .app.rb-collapsed .ribbon { display: none; }
@@ -263,7 +264,7 @@ html.desktop .wco { width: calc(100vw - env(titlebar-area-x, 0px) - env(titlebar
 .bs-tile .thumb { height: 120px; border: 1px solid var(--line-ui); background: var(--surface); display: grid; place-items: center; color: var(--muted); }
 .bs-tile:hover .thumb { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .bs-recent { display: flex; flex-direction: column; border-top: 1px solid var(--line-ui); }
-.bs-recent .rr { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto auto; align-items: center; gap: 12px; padding: 8px 10px; border-bottom: 1px solid var(--line-ui); text-align: left; min-height: 44px; }
+.bs-recent .rr { display: grid; grid-template-columns: 28px minmax(0, 1fr) 150px 32px 32px; align-items: center; gap: 12px; padding: 8px 10px; border-bottom: 1px solid var(--line-ui); text-align: left; min-height: 44px; }
 .bs-recent .rr:hover { background: var(--hover); }
 .bs-recent .rr small { color: var(--muted); }
 .bs-recent .rr .del { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 4px; color: var(--muted); }
@@ -676,3 +677,52 @@ html.desktop #backstage .bs-page { padding-top: 40px; }
 .dlg { max-width: 100%; min-width: 0; }
 .dlg-body > * { min-width: 0; }
 .fc-pane .palette { max-width: 100%; overflow-x: auto; }
+
+/* ===== 0.6.1: bộ sưu tập Kiểu Ô trên Ribbon (như Excel 365) ===== */
+.gal { display: flex; align-items: stretch; border: 1px solid var(--line-ui); border-radius: 4px; height: 58px; margin: 2px 2px 0; background: var(--surface); }
+.gal-grid { display: grid; grid-template-columns: repeat(3, 86px); grid-template-rows: repeat(2, 1fr); gap: 1px; padding: 1px; background: var(--line-ui); }
+.gal-it { font: 12.5px Calibri, 'Aptos Narrow', sans-serif; text-align: left; padding: 0 6px; background: #fff; color: #000; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-radius: 0; }
+.gal-it:hover { outline: 2px solid var(--accent); outline-offset: -2px; z-index: 1; }
+.gal-more { width: 18px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; border-left: 1px solid var(--line-ui); border-radius: 0; }
+.gal-more:hover { background: var(--hover); }
+/* 0.6.1 — giao diện theo Excel 365 */
+.tabs .pill.share { background: #fff; color: var(--accent); border-color: #fff; font-weight: 600; }
+.tabs .pill.share:hover { background: #F0F0F0; }
+.gal-pop { padding: 8px; display: flex; flex-direction: column; gap: 4px; max-width: min(560px, 92vw); }
+.gal-pop h4 { margin: 6px 2px 2px; font-size: 12px; font-weight: 600; color: var(--muted); }
+.gal-pop .gal-grid { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); grid-template-rows: none; }
+.gal-pop .gal-it { height: 26px; }
+.side-pane { position: absolute; z-index: 30; right: 0; top: 0; bottom: 0; width: 240px; background: var(--surface); border-left: 1px solid var(--line-ui); box-shadow: var(--shadow); display: flex; flex-direction: column; }
+.side-pane header { display: flex; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--line-ui); }
+.side-pane header b { flex: 1; font-size: 14px; }
+.side-pane .nv-list { overflow: auto; padding: 4px; display: flex; flex-direction: column; }
+.side-pane .nv-list button { display: flex; gap: 8px; align-items: center; text-align: left; padding: 6px 8px; border-radius: 4px; min-height: 32px; }
+.side-pane .nv-list button:hover { background: var(--hover); }
+.st-acc { display: inline-flex; align-items: center; gap: 4px; color: inherit; font-size: 12px; padding: 0 4px; height: 22px; border-radius: 3px; }
+.st-acc:hover { background: var(--hover); }
+@media (max-width: 700px) { .st-acc { display: none; } }
+@media (max-width: 600px) { .tabs .pill span { display: none; } .side-pane { width: 80vw; } }
+.bs-tile .thumb.tpl { position: relative; color: var(--accent); background: linear-gradient(var(--surface), var(--surface)) padding-box; }
+.bs-tile .thumb.tpl i { position: absolute; left: 14px; right: 14px; height: 1px; background: var(--line-ui); }
+.bs-tile .thumb.tpl i:nth-of-type(1) { top: 22px; } .bs-tile .thumb.tpl i:nth-of-type(2) { bottom: 30px; } .bs-tile .thumb.tpl i:nth-of-type(3) { bottom: 18px; }
+.bs-more { align-self: center; display: inline-flex; gap: 6px; align-items: center; color: var(--accent); font-weight: 600; padding: 8px 10px; border-radius: 4px; }
+.bs-more:hover { background: var(--hover); }
+.bs-fbar { display: flex; align-items: center; gap: 12px; margin: 28px 0 10px; flex-wrap: wrap; }
+.bs-pills { display: flex; gap: 6px; }
+.bs-pills button { padding: 5px 14px; border-radius: 16px; border: 1px solid var(--line-ui); font-size: 13px; min-height: 32px; }
+.bs-pills button[aria-pressed="true"] { background: var(--accent-soft, #E6F2EA); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.bs-find { margin-left: auto; display: flex; align-items: center; gap: 6px; border: 1px solid var(--line-ui); border-radius: 4px; padding: 0 8px; height: 32px; background: var(--surface); width: min(280px, 100%); }
+.bs-find input { border: 0; outline: 0; background: transparent; flex: 1; font: inherit; color: inherit; min-width: 0; }
+.bs-find:focus-within { border-color: var(--accent); }
+.bs-recent .rr.rh { min-height: 30px; font-size: 12px; color: var(--muted); font-weight: 600; cursor: default; }
+.bs-recent .rr.rh:hover { background: none; }
+.bs-recent .rr .fav { width: 32px; height: 32px; border-radius: 4px; color: var(--muted); font-size: 16px; }
+.bs-recent .rr .fav.on { color: #C19C00; }
+.bs-recent .rr .fav:hover { background: var(--hover); }
+.bs-empty { padding: 14px 4px; }
+.bs-foot { display: flex; align-items: center; margin-top: 10px; gap: 10px; }
+.bs-foot .sp { flex: 1; }
+.bs-foot button { color: var(--accent); display: inline-flex; gap: 6px; align-items: center; padding: 6px 8px; border-radius: 4px; }
+.bs-foot button:hover { background: var(--hover); }
+@media (max-width: 600px) { .bs-recent .rr { grid-template-columns: 24px minmax(0, 1fr) 90px 32px 32px; gap: 6px; } .bs-find { margin-left: 0; width: 100%; } }
+.grp[hidden] { display: none !important; }

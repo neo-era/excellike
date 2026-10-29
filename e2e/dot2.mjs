@@ -127,7 +127,9 @@ print(json.dumps({'sheets':wb.sheetnames,'F2':ws['F2'].value,'H3':ws['H3'].value
   check('Sắp xếp Z→A theo cột (giữ tiêu đề, bỏ qua hàng gộp)', order.join('|') === 'Ánh sá|Cột th|Đèn LE|Cáp ng', order.join('|'));
   // CF: lớn hơn 1.000.000 qua hộp thoại
   await goto(page, 'D3:D6');
-  await btn(page, 'd-cf'); await menu(page, 'Lớn hơn');
+  await page.click('[role="tab"]:text-is("Trang đầu")');
+  if (await page.$('#ribbon .grp.collapsed[data-g="styles"]')) await page.click('#ribbon .grp.collapsed[data-g="styles"] .big'); // cửa sổ hẹp: nhóm Kiểu co thành nút
+  await page.click('[data-id="cf"]'); await menu(page, 'Lớn hơn');
   await page.fill('.dlg input', '5.000.000');
   await page.screenshot({ path: OUT + 'd2-cf-dialog.png' });
   await page.click('.dlg .btn.primary');
@@ -135,7 +137,7 @@ print(json.dumps({'sheets':wb.sheetnames,'F2':ws['F2'].value,'H3':ws['H3'].value
   check('Định dạng có điều kiện "lớn hơn" qua hộp thoại', JSON.stringify(cf) === '[true,true,false,false]', JSON.stringify(cf));
   // Kiểm tra dữ liệu qua hộp thoại: số nguyên 0–100 cho cột KL
   await goto(page, 'C3:C6');
-  await btn(page, 'd-v');
+  await page.click('[role="tab"]:text-is("Dữ liệu")'); await btn(page, 'd-v');
   await page.selectOption('.dlg select >> nth=0', 'whole');
   await page.fill('.dlg .fld:has-text("Từ") input', '0');
   await page.fill('.dlg .fld:has-text("Đến") input', '100');
