@@ -52,6 +52,7 @@ export class ChartLayer {
       if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); e.stopPropagation(); this.remove(this.sel); }
       else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); this.select(null); grid.focusKeys(); }
       else if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); this.onEdit(this.sel); }
+      else if (e.key === 'Tab') { e.preventDefault(); e.stopPropagation(); this.cycle(e.shiftKey ? -1 : 1); }
       else if (e.key.startsWith('Arrow')) {
         e.preventDefault(); e.stopPropagation();
         const step = e.shiftKey ? 1 : 10;
@@ -66,6 +67,18 @@ export class ChartLayer {
   }
 
   private charts() { return this.wb.meta(this.grid.sheet).charts; }
+  /** Ctrl+Alt+5 rồi Tab: lần lượt chọn các biểu đồ nổi */
+  cycle(d: 1 | -1) {
+    const ids = this.charts().map((c) => c.id!);
+    if (!ids.length) return false;
+    const i = this.sel ? ids.indexOf(this.sel) : -1;
+    const n = ids[(i + d + ids.length) % ids.length];
+    this.select(n);
+    (this.boxes.get(n)?.el)?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    return true;
+  }
+  /** Ctrl+6: 0 hiện, 1 chỗ giữ, 2 ẩn */
+  setMode(m: number) { this.el.classList.toggle('obj-ph', m === 1); this.el.classList.toggle('obj-hide', m === 2); if (m === 2) this.select(null); }
   remove(id: string) {
     this.wb.removeChart(this.grid.sheet, id);
     if (this.sel === id) this.sel = null;

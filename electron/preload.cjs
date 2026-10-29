@@ -15,4 +15,6 @@ contextBridge.exposeInMainWorld('xlDesktop', {
   printers: () => ipcRenderer.invoke('xl:printers'),
   print: (o) => ipcRenderer.invoke('xl:print', o),
   pdf: (o) => ipcRenderer.invoke('xl:pdf', o),
+  win: (a) => ipcRenderer.send('xl:win', String(a)),
+  openExternal: (u) => ipcRenderer.send('xl:open-external', String(u)),
 });

@@ -1,3 +1,4 @@
+import { KEYMAP } from './ui/keymap';
 // phông Be Vietnam Pro đóng gói kèm app (chạy offline, không gọi Google Fonts)
 import '@fontsource/be-vietnam-pro/400.css';
 import '@fontsource/be-vietnam-pro/500.css';
@@ -28,6 +29,7 @@ async function boot() {
   if (failed) app.toast('Không mở được sổ tính lần trước nên đã mở sổ mới. Bản cũ vẫn được giữ trong Tệp → Mở…', 'err');
   (window as any).__xl = app;
   (window as any).__XLWorkbook = Workbook;
+  (window as any).__xlKeys = KEYMAP;
   if ('serviceWorker' in navigator && location.protocol !== 'file:' && !(window as any).xlDesktop && !import.meta.env.DEV) {
     navigator.serviceWorker.register('./sw.js').catch(() => {});
   }

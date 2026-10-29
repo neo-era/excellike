@@ -176,6 +176,19 @@ ipcMain.handle('xl:pdf', async (_e, o) => {
     return { error: String(e.message || e) };
   } finally { job?.done(); }
 });
+// Ctrl+F9 thu nhỏ, Ctrl+F10 phóng to/khôi phục cửa sổ (như Excel)
+ipcMain.on('xl:win', (e, a) => {
+  try {
+    const w = BrowserWindow.fromWebContents(e.sender);
+    if (!w) return;
+    if (a === 'min') w.minimize();
+    else if (a === 'max') { if (w.isMaximized()) w.unmaximize(); else w.maximize(); }
+  } catch (err) { logErr('xl:win ' + err); }
+});
+// Mở liên kết trong ô (http, https, mailto) bằng trình duyệt/ứng dụng mặc định
+ipcMain.on('xl:open-external', (_e, u) => {
+  try { if (/^(https?:|mailto:)/i.test(u)) shell.openExternal(u); } catch (err) { logErr('xl:open-external ' + err); }
+});
 ipcMain.on('xl:close-pending', () => clearTimeout(closeTimer)); // trang đang hỏi người dùng
 ipcMain.on('xl:close-ok', () => forceClose());
 ipcMain.on('xl:close-cancel', () => { clearTimeout(closeTimer); closeTimer = null; });

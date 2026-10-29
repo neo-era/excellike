@@ -1,5 +1,5 @@
 import { MAX_COLS, MAX_ROWS, parseRange, rangeToA1, toA1, type Range } from '../core/address';
-import { quoteSheet } from '../core/formula';
+import { quoteSheet, shiftFormula } from '../core/formula';
 import { Workbook, type Style } from '../core/workbook';
 import { Grid, ptPx, type EditHost } from './grid';
 import { ic } from './icons';
@@ -11,7 +11,7 @@ import type { BorderKind, BorderStyle } from '../core/workbook';
 import { ChartLayer, chartDialog } from './charts';
 import type { ChartType } from '../core/chart';
 import { PivotPanel, pivotCreateDialog } from './pivotui';
-import { Ribbon, KeyTips, allItems, fold, type Tab, type Btn, type KtTarget, type Item, type Group } from './ribbon';
+import { Ribbon, KeyTips, bindRibbonKeys, allItems, fold, type Tab, type Btn, type KtTarget, type Item, type Group } from './ribbon';
 import { closeMenu, openPopover, showMenu, menuOpen, type MenuItem } from './menu';
 import { Backstage } from './backstage';
 import { pageSetupDialog } from './pagesetup';
@@ -22,7 +22,17 @@ const $ = <T extends HTMLElement = HTMLElement>(sel: string, root: ParentNode = 
 const isTouch = () => matchMedia('(pointer: coarse)').matches;
 const COMPACT = '(max-width: 760px), (max-height: 520px)';
 import { VERSION } from './version';
-import { formatValue } from '../core/numfmt';
+import { formatValue, NF_SHORTCUT } from '../core/numfmt';
+import { comboOf, keyFor } from './keymap';
+import { formatCellsDialog } from './fmtcells';
+import { findDialog, findAgain, gotoDialog, gotoSpecialDialog, pasteSpecialDialog, hyperlinkDialog, seriesDialog, funcArgsDialog, argNames, quickAnalysis, keysDialog, pushClip, toggleClipboardPane, closeFind } from './dlg06';
+import { goSpecial } from '../core/find';
+import { flashFill } from '../core/flashfill';
+import { cycleRef } from '../core/formula';
+import type { SeriesOpts } from '../core/series';
+import type { PasteOpts } from '../core/workbook';
+const pad2 = (n: number) => String(n).padStart(2, '0');
+const needsApos = (v: string) => /^[=+\-'\d.,]/.test(v) || /^(true|false)$/i.test(v);
 
 // ---- bảng màu như Excel: Màu Chủ đề (Office) + sắc độ, Màu Chuẩn ----
 const THEME = ['#FFFFFF', '#000000', '#E7E6E6', '#44546A', '#4472C4', '#ED7D31', '#A5A5A5', '#FFC000', '#5B9BD5', '#70AD47'];
@@ -81,9 +91,9 @@ export function nfName(f: string | undefined) {
   if (/^#,##0$/.test(f)) return 'Số';
   return /[0#]/.test(f) ? 'Số' : 'Tùy chỉnh';
 }
-const FONTS = ['Aptos Narrow', 'Aptos', 'Arial', 'Calibri', 'Cambria', 'Courier New', 'Georgia', 'Segoe UI', 'Tahoma', 'Times New Roman', 'Verdana', 'Roboto', 'Be Vietnam Pro'];
+export const FONTS = ['Aptos Narrow', 'Aptos', 'Arial', 'Calibri', 'Cambria', 'Courier New', 'Georgia', 'Segoe UI', 'Tahoma', 'Times New Roman', 'Verdana', 'Roboto', 'Be Vietnam Pro'];
 const SIZES = [8, 9, 10, 11, 12, 14, 16, 18, 20, 22, 24, 26, 28, 36, 48, 72];
-const DEFAULT_FONT = 'Aptos Narrow';
+export const DEFAULT_FONT = 'Aptos Narrow';
 /** Kiểu Ô dựng sẵn (Home ▸ Kiểu Ô) */
 const CELL_STYLES: [string, Style, BorderKind?, BorderStyle?, string?][] = [
   ['Thường', { b: undefined, i: undefined, fg: undefined, bg: undefined, fs: undefined }],
@@ -138,6 +148,16 @@ export class App {
     $('#gridwrap').addEventListener('grid-error', (e) => this.toast((e as CustomEvent).detail, 'err'));
     $('#gridwrap').addEventListener('filter-btn', (e) => { const d = (e as CustomEvent).detail; this.filterPopover(d.col, d.x, d.y); });
     $('#gridwrap').addEventListener('dv-btn', (e) => { const d = (e as CustomEvent).detail; this.dvPick(d.x, d.y); });
+    // 0.6: chổi định dạng áp khi nhả chuột; nhấp nhanh vào ô có liên kết thì mở liên kết (như Excel)
+    let down = { t: 0, r: -1, c: -1 };
+    $('#gridwrap').addEventListener('cell-down', (e) => { const d = (e as CustomEvent).detail; down = { t: performance.now(), r: d.r, c: d.c }; this.tabStart = null; if (d.ctrl) down.t = 0; });
+    $('#gridwrap').addEventListener('sel-end', () => {
+      if (this.painter) { this.painterApply(); return; }
+      const g = this.grid;
+      if (down.t && performance.now() - down.t < 450 && g.isSingle() && !g.areas.length && g.sel.ar === down.r && g.sel.ac === down.c) this.followLink(down.r, down.c);
+    });
+    const closed = sessionStorage.getItem('xl-warn-closed');
+    if (closed !== null) { sessionStorage.removeItem('xl-warn-closed'); setTimeout(() => this.toast(`Đã đóng “${closed}”. Mở lại trong Tệp ▸ Mở ▸ Gần đây.`), 300); }
     const warn = sessionStorage.getItem('xl-warn');
     if (warn) { sessionStorage.removeItem('xl-warn'); setTimeout(() => this.toast('Lưu ý khi mở tệp: ' + warn, 'err'), 400); }
     this.wb.onChange(() => this.onBookChange());
@@ -171,24 +191,9 @@ export class App {
         if (ctrl && k === 'p') e.preventDefault();
         return;
       }
-      if (ctrl && k === 's') {
-        e.preventDefault(); if (this.ed.isEditing()) this.ed.commit(0, 0);
-        this.save();
-      }
-      if (ctrl && k === 'o') { e.preventDefault(); this.openFile(); }
-      if (ctrl && k === 'n' && !e.shiftKey) { e.preventDefault(); this.newBook(); }
-      const tg = e.target as HTMLElement | null, inField = !!tg && (/^(INPUT|TEXTAREA|SELECT)$/.test(tg.tagName) || tg.isContentEditable);
-      if (ctrl && !inField && !document.querySelector('.dlg-back') && (k === 'z' || k === 'y')) {
-        e.preventDefault(); if (k === 'y' || e.shiftKey) this.redo(); else this.undo(); return;
-      }
-      if (ctrl && e.key === 'F1') { e.preventDefault(); this.toggleRibbon(); }
       if (e.key === 'Escape' && this.ribbonPeek && !document.querySelector('.dlg-back, .menu')) { this.ribbonPeek = false; this.applyRibbon(); }
-      if (ctrl && k === 'p') { e.preventDefault(); if (this.ed.isEditing()) this.ed.commit(0, 0); this.printDlg(); }
-      if (ctrl && e.shiftKey && k === 'l' && !this.ed.isEditing()) { e.preventDefault(); this.toggleFilter(); }
-      if (ctrl && e.shiftKey && k === 'u') { e.preventDefault(); $('#app').classList.toggle('fx-tall'); this.grid.layout(); }
-      if (e.altKey && !ctrl && k === 'q') { e.preventDefault(); this.focusTell(); }
-      if (e.shiftKey && e.key === 'F11') { e.preventDefault(); this.addSheet(); }
-      if (ctrl && (e.key === 'PageDown' || e.key === 'PageUp') && !this.ed.isEditing()) { e.preventDefault(); this.stepSheet(e.key === 'PageDown' ? 1 : -1); }
+      void ctrl; void k;
+      this.keyGlobal(e);
     }, true);
   }
   private dirtySave = false;
@@ -253,8 +258,9 @@ export class App {
     this.updateTitle();
   }
   updateTitle() {
-    $('#doc-title').textContent = this.wb.name;
-    document.title = this.wb.name + ' - ExcelLike';
+    const grp = this.group.length > 1 ? ' [Nhóm]' : '';
+    $('#doc-title').textContent = this.wb.name + grp;
+    document.title = this.wb.name + grp + ' - ExcelLike';
   }
   private docPopover() {
     const box = h('div', { class: 'doc-pop' });
@@ -508,61 +514,76 @@ export class App {
     const G = (id: string, label: string, icon: string, items: Item[], launch?: Group['launch']): Group => ({ id, label, icon, items, launch, shrink: SHRINK[id] });
     const ps = () => normPrint(this.wb.meta(s()).print);
     const setPs = (p: Partial<ReturnType<typeof normPrint>>) => this.safe(() => { this.wb.setPrint(s(), storePrint({ ...ps(), ...p })); });
-    const pastePick = (label: string) => () => this.later(label, '0.6');
+    const pst = (o: PasteOpts) => () => this.pasteSpecialRun(o);
     const home: Tab = { id: 'home', label: 'Trang đầu', kt: 'H', groups: [
       G('clip', 'Bảng tạm', 'paste', [
         B('big', 'paste', 'paste', 'Dán', { kt: 'V', kbd: 'Ctrl+V', split: true, act: () => this.pasteBtn(), drop: this.menuAt(() => [
           { label: 'Dán', icon: 'paste', hint: 'Ctrl+V', act: () => this.pasteBtn() },
-          { label: 'Dán Giá trị', icon: 'pasteValues', act: pastePick('Dán Giá trị') },
-          { label: 'Dán Công thức', icon: 'pasteFormula', act: pastePick('Dán Công thức') },
-          { label: 'Chuyển vị', icon: 'transpose', act: pastePick('Chuyển vị') },
-          { label: 'Dán Định dạng', icon: 'pasteFmt', act: pastePick('Dán Định dạng') },
+          { label: 'Công thức', icon: 'pasteFormula', act: pst({ what: 'formulas' }) },
+          { label: 'Công thức và Định dạng Số', icon: 'pasteFormula', act: pst({ what: 'formulasNum' }) },
+          { label: 'Không có Viền', icon: 'paste', act: pst({ what: 'noBorders' }) },
+          { label: 'Giữ Độ rộng Cột Nguồn', icon: 'paste', act: () => { this.pasteSpecialRun({ what: 'all' }); this.pasteSpecialRun({ what: 'colWidths' }); } },
+          { label: 'Chuyển vị', icon: 'transpose', act: pst({ what: 'all', transpose: true }) },
           'sep',
-          { label: 'Dán Đặc biệt…', hint: 'Ctrl+Alt+V', act: pastePick('Dán Đặc biệt') },
+          { label: 'Giá trị', icon: 'pasteValues', hint: 'Ctrl+Shift+V', act: pst({ what: 'values' }) },
+          { label: 'Giá trị và Định dạng Số', icon: 'pasteValues', act: pst({ what: 'valuesNum' }) },
+          { label: 'Định dạng', icon: 'pasteFmt', act: pst({ what: 'formats' }) },
+          { label: 'Dán Liên kết', icon: 'link', act: pst({ link: true }) },
+          'sep',
+          { label: 'Dán Đặc biệt…', hint: 'Ctrl+Alt+V', act: () => this.pasteSpecialOpen() },
         ]) }),
         col(
           B('sm', 'cut', 'cut', 'Cắt', { kt: 'X', kbd: 'Ctrl+X', act: () => this.copySel(true) }),
           B('sm', 'copy', 'copy', 'Sao chép', { kt: 'C', kbd: 'Ctrl+C', split: true, act: () => this.copySel(false), drop: this.menuAt(() => [{ label: 'Sao chép', icon: 'copy', act: () => this.copySel(false) }, { label: 'Sao chép dưới dạng Ảnh…', icon: 'copyPic', act: () => this.later('Sao chép dưới dạng Ảnh', '0.9') }]) }),
-          B('sm', 'painter', 'brush', 'Chổi định dạng', { kt: 'FP', ...later('0.6') }),
+          B('sm', 'painter', 'brush', 'Chổi định dạng', { kt: 'FP', act: () => this.painterToggle(), dbl: () => this.painterOn(true), on: () => !!this.painter }),
         ),
-      ], { id: 'clipboard', tip: 'Bảng tạm Office', act: () => {}, kt: 'FO', later: '0.6' }),
+      ], { id: 'clipboard', tip: 'Bảng tạm Office', act: () => toggleClipboardPane(this), kt: 'FO' }),
       G('font', 'Phông chữ', 'font', [
         col(
           row(
             { t: 'combo', id: 'fn', label: 'Phông', w: 128, kt: 'FF', icon: 'font', get: () => cur().fn ?? DEFAULT_FONT, set: (v) => { if (v) this.applyStyle({ fn: v === DEFAULT_FONT ? undefined : v }); }, list: (r) => this.fontMenu(r) },
             { t: 'combo', id: 'fs', label: 'Cỡ Phông', w: 46, kt: 'FS', icon: 'fontSize', get: () => String(cur().fs ?? 11), set: (v) => { const n = parseFloat(v.replace(',', '.')); if (n >= 1 && n <= 409) { this.applyStyle({ fs: n === 11 ? undefined : n }); this.fitRows(); } else this.toast('Cỡ phông phải từ 1 đến 409.', 'err'); }, list: (r) => this.sizeMenu(r) },
-            B('ic', 'grow', 'grow', 'Tăng Cỡ Phông', { kt: 'FG', kbd: 'Ctrl+Shift+>', act: () => this.growFont(1) }),
-            B('ic', 'shrink', 'shrink', 'Giảm Cỡ Phông', { kt: 'FK', kbd: 'Ctrl+Shift+<', act: () => this.growFont(-1) }),
+            B('ic', 'grow', 'grow', 'Tăng Cỡ Phông', { kt: 'FG', act: () => this.growFont(1) }),
+            B('ic', 'shrink', 'shrink', 'Giảm Cỡ Phông', { kt: 'FK', act: () => this.growFont(-1) }),
           ),
           row(
             B('ic', 'b', 'bold', 'Đậm', { kt: '1', kbd: 'Ctrl+B', act: () => this.toggle('b'), on: st('b') }),
             B('ic', 'i', 'italic', 'Nghiêng', { kt: '2', kbd: 'Ctrl+I', act: () => this.toggle('i'), on: st('i') }),
-            B('ic', 'u', 'underline', 'Gạch chân', { kt: '3', kbd: 'Ctrl+U', act: () => this.toggle('u'), on: st('u'), split: true, drop: this.menuAt(() => [{ label: 'Gạch chân', icon: 'underline', act: () => this.toggle('u') }, { label: 'Gạch chân Kép', icon: 'dblUnder', act: () => this.later('Gạch chân Kép', '0.6') }]) }),
+            B('ic', 'u', 'underline', 'Gạch chân', { kt: '3', kbd: 'Ctrl+U', act: () => this.toggle('u'), on: st('u'), split: true, drop: this.menuAt(() => [{ label: 'Gạch chân', icon: 'underline', act: () => this.toggle('u') }, { label: 'Gạch chân Kép', icon: 'dblUnder', act: () => this.act(() => this.applyStyle({ u: true, ud: true })) }]) }),
             B('ic', 'border', 'borderBottom', 'Viền', { kt: 'B', split: true, act: () => this.safe(() => this.wb.setBorder(s(), this.grid.range, ...this.lastBorder)), drop: this.dd(() => this.borderMenu()) }),
             B('ic', 'bg', 'fill', 'Màu Tô', { kt: 'H', split: true, bar: () => this.lastFill, act: () => this.applyStyle({ bg: this.lastFill }), drop: (r) => this.colorMenu('bg', r) }),
             B('ic', 'fg', 'textColor', 'Màu Phông', { kt: 'FC', split: true, bar: () => this.lastFont, act: () => this.applyStyle({ fg: this.lastFont }), drop: (r) => this.colorMenu('fg', r) }),
           ),
         ),
-      ], { id: 'font', tip: 'Định dạng Ô: Phông chữ (Ctrl+Shift+F)', act: () => {}, kt: 'FN', later: '0.6' }),
+      ], { id: 'font', tip: 'Định dạng Ô: Phông chữ (Ctrl+Shift+F)', act: () => formatCellsDialog(this, 'font'), kt: 'FN' }),
       G('align', 'Căn chỉnh', 'center', [
         col(
           row(
             B('ic', 'va-t', 'aTop', 'Căn Trên', { kt: 'AT', act: () => this.applyStyle({ va: cur().va === 't' ? undefined : 't' }), on: va('t') }),
             B('ic', 'va-m', 'aMid', 'Căn Giữa', { kt: 'AM', act: () => this.applyStyle({ va: cur().va === 'm' ? undefined : 'm' }), on: va('m') }),
             B('ic', 'va-b', 'aBot', 'Căn Dưới', { kt: 'AB', act: () => this.applyStyle({ va: undefined }), on: () => !cur().va || cur().va === 'b' }),
-            B('ic', 'orient', 'orient', 'Hướng', { kt: 'FQ', ...later('0.6') }),
+            B('ic', 'orient', 'orient', 'Hướng', { kt: 'FQ', drop: this.menuAt(() => [
+              { label: 'Xoay Ngược Chiều Kim đồng hồ', act: () => this.act(() => this.applyStyle({ rot: 45 })) },
+              { label: 'Xoay Theo Chiều Kim đồng hồ', act: () => this.act(() => this.applyStyle({ rot: -45 })) },
+              { label: 'Chữ Dọc', act: () => this.act(() => this.applyStyle({ rot: 255 })) },
+              { label: 'Xoay Chữ Lên', act: () => this.act(() => this.applyStyle({ rot: 90 })) },
+              { label: 'Xoay Chữ Xuống', act: () => this.act(() => this.applyStyle({ rot: -90 })) },
+              { label: 'Bỏ Xoay', act: () => this.applyStyle({ rot: undefined }) },
+              'sep',
+              { label: 'Định dạng Căn chỉnh Ô', icon: 'cellFmt', act: () => formatCellsDialog(this, 'align') },
+            ]) }),
             B('sm', 'wr', 'wrap', 'Ngắt dòng', { kt: 'W', act: () => this.toggleWrap(), on: st('wr') }),
           ),
           row(
             B('ic', 'al-l', 'left', 'Căn Trái', { kt: 'AL', act: () => this.align('l'), on: al('l') }),
-            B('ic', 'al-c', 'center', 'Căn giữa', { kt: 'AC', kbd: 'Ctrl+E', act: () => this.align('c'), on: al('c') }),
+            B('ic', 'al-c', 'center', 'Căn giữa', { kt: 'AC', act: () => this.align('c'), on: al('c') }),
             B('ic', 'al-r', 'right', 'Căn Phải', { kt: 'AR', act: () => this.align('r'), on: al('r') }),
             B('ic', 'ind-d', 'indL', 'Giảm Thụt lề', { kt: '5', act: () => this.indent(-1) }),
             B('ic', 'ind-i', 'indR', 'Tăng Thụt lề', { kt: '6', act: () => this.indent(1) }),
             B('sm', 'merge', 'merge2', 'Gộp & Căn giữa', { kt: 'M', split: true, act: () => this.doMerge(true), on: () => !!this.wb.mergeAt(s(), this.grid.sel.ar, this.grid.sel.ac), drop: this.dd(() => this.mergeMenu()) }),
           ),
         ),
-      ], { id: 'align', tip: 'Định dạng Ô: Căn chỉnh', act: () => {}, kt: 'FA', later: '0.6' }),
+      ], { id: 'align', tip: 'Định dạng Ô: Căn chỉnh', act: () => formatCellsDialog(this, 'align'), kt: 'FA' }),
       G('number', 'Số', 'percent', [
         col(
           row({ t: 'combo', id: 'nf', label: 'Định dạng Số', w: 132, kt: 'N', icon: 'table', get: () => nfName(cur().fmt), set: (v) => { const x = NF.find(([n]) => fold(n) === fold(v)); if (x) this.applyStyle({ fmt: x[1] }); else if (v) this.applyStyle({ fmt: v }); }, list: (r) => this.nfMenu(r) }),
@@ -578,7 +599,7 @@ export class App {
             B('ic', 'ddec', 'decDec', 'Giảm Số thập phân', { kt: '9', act: () => this.decimals(-1) }),
           ),
         ),
-      ], { id: 'number', tip: 'Định dạng Ô: Số', act: () => {}, kt: 'FM', later: '0.6' }),
+      ], { id: 'number', tip: 'Định dạng Ô: Số', act: () => formatCellsDialog(this, 'num'), kt: 'FM' }),
       G('styles', 'Kiểu', 'styles', [
         B('big', 'cf', 'cf', 'Định dạng có Điều kiện', { kt: 'L', drop: this.dd(() => this.cfMenu()) }),
         B('big', 'fmtTable', 'fmtTable', 'Định dạng như Bảng', { kt: 'T', ...later('0.7') }),
@@ -601,19 +622,32 @@ export class App {
             { label: 'Lên', act: () => this.fillDir('up') },
             { label: 'Trái', act: () => this.fillDir('left') },
             'sep',
-            { label: 'Chuỗi…', act: () => this.later('Điền Chuỗi', '0.6') },
-            { label: 'Điền Nhanh', hint: 'Ctrl+E', act: () => this.later('Điền Nhanh', '0.6') },
+            { label: 'Chuỗi…', act: () => seriesDialog(this) },
+            { label: 'Điền Nhanh', hint: 'Ctrl+E', act: () => this.flashFill() },
           ]) }),
           B('sm', 'clear', 'eraser', 'Xóa', { kt: 'E', drop: this.menuAt(() => [
             { label: 'Xóa Tất cả', icon: 'eraser', act: () => this.clearAll() },
             { label: 'Xóa Định dạng', act: () => this.clearFormats() },
             { label: 'Xóa Nội dung', hint: 'Delete', act: () => this.clearSel() },
             { label: 'Xóa Ghi chú và Chú thích', act: () => this.later('Ghi chú', '0.7') },
-            { label: 'Xóa Siêu kết nối', act: () => this.later('Siêu kết nối', '0.9') },
+            { label: 'Xóa Siêu kết nối', act: () => this.clearLinks() },
           ]) }),
         ),
         B('big', 'sortf', 'sortAZ', 'Sắp xếp & Lọc', { kt: 'S', drop: this.dd(() => this.sortFilterMenu()) }),
-        B('big', 'find', 'find', 'Tìm & Chọn', { kt: 'FD', ...later('0.6') }),
+        B('big', 'find', 'find', 'Tìm & Chọn', { kt: 'FD', drop: this.menuAt(() => [
+          { label: 'Tìm…', icon: 'find', hint: 'Ctrl+F', act: () => findDialog(this, 'find') },
+          { label: 'Thay thế…', hint: 'Ctrl+H', act: () => findDialog(this, 'replace') },
+          { label: 'Đi tới…', hint: 'Ctrl+G', act: () => gotoDialog(this) },
+          { label: 'Đi tới Đặc biệt…', act: () => gotoSpecialDialog(this) },
+          'sep',
+          { label: 'Công thức', act: () => this.selectSpecial({ kind: 'formulas' }) },
+          { label: 'Ghi chú', act: () => this.selectSpecial({ kind: 'notes' }) },
+          { label: 'Định dạng có Điều kiện', act: () => this.selectSpecial({ kind: 'cf' }) },
+          { label: 'Hằng số', act: () => this.selectSpecial({ kind: 'constants' }) },
+          { label: 'Xác thực Dữ liệu', act: () => this.selectSpecial({ kind: 'dv' }) },
+          'sep',
+          { label: 'Chọn Đối tượng', act: () => { if (!this.charts.cycle(1)) this.toast('Trang tính không có đối tượng nổi.'); } },
+        ]) }),
       ]),
     ] };
     const insert: Tab = { id: 'insert', label: 'Chèn', kt: 'N', groups: [
@@ -646,7 +680,7 @@ export class App {
         col(B('sm', 'sp-line', 'sparkLine', 'Đường', { kt: 'SL', ...later('0.9') }), B('sm', 'sp-col', 'sparkCol', 'Cột', { kt: 'SO', ...later('0.9') }), B('sm', 'sp-wl', 'winLoss', 'Thắng/Thua', { kt: 'SW', ...later('0.9') })),
       ]),
       G('filters', 'Bộ lọc', 'slicer', [B('big', 'slicer', 'slicer', 'Slicer', { kt: 'SF', ...later('0.9') }), B('big', 'tl', 'timeline', 'Dòng thời gian', { kt: 'LT', ...later('0.9') })]),
-      G('links', 'Nối kết', 'link', [B('big', 'link', 'link', 'Liên kết', { kt: 'I', kbd: 'Ctrl+K', ...later('0.9') })]),
+      G('links', 'Nối kết', 'link', [B('big', 'link', 'link', 'Liên kết', { kt: 'I', kbd: 'Ctrl+K', act: () => hyperlinkDialog(this) })]),
       G('comments', 'Chú thích', 'comment', [B('big', 'i-comment', 'comment', 'Chú thích', { kt: 'M', ...later('0.7') })]),
       G('text', 'Văn bản', 'textbox', [
         B('big', 'textbox', 'textbox', 'Hộp Văn bản', { kt: 'X', ...later('0.9') }),
@@ -736,7 +770,7 @@ export class App {
       ]),
       G('tools', 'Công cụ Dữ liệu', 'textCols', [
         B('big', 'd-t2c', 'textCols', 'Văn bản thành Cột', { kt: 'E', ...later('0.7') }),
-        col(B('ic', 'd-flash', 'flash', 'Điền Nhanh', { kt: 'FF', ...later('0.6') }), B('ic', 'd-dup', 'removeDup', 'Loại bỏ Trùng lặp', { kt: 'M', ...later('0.7') }), B('ic', 'd-v', 'validate', 'Xác thực Dữ liệu', { kt: 'V', act: () => this.dvDlg() })),
+        col(B('ic', 'd-flash', 'flash', 'Điền Nhanh', { kt: 'FF', kbd: 'Ctrl+E', act: () => this.flashFill() }), B('ic', 'd-dup', 'removeDup', 'Loại bỏ Trùng lặp', { kt: 'M', ...later('0.7') }), B('ic', 'd-v', 'validate', 'Xác thực Dữ liệu', { kt: 'V', act: () => this.dvDlg() })),
         col(B('ic', 'd-cf', 'cf', 'Định dạng có Điều kiện', { drop: this.dd(() => this.cfMenu()) }), B('ic', 'd-cons', 'subtotal', 'Hợp nhất', { kt: 'N', ...later('0.9') })),
       ]),
       G('forecast', 'Dự báo', 'forecast', [B('big', 'd-whatif', 'whatIf', 'Phân tích Giả định', { kt: 'W', ...later('0.9') }), B('big', 'd-fc', 'forecast', 'Trang tính Dự báo', { kt: 'FC', ...later('0.9') })]),
@@ -787,7 +821,7 @@ export class App {
       G('help', 'Trợ giúp', 'help', [
         B('big', 'h-help', 'help', 'Trợ giúp', { kt: 'H', act: () => this.helpDlg() }),
         B('big', 'h-keys', 'kbd', 'Phím tắt', { kt: 'K', act: () => this.helpDlg(true) }),
-        B('big', 'h-new', 'news', 'Có gì Mới', { kt: 'W', act: () => this.toast(`ExcelLike ${VERSION}: giao diện như Excel 365 (thanh tiêu đề, 9 thẻ, KeyTips, Backstage), in ấn có xem trước từng trang, đầu/chân trang, ngắt trang, Thiết lập Trang.`) }),
+        B('big', 'h-new', 'news', 'Có gì Mới', { kt: 'W', act: () => this.toast(`ExcelLike ${VERSION}: phím tắt giống Excel 365 (F1 xem bảng), Tìm & Thay thế, Đi tới Đặc biệt, Dán Đặc biệt, Định dạng Ô (Ctrl+1), Chổi định dạng, Điền Nhanh, Liên kết, chọn nhiều vùng.`) }),
         B('big', 'about', 'info', 'Giới thiệu', { kt: 'A', act: () => this.backstage.open('account') }),
       ]),
     ] };
@@ -796,8 +830,13 @@ export class App {
 
   // ---------- lệnh định dạng ----------
   private safe(f: () => void) { try { f(); } catch (e) { this.toast((e as Error).message, 'err'); } }
-  applyStyle(p: Style) { this.safe(() => this.wb.setStyle(this.grid.sheet, this.grid.range, p)); this.refreshToggles(); }
-  toggle(k: 'b' | 'i' | 'u') {
+  applyStyle(p: Style) {
+    const areas = this.grid.ranges(), sheets = this.sheetsTarget();
+    this.safe(() => this.wb.group(() => { for (const sh of sheets) for (const a of areas) this.wb.setStyle(sh, a, p); }));
+    this.lastAct = () => this.applyStyle(p);
+    this.refreshToggles();
+  }
+  toggle(k: 'b' | 'i' | 'u' | 's') {
     const cur = !!this.wb.style(this.grid.sheet, this.grid.sel.ar, this.grid.sel.ac)[k];
     this.applyStyle({ [k]: !cur } as Style);
   }
@@ -822,8 +861,8 @@ export class App {
   private at(id: string) { const a = this.anchor; if (a) { this.anchor = null; return a; } const r = document.querySelector(`[data-id="${id}"]`)?.getBoundingClientRect(); return r ? { x: r.left, y: r.bottom + 4 } : { x: 80, y: 120 }; }
   private borderMenu() {
     const p = this.at('border'), s = this.grid.sheet;
-    const b = (kind: BorderKind, style: BorderStyle = 'thin', remember = true) => () => this.safe(() => { this.wb.setBorder(s, this.grid.range, kind, style); if (remember) this.lastBorder = [kind, style]; });
-    const two = (top: BorderStyle, bot: BorderStyle) => () => this.safe(() => { this.wb.setBorder(s, this.grid.range, 'top', top); this.wb.setBorder(s, this.grid.range, 'bottom', bot); });
+    const b = (kind: BorderKind, style: BorderStyle = 'thin', remember = true) => () => { if (remember) this.lastBorder = [kind, style]; this.act(() => this.eachArea((a) => { for (const sh of this.sheetsTarget()) this.wb.setBorder(sh, a, kind, style); })); };
+    const two = (top: BorderStyle, bot: BorderStyle) => () => this.act(() => this.eachArea((a) => { this.wb.setBorder(s, a, 'top', top); this.wb.setBorder(s, a, 'bottom', bot); }));
     showMenu([
       { label: 'Viền Dưới', icon: 'borderBottom', act: b('bottom') },
       { label: 'Viền Trên', icon: 'borderTop', act: b('top') },
@@ -843,7 +882,7 @@ export class App {
       { label: 'Viền Trên và Dưới Kép', icon: 'borders', act: two('thin', 'double') },
       'sep',
       { label: 'Viền Nét đứt', icon: 'borders', act: b('all', 'dashed') },
-      { label: 'Thêm Viền…', icon: 'cellFmt', act: () => this.later('Hộp Định dạng Ô ▸ Viền', '0.6') },
+      { label: 'Thêm Viền…', icon: 'cellFmt', act: () => formatCellsDialog(this, 'border') },
     ], p.x, p.y);
   }
 
@@ -1143,7 +1182,7 @@ export class App {
   delRows() { const { at, n } = this.rows(); this.safe(() => this.wb.deleteRows(this.grid.sheet, at, n)); }
   insCols() { const { at, n } = this.cols(); this.safe(() => this.wb.insertCols(this.grid.sheet, at, n)); }
   delCols() { const { at, n } = this.cols(); this.safe(() => this.wb.deleteCols(this.grid.sheet, at, n)); }
-  clearSel() { this.safe(() => this.wb.clear(this.grid.sheet, this.grid.range)); }
+  clearSel() { const areas = this.grid.ranges(), sheets = this.sheetsTarget(); this.safe(() => this.wb.group(() => { for (const sh of sheets) for (const a of areas) this.wb.clear(sh, a); })); this.lastAct = () => this.clearSel(); }
   autoSum(fn = 'SUM') {
     const { ar, ac } = this.grid.sel;
     const f = this.wb.autoSum(this.grid.sheet, ar, ac, fn);
@@ -1174,7 +1213,9 @@ export class App {
   // ---------- bảng tạm ----------
   private lastCopyText = '';
   copySel(cut: boolean) {
+    if (this.grid.areas.length) { this.toast('Không thể dùng lệnh này với vùng chọn nhiều khối.', 'err'); return ''; }
     const t = this.wb.copy(this.grid.sheet, this.grid.range, cut);
+    pushClip(t);
     this.lastCopyText = t;
     navigator.clipboard?.writeText(t).catch(() => {});
     this.grid.invalidate();
@@ -1218,7 +1259,7 @@ export class App {
     for (const id of this.wb.visibleSheetIds()) {
       const b = document.createElement('button');
       const tc = this.wb.meta(id).tabColor;
-      b.className = 'st' + (id === this.grid.sheet ? ' on' : '') + (tc ? ' tc' : '');
+      b.className = 'st' + (id === this.grid.sheet ? ' on' : '') + (tc ? ' tc' : '') + (this.group.length > 1 && this.group.includes(id) ? ' grp' : '');
       if (tc) b.style.setProperty('--tab', tc);
       b.textContent = this.wb.sheetName(id);
       b.dataset.sheet = String(id);
@@ -1229,7 +1270,11 @@ export class App {
         // đang gõ công thức ở chế độ trỏ: chuyển sheet để chọn ô tham chiếu, chưa nhập
         if (this.ed.isEditing() && this.ed.pointMode()) { if (id !== this.grid.sheet) { this.grid.setSheet(id); this.renderSheets(); } this.ed.refocus(); return; }
         if (this.ed.isEditing()) this.ed.commit(0, 0);
+        if (this.group.length > 1 && !this.group.includes(id)) { this.group = []; this.updateTitle(); }
+        else if (this.group.length > 1 && id !== this.grid.sheet) { /* bấm thẻ trong nhóm: giữ nhóm */ }
+        else if (this.group.length > 1) { this.group = []; this.updateTitle(); }
         if (id !== this.grid.sheet) { this.grid.setSheet(id); this.renderSheets(); this.syncSelection(); }
+        else this.renderSheets();
         this.grid.focusKeys();
       };
       b.ondblclick = () => this.renameSheet(id);
@@ -1386,6 +1431,7 @@ export class App {
     $('#namebox-dd').onclick = () => this.later('Danh sách Tên', '0.7');
     $('#fx-fn').onclick = () => this.funcPicker();
     $('#fx-exp').onclick = () => { $('#app').classList.toggle('fx-tall'); this.grid.layout(); };
+    bindRibbonKeys((el) => el.click(), () => this.grid.focusKeys());
   }
   syncSelection() {
     const g = this.grid.range, s = this.grid.sheet, { ar, ac } = this.grid.sel;
@@ -1538,6 +1584,7 @@ export class App {
     }
   }
   async newBook() {
+    closeFind();
     await this.saveNow(false);
     const id = 'b' + Date.now();
     lsSet('xl-last', id);
@@ -1621,12 +1668,11 @@ export class App {
   private pasteRow(): HTMLElement {
     const row = document.createElement('div');
     row.className = 'paste-row';
-    const items: [string, string, (() => void) | null][] = [['paste', 'Dán (P)', () => this.pasteBtn()], ['pasteValues', 'Giá trị (V)', null], ['pasteFormula', 'Công thức (F)', null], ['transpose', 'Chuyển vị (T)', null], ['pasteFmt', 'Định dạng (R)', null]];
+    const items: [string, string, (() => void) | null][] = [['paste', 'Dán (P)', () => this.pasteBtn()], ['pasteValues', 'Giá trị (V)', () => this.pasteSpecialRun({ what: 'values' })], ['pasteFormula', 'Công thức (F)', () => this.pasteSpecialRun({ what: 'formulas' })], ['transpose', 'Chuyển vị (T)', () => this.pasteSpecialRun({ what: 'all', transpose: true })], ['pasteFmt', 'Định dạng (R)', () => this.pasteSpecialRun({ what: 'formats' })], ['link', 'Dán Liên kết (N)', () => this.pasteSpecialRun({ link: true })]];
     for (const [icon, label, act] of items) {
       const b = document.createElement('button');
-      b.innerHTML = ic(icon, 16); b.title = label + (act ? '' : ' — có ở bản 0.6'); b.setAttribute('aria-label', b.title);
-      if (!act) b.classList.add('later');
-      b.onclick = () => { closeMenu(); if (act) act(); else this.later(label.replace(/ \(.\)$/, ''), '0.6'); };
+      b.innerHTML = ic(icon, 16); b.title = label; b.setAttribute('aria-label', b.title);
+      b.onclick = () => { closeMenu(); act?.(); };
       row.appendChild(b);
     }
     return row;
@@ -1637,7 +1683,7 @@ export class App {
       { label: 'Cắt', icon: 'cut', hint: 'Ctrl+X', act: () => this.copySel(true) },
       { label: 'Sao chép', icon: 'copy', hint: 'Ctrl+C', act: () => this.copySel(false) },
       { label: 'Tùy chọn Dán:', icon: 'paste', act: () => this.pasteBtn(), extra: () => this.pasteRow() },
-      { label: 'Dán Đặc biệt…', act: later('Dán Đặc biệt', '0.6') },
+      { label: 'Dán Đặc biệt…', hint: 'Ctrl+Alt+V', act: () => this.pasteSpecialOpen() },
       'sep',
     ];
     let items: MenuItem[];
@@ -1648,7 +1694,7 @@ export class App {
         { label: 'Xóa', act: () => (R ? this.delRows() : this.delCols()) },
         { label: 'Xóa Nội dung', act: () => this.clearSel() },
         'sep',
-        { label: 'Định dạng Ô…', icon: 'cellFmt', act: later('Định dạng Ô', '0.6') },
+        { label: 'Định dạng Ô…', icon: 'cellFmt', hint: 'Ctrl+1', act: () => formatCellsDialog(this, 'num') },
         R ? { label: 'Chiều cao Hàng…', act: () => this.rowHeightDlg() } : { label: 'Độ rộng Cột…', act: () => this.colWidthDlg() },
         { label: 'Ẩn', act: () => this.hideSel(R ? 'r' : 'c', true) },
         { label: 'Bỏ ẩn', act: () => this.unhideAround(R ? 'r' : 'c') },
@@ -1676,10 +1722,11 @@ export class App {
         { label: 'Bình luận Mới', icon: 'comment', act: later('Bình luận', '0.7') },
         { label: 'Ghi chú Mới', icon: 'note', act: later('Ghi chú', '0.7') },
         'sep',
-        { label: 'Định dạng Ô…', icon: 'cellFmt', hint: 'Ctrl+1', act: later('Định dạng Ô', '0.6') },
+        { label: 'Định dạng Ô…', icon: 'cellFmt', hint: 'Ctrl+1', act: () => formatCellsDialog(this, 'num') },
         { label: 'Chọn từ Danh sách Thả xuống…', act: () => this.pickFromList() },
         { label: 'Xác định Tên…', icon: 'tag', act: later('Xác định Tên', '0.7') },
-        { label: 'Liên kết', icon: 'link', hint: 'Ctrl+K', act: later('Liên kết', '0.9') },
+        { label: this.wb.style(this.grid.sheet, this.grid.sel.ar, this.grid.sel.ac).ln ? 'Sửa Liên kết…' : 'Liên kết', icon: 'link', hint: 'Ctrl+K', act: () => hyperlinkDialog(this) },
+        ...(this.wb.style(this.grid.sheet, this.grid.sel.ar, this.grid.sel.ac).ln ? [{ label: 'Mở Liên kết', act: () => this.followLink(this.grid.sel.ar, this.grid.sel.ac) }, { label: 'Loại bỏ Liên kết', act: () => this.setLink(null, null) }] as MenuItem[] : []),
       ];
     }
     showMenu(items, x, y, { mini: this.miniBar() });
@@ -1782,7 +1829,7 @@ export class App {
     showMenu([
       ...NF.map(([l, f, ex]) => ({ label: l, hint: typeof v === 'number' ? formatValue(v, f).text : ex, act: () => this.applyStyle({ fmt: f }) }) as MenuItem),
       'sep',
-      { label: 'Định dạng Số Khác…', act: () => this.later('Định dạng Số Khác (hộp Định dạng Ô)', '0.6') },
+      { label: 'Định dạng Số Khác…', act: () => formatCellsDialog(this, 'num') },
     ], r.left, r.bottom + 2);
   }
   colorMenu(k: 'fg' | 'bg', r: DOMRect) {
@@ -1825,7 +1872,7 @@ export class App {
       { label: 'Tự Khớp Chiều cao Hàng', act: () => this.autofitRows() },
       { label: 'Độ rộng Cột…', icon: 'colW', act: () => this.colWidthDlg() },
       { label: 'Tự Khớp Độ rộng Cột', icon: 'autofit', act: () => this.autofitCols() },
-      { label: 'Độ rộng Mặc định…', act: () => this.later('Độ rộng Mặc định', '0.6') },
+      { label: 'Độ rộng Mặc định…', act: () => { const s = this.grid.sheet, d = this.wb.meta(s).colW.def; this.numDlg('Độ rộng Chuẩn', 'Độ rộng cột chuẩn (ký tự):', String(Math.round(((d - 5) / 7) * 100) / 100).replace('.', ','), (n) => { if (n < 0 || n > 255) return 'Độ rộng cột phải từ 0 đến 255.'; this.safe(() => this.wb.setDefaultColWidth(s, Math.round(n * 7 + 5))); this.grid.layout(); }); } },
       'sep',
       { label: 'Ẩn & Bỏ ẩn', icon: 'eye', sub: [
         { label: 'Ẩn Hàng', hint: 'Ctrl+9', act: () => this.hideSel('r', true) },
@@ -1843,7 +1890,7 @@ export class App {
       'sep',
       { label: 'Bảo vệ Trang tính…', icon: 'protectSheet', act: () => this.later('Bảo vệ Trang tính', '0.9') },
       { label: 'Khóa Ô', icon: 'lock', act: () => this.later('Khóa Ô', '0.9') },
-      { label: 'Định dạng Ô…', icon: 'cellFmt', hint: 'Ctrl+1', act: () => this.later('Định dạng Ô', '0.6') },
+      { label: 'Định dạng Ô…', icon: 'cellFmt', hint: 'Ctrl+1', act: () => formatCellsDialog(this, 'num') },
     ];
   }
   /** Hộp thoại Chèn… / Xóa… (dồn ô) như Excel */
@@ -1959,6 +2006,7 @@ export class App {
     openDialog('Thống kê Sổ làm việc', body, [{ label: 'OK', kind: 'primary', act: () => {} }], () => this.grid.focusKeys());
   }
   helpDlg(keys = false) {
+    if (keys) { keysDialog(this); return; }
     const rows: [string, string][] = [['Ctrl+S', 'Lưu'], ['Ctrl+O', 'Mở'], ['Ctrl+N', 'Sổ làm việc mới'], ['Ctrl+P', 'In (xem trước)'], ['Ctrl+Z / Ctrl+Y', 'Hoàn tác / Làm lại'], ['Ctrl+B, I, U', 'Đậm, Nghiêng, Gạch chân'], ['Alt hoặc F10', 'Hiện KeyTips'], ['Alt+Q', 'Tìm kiếm lệnh'], ['Alt+=', 'Tổng Tự động'], ['F2', 'Sửa ô'], ['Alt+Enter', 'Xuống dòng trong ô'], ['Ctrl+Shift+L', 'Bật/tắt Lọc'], ['Ctrl+F1', 'Thu gọn/hiện Ribbon'], ['Shift+F11', 'Trang tính mới'], ['Ctrl+PageDown/PageUp', 'Sang trang tính sau/trước'], ['Ctrl+Shift+U', 'Mở rộng thanh công thức'], ['Shift+F3', 'Chèn Hàm'], ['F9', 'Tính lại']];
     const body = h('div', { class: 'stack' }, ...(keys ? [] : [h('p', {}, `ExcelLike ${VERSION} — bảng tính kiểu Excel 365 chạy trên Windows và trình duyệt. Công thức tiếng Việt dùng dấu chấm phẩy (;) ngăn tham số, dấu phẩy (,) là dấu thập phân.`)]), h('dl', { class: 'bs-props' }, ...rows.flatMap(([k, v]) => [h('dt', {}, k), h('dd', {}, v)])));
     openDialog(keys ? 'Phím tắt' : 'Trợ giúp', body, [{ label: 'Đóng', kind: 'primary', act: () => {} }], () => this.grid.focusKeys());
@@ -1985,12 +2033,514 @@ export class App {
     });
   }
 
+  /** Enter khi không sửa: Tab rồi Enter về cột bắt đầu */
+  enterNav(shift: boolean) {
+    const g = this.grid, [dr, dc] = this.enterMove(shift);
+    if (this.tabStart !== null && dr > 0 && !dc && g.isSingle() && !g.areas.length) { const c = this.tabStart; this.tabStart = null; g.select(g.sel.ar + 1, c); return; }
+    this.tabStart = null;
+    if (dr || dc) g.moveActive(dr, dc);
+  }
   /** Hướng di chuyển sau khi nhấn Enter (Tệp ▸ Tùy chọn ▸ Nâng cao) */
   enterMove(shift: boolean): [number, number] {
     const d = lsGet('xl-enter') ?? 'down';
     const v: [number, number] = d === 'right' ? [0, 1] : d === 'left' ? [0, -1] : d === 'up' ? [-1, 0] : d === 'none' ? [0, 0] : [1, 0];
     return shift ? [-v[0], -v[1]] : v;
   }
+  // =====================================================================
+  // ---------- 0.6: phím tắt giống hệt Excel 365 + tính năng đi kèm ----------
+  // =====================================================================
+  /** Chế độ End (End rồi mũi tên) */
+  endMode = false;
+  /** Bật/tắt chú thích hàm (Ctrl+Alt+P) */
+  fTips = true;
+  /** Lệnh cuối để F4 / Ctrl+Y lặp lại */
+  private lastAct: (() => void) | null = null;
+  /** Chổi định dạng: kiểu ô nguồn và có dùng nhiều lần không */
+  private painter: { styles: (Style | undefined)[][]; h: number; w: number; sticky: boolean } | null = null;
+  /** Ô bắt đầu chuỗi Tab (Tab rồi Enter về cột bắt đầu) */
+  tabStart: number | null = null;
+  /** nhóm trang tính (Ctrl+Shift+PgDn/PgUp) */
+  group: number[] = [];
+
+  /** Ghi nhớ lệnh để lặp (F4/Ctrl+Y) và chạy luôn */
+  private act(f: () => void) { this.lastAct = f; f(); }
+  repeat() { if (this.lastAct) { this.lastAct(); this.grid.invalidate(); this.syncSelection(); } }
+
+  /** Phím dùng chung (bắt ở document) — trả true nếu đã xử lý */
+  keyGlobal(e: KeyboardEvent): boolean {
+    const t = e.target as HTMLElement | null;
+    if (t?.closest?.('.fr-panel, .qa, .clip-pane') && !(e.key === 'F1')) return false;
+    if (document.querySelector('.dlg-back') || menuOpen()) return false;
+    const inField = !!t && (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.isContentEditable);
+    const combo = comboOf(e);
+    const def = keyFor(combo, 'global', inField);
+    if (!def) return false;
+    if (this.ed.isEditing() && !['save', 'print', 'help', 'fxTall', 'fTips', 'ribbonToggle', 'tell', 'fullScreen', 'winMin', 'winMax', 'keytips', 'ribbonTip'].includes(def.id)) return false;
+    const ok = this.runKey(def.id, e);
+    if (ok) { e.preventDefault(); e.stopPropagation(); }
+    return ok;
+  }
+  /** Phím khi lưới đang nhận phím (không sửa ô) */
+  keyNav(e: KeyboardEvent): boolean {
+    const combo = comboOf(e);
+    const arrows: Record<string, [number, number]> = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] };
+    const g = this.grid;
+    if (arrows[e.key] || ['Home', 'End', 'PageUp', 'PageDown', 'Escape'].includes(e.key)) this.tabStart = null;
+    // Chế độ End: End rồi mũi tên = Ctrl+mũi tên; End rồi Home = ô cuối
+    if (this.endMode && arrows[e.key] && !e.ctrlKey && !e.altKey) {
+      e.preventDefault(); this.endMode = false; this.updateFlags();
+      g.jump(arrows[e.key][0], arrows[e.key][1], e.shiftKey || g.extMode);
+      return true;
+    }
+    if (this.endMode && e.key === 'Home') { e.preventDefault(); this.endMode = false; this.updateFlags(); const lc = this.wb.lastCell(g.sheet); g.select(lc.r, lc.c, e.shiftKey); return true; }
+    if (this.endMode && !['End', 'Shift', 'Control', 'Alt'].includes(e.key)) { this.endMode = false; this.updateFlags(); }
+    // F8: mũi tên mở rộng vùng chọn
+    if (g.extMode && arrows[e.key] && !e.altKey) {
+      e.preventDefault();
+      if (e.ctrlKey) g.jump(arrows[e.key][0], arrows[e.key][1], true); else g.step(arrows[e.key][0], arrows[e.key][1], true);
+      return true;
+    }
+    if (combo === 'F4') { e.preventDefault(); this.repeat(); return true; }
+    if (e.key === 'Escape' && (g.extMode || g.addMode || this.painter)) { e.preventDefault(); g.extMode = g.addMode = false; this.painterOff(); this.updateFlags(); return true; }
+    const def = keyFor(combo, 'nav', true);
+    if (!def) return false;
+    const ok = this.runKey(def.id, e);
+    if (ok) e.preventDefault();
+    return ok;
+  }
+
+  /** Thực thi một phím theo id trong bảng ánh xạ */
+  runKey(id: string, e: KeyboardEvent): boolean {
+    const g = this.grid, s = g.sheet, { ar, ac } = g.sel;
+    const nf = (f: string | undefined) => this.act(() => this.applyStyle({ fmt: f }));
+    switch (id) {
+      // ---- tệp ----
+      case 'save': case 'saveF12': if (this.ed.isEditing()) this.ed.commit(0, 0); this.save(); return true;
+      case 'open': case 'openF12': this.openFile(); return true;
+      case 'new': this.newBook(); return true;
+      case 'saveAs': if (this.ed.isEditing()) this.ed.commit(0, 0); this.saveXlsx(true); return true;
+      case 'print': if (this.ed.isEditing()) this.ed.commit(0, 0); this.printDlg(); return true;
+      case 'closeBook': case 'closeWin': this.closeBook(); return true;
+      case 'winMin': case 'winMax': { const d = desk() as any; if (d?.win) { d.win(id === 'winMin' ? 'min' : 'max'); return true; } return false; }
+      // ---- hoàn tác ----
+      case 'undo': this.undo(); return true;
+      case 'redo': if (this.wb.canRedo()) this.redo(); else this.repeat(); return true;
+      // ---- ribbon ----
+      case 'tell': this.focusTell(); return true;
+      case 'ribbonToggle': this.toggleRibbon(); return true;
+      case 'ribbonTip': { const el = document.activeElement as HTMLElement | null; if (el?.closest('#ribbon') && el.title) { this.toast(el.title); return true; } return false; }
+      case 'help': keysDialog(this); return true;
+      case 'newSheet': this.addSheet(); return true;
+      case 'fullScreen': $('#app').classList.toggle('full-screen'); this.grid.layout(); return true;
+      case 'fxTall': $('#app').classList.toggle('fx-tall'); this.grid.layout(); return true;
+      case 'fTips': this.fTips = !this.fTips; this.toast(this.fTips ? 'Đã bật chú thích hàm khi gõ công thức.' : 'Đã tắt chú thích hàm khi gõ công thức.'); return true;
+      case 'pane': this.cyclePane(e.shiftKey ? -1 : 1); return true;
+      case 'nextSheet': case 'prevSheet': if (this.ed.isEditing()) return false; this.stepSheet(id === 'nextSheet' ? 1 : -1); return true;
+      case 'zoomIn': this.zoom(1); return true;
+      case 'zoomOut': this.zoom(-1); return true;
+      // ---- định dạng ----
+      case 'bold': this.act(() => this.toggle('b')); return true;
+      case 'italic': this.act(() => this.toggle('i')); return true;
+      case 'under': this.act(() => this.toggle('u')); return true;
+      case 'strike': this.act(() => this.toggle('s')); return true;
+      case 'fmtCells': formatCellsDialog(this, 'num'); return true;
+      case 'fmtFont': formatCellsDialog(this, 'font'); return true;
+      case 'nfGeneral': nf(NF_SHORTCUT.general); return true;
+      case 'nfCurrency': nf(NF_SHORTCUT.currency); return true;
+      case 'nfPercent': nf(NF_SHORTCUT.percent); return true;
+      case 'nfSci': nf(NF_SHORTCUT.sci); return true;
+      case 'nfDate': nf(NF_SHORTCUT.date); return true;
+      case 'nfTime': nf(NF_SHORTCUT.time); return true;
+      case 'nfNumber': nf(NF_SHORTCUT.number); return true;
+      case 'outlineBd': this.act(() => this.eachArea((a) => this.wb.setBorder(s, a, 'outer'))); return true;
+      case 'noBd': this.act(() => this.eachArea((a) => this.wb.setBorders(s, a, { t: null, b: null, l: null, r: null, h: null, v: null }))); return true;
+      case 'showF': g.showFormulas = !g.showFormulas; g.invalidate(); this.ribbon.refresh(); return true;
+      case 'objects': g.objMode = (g.objMode + 1) % 3; this.charts.setMode(g.objMode); this.toast(['Hiện đối tượng.', 'Hiện chỗ giữ cho đối tượng.', 'Ẩn đối tượng.'][g.objMode]); return true;
+      case 'hideRows': this.act(() => this.hideSel('r', true)); return true;
+      case 'hideCols': this.act(() => this.hideSel('c', true)); return true;
+      case 'unhideRows': this.hideSel('r', false); return true;
+      case 'unhideCols': this.hideSel('c', false); return true;
+      case 'insertDlg': this.insertKey(); return true;
+      case 'deleteDlg': this.deleteKey(); return true;
+      case 'link': hyperlinkDialog(this); return true;
+      case 'quick': quickAnalysis(this); return true;
+      case 'stats': this.bookStats(); return true;
+      case 'filter': this.toggleFilter(); return true;
+      // ---- dán ----
+      case 'pasteSp': this.pasteSpecialOpen(); return true;
+      case 'pasteVals': this.pasteSpecialRun({ what: 'values' }); return true;
+      case 'del': this.act(() => this.clearSel()); return true;
+      case 'ctxMenu': { const r = g.cellRectM(ar, ac), b = g.scroller.getBoundingClientRect(); this.contextMenu(b.left + r.x + r.w / 2, b.top + r.y + r.h / 2, 'cell'); return true; }
+      // ---- chọn ----
+      case 'selAll': this.selectAllKey(); return true;
+      case 'selCol': g.selectRange({ r1: 0, c1: g.range.c1, r2: MAX_ROWS - 1, c2: g.range.c2 }); g.setActive(ar, ac); return true;
+      case 'selRow': g.selectRange({ r1: g.range.r1, c1: 0, r2: g.range.r2, c2: MAX_COLS - 1 }); g.setActive(ar, ac); return true;
+      case 'region': g.selectRange(this.wb.currentRegion(s, ar, ac)); return true;
+      case 'extMode': g.extMode = !g.extMode; g.addMode = false; this.updateFlags(); return true;
+      case 'addMode': g.addMode = !g.addMode; g.extMode = false; this.updateFlags(); return true;
+      case 'endMode': this.endMode = !this.endMode; this.updateFlags(); return true;
+      case 'lastCell': { const lc = this.wb.lastCell(s); g.select(lc.r, lc.c); return true; }
+      case 'lastCellExt': { const lc = this.wb.lastCell(s); g.select(lc.r, lc.c, true); return true; }
+      case 'top': { const fz = this.wb.meta(s).freeze; g.select(fz.rows, fz.cols); return true; }
+      case 'topExt': g.select(0, 0, true); return true;
+      case 'home': g.select(ar, 0); return true;
+      case 'homeExt': g.select(g.sel.fr, 0, true); return true;
+      case 'pgRight': case 'pgLeft': { const n = Math.max(1, g.visibleCols().length - 1); g.select(ar, Math.max(0, ac + (id === 'pgRight' ? n : -n))); return true; }
+      case 'pgExt': { const n = Math.max(1, g.visibleRows().length - 2) * (e.key === 'PageDown' ? 1 : -1); g.select(Math.max(0, g.sel.fr + n), g.sel.fc, true); return true; }
+      case 'corner': this.nextCorner(); return true;
+      case 'collapse': g.select(ar, ac); return true;
+      case 'showActive': g.ensureVisible(ar, ac); g.invalidate(); return true;
+      case 'visible': return this.selectSpecial({ kind: 'visible' }, true);
+      case 'prec': return this.selectSpecial({ kind: 'precedents' }, true);
+      case 'precAll': return this.selectSpecial({ kind: 'precedents', all: true }, true);
+      case 'dep': return this.selectSpecial({ kind: 'dependents' }, true);
+      case 'depAll': return this.selectSpecial({ kind: 'dependents', all: true }, true);
+      case 'rowDiff': return this.selectSpecial({ kind: 'rowDiff', active: { r: ar, c: ac } }, true);
+      case 'colDiff': return this.selectSpecial({ kind: 'colDiff', active: { r: ar, c: ac } }, true);
+      case 'selNotes': return this.selectSpecial({ kind: 'notes' }, true);
+      case 'grpNext': case 'grpPrev': this.groupStep(id === 'grpNext' ? 1 : -1); return true;
+      case 'dvList': this.altDown(); return true;
+      case 'shapes': if (!this.charts.cycle(1)) this.toast('Trang tính không có đối tượng nổi.'); return true;
+      // ---- dữ liệu ----
+      case 'goto': gotoDialog(this); return true;
+      case 'find': findDialog(this, 'find'); return true;
+      case 'replace': findDialog(this, 'replace'); return true;
+      case 'findNext': findAgain(this, 1); return true;
+      case 'findPrev': findAgain(this, -1); return true;
+      case 'flash': this.flashFill(); return true;
+      case 'fillDown': this.act(() => this.fillDir('down')); return true;
+      case 'fillRight': this.act(() => this.fillDir('right')); return true;
+      case 'autoSum': this.autoSum(); return true;
+      case 'calcSheet': case 'calcFull': this.recalc(); return true;
+      case 'chartHere': this.insertChart(); return true;
+      case 'chartSheet': this.chartSheet(); return true;
+      case 'refresh': case 'refreshAll': this.refreshPivots(id === 'refresh' ? s : null); return true;
+      case 'today': case 'nowTime': { const t = new Date(); this.ed.begin(id === 'today' ? `${pad2(t.getDate())}/${pad2(t.getMonth() + 1)}/${t.getFullYear()}` : `${t.getHours()}:${pad2(t.getMinutes())}`, 'enter'); return true; }
+      case 'fAbove': case 'vAbove': {
+        if (ar === 0) return true;
+        const txt = id === 'fAbove' ? this.wb.rawText(s, ar - 1, ac) : this.wb.display(s, ar - 1, ac).text;
+        this.ed.begin(txt, 'edit'); return true;
+      }
+      case 'insFn': this.funcPicker(); return true;
+      case 'calcAll': this.recalc(); return true;
+      case 'editBar': this.ed.begin(null, 'edit', false, 'bar'); return true;
+    }
+    return false;
+  }
+
+  /** Áp một thao tác cho mọi khối đang chọn (vùng chọn nhiều khối) — một bước hoàn tác */
+  eachArea(f: (g: Range) => void) {
+    const list = this.grid.ranges();
+    this.safe(() => this.wb.group(() => { for (const a of list) f(a); }));
+    this.grid.invalidate();
+  }
+  /** Sau khi thay đổi nội dung từ hộp thoại */
+  afterEdit() { this.grid.invalidate(); this.syncSelection(); }
+  /** Chuyển tới một ô (có thể ở trang khác) */
+  gotoCell(sh: number, r: number, c: number, select = true) {
+    if (sh !== this.grid.sheet) { this.grid.setSheet(sh); this.renderSheets(); }
+    if (select) this.grid.select(r, c);
+    this.grid.ensureVisible(r, c);
+    this.syncSelection();
+  }
+  /** Ô/vùng gõ trong Đi tới hoặc Hộp Tên: A1, B2:C9, Tờ 2!A1 */
+  gotoRef(t: string): boolean {
+    const m = /^(?:'?(.+?)'?!)?(.+)$/.exec(t.trim());
+    if (!m) return false;
+    let sh = this.grid.sheet;
+    if (m[1]) { const id = this.wb.sheetIdByName(m[1].replace(/''/g, "'")); if (id === undefined) return false; sh = id; }
+    const g = parseRange(m[2].replace(/\$/g, '').toUpperCase());
+    if (!g) return false;
+    if (sh !== this.grid.sheet) { this.grid.setSheet(sh); this.renderSheets(); }
+    this.grid.selectRange(g);
+    this.syncSelection();
+    return true;
+  }
+  /** Đi tới Đặc biệt / các phím chọn — false nếu không có ô nào */
+  selectSpecial(o: import('../core/find').SpecialOpts, fromKey = false): boolean {
+    const g = this.grid, s = g.sheet;
+    const act = { r: g.sel.ar, c: g.sel.ac };
+    const res = goSpecial(this.wb, s, g.ranges(), { ...o, active: o.active ?? act });
+    if (!res.length) { this.toast('Không tìm thấy ô nào.', fromKey ? '' : 'err'); return fromKey; }
+    if (res.length > 4000) res.splice(4000);
+    g.setAreas(res);
+    // ô hiện hành giữ nguyên nếu nằm trong kết quả (như Excel)
+    const last = res[res.length - 1];
+    void last;
+    this.syncSelection();
+    return true;
+  }
+  /** Ctrl+A: vùng dữ liệu hiện tại → cả trang tính */
+  private selectAllKey() {
+    const g = this.grid, s = g.sheet, { ar, ac } = g.sel;
+    const reg = this.wb.currentRegion(s, ar, ac), cur = g.range;
+    const empty = reg.r1 === reg.r2 && reg.c1 === reg.c2 && this.wb.rawText(s, ar, ac) === '';
+    const same = cur.r1 === reg.r1 && cur.r2 === reg.r2 && cur.c1 === reg.c1 && cur.c2 === reg.c2;
+    if (empty || same || g.areas.length) g.selectRange({ r1: 0, c1: 0, r2: MAX_ROWS - 1, c2: MAX_COLS - 1 });
+    else { g.selectRange(reg); g.setActive(ar, ac); }
+    this.syncSelection();
+  }
+  /** Ctrl+. : ô hiện hành sang góc kế tiếp (theo chiều kim đồng hồ) */
+  private nextCorner() {
+    const g = this.grid, r = g.range, { ar, ac } = g.sel;
+    const corners: [number, number][] = [[r.r1, r.c1], [r.r1, r.c2], [r.r2, r.c2], [r.r2, r.c1]];
+    const i = corners.findIndex(([y, x]) => y === ar && x === ac);
+    const [nr, nc] = corners[(i + 1) % 4];
+    g.sel = { ar: nr, ac: nc, fr: nr === r.r1 ? r.r2 : r.r1, fc: nc === r.c1 ? r.c2 : r.c1 };
+    g.ensureVisible(nr, nc); g.invalidate(); this.syncSelection();
+  }
+  /** Ctrl+Shift++ : cả hàng/cột thì chèn luôn, còn lại hỏi như Excel */
+  private insertKey() {
+    const g = this.grid.range;
+    if (g.c1 === 0 && g.c2 === MAX_COLS - 1) this.act(() => this.insRows());
+    else if (g.r1 === 0 && g.r2 === MAX_ROWS - 1) this.act(() => this.insCols());
+    else this.cellsDlg(true);
+  }
+  private deleteKey() {
+    const g = this.grid.range;
+    if (g.c1 === 0 && g.c2 === MAX_COLS - 1) this.act(() => this.delRows());
+    else if (g.r1 === 0 && g.r2 === MAX_ROWS - 1) this.act(() => this.delCols());
+    else this.cellsDlg(false);
+  }
+  /** Alt+↓: danh sách kiểm tra dữ liệu → nút lọc → chọn từ danh sách */
+  private altDown() {
+    const g = this.grid, s = g.sheet, { ar, ac } = g.sel;
+    const b = g.scroller.getBoundingClientRect(), r = g.cellRectM(ar, ac);
+    if (this.wb.dvAt(s, ar, ac)?.type === 'list') { this.dvPick(b.left + r.x, b.top + r.y + r.h); return; }
+    const f = this.wb.meta(s).filter;
+    if (f && ar === f.range.r1 && ac >= f.range.c1 && ac <= f.range.c2) { this.filterPopover(ac, b.left + r.x + r.w, b.top + r.y + r.h); return; }
+    this.pickFromList();
+  }
+  /** F6 / Shift+F6: trang tính → Ribbon → thu phóng */
+  private cyclePane(d: 1 | -1) {
+    const a = document.activeElement as HTMLElement | null;
+    const panes: (() => HTMLElement | null)[] = [
+      () => $('#gridwrap .cell-editor'),
+      () => document.querySelector<HTMLElement>('#tabs [aria-selected="true"]') ?? document.querySelector<HTMLElement>('#tabs [role="tab"]'),
+      () => $('#zoom-slider'),
+    ];
+    const cur = a?.closest('#tabs, #ribbon') ? 1 : a?.closest('#status') ? 2 : 0;
+    const next = panes[(cur + d + panes.length) % panes.length]();
+    if (next === $('#gridwrap .cell-editor')) this.grid.focusKeys(); else next?.focus();
+  }
+  /** Ctrl+Shift+PgDn/PgUp: nhóm trang tính */
+  private groupStep(d: 1 | -1) {
+    const vis = this.wb.visibleSheetIds();
+    if (!this.group.length) this.group = [this.grid.sheet];
+    const ends = this.group.map((x) => vis.indexOf(x));
+    const i = d > 0 ? Math.max(...ends) + 1 : Math.min(...ends) - 1;
+    if (i < 0 || i >= vis.length) return;
+    this.group.push(vis[i]);
+    this.renderSheets(); this.updateTitle();
+    this.toast(`Đã nhóm ${this.group.length} trang tính — nhập liệu, định dạng, xóa áp cho mọi trang trong nhóm. Bấm vào một thẻ khác để bỏ nhóm.`);
+  }
+  /** Trang tính đang chịu tác động (nhóm hoặc trang hiện hành) */
+  sheetsTarget(): number[] {
+    const ids = this.wb.sheetIds();
+    this.group = this.group.filter((x) => ids.includes(x));
+    return this.group.length > 1 && this.group.includes(this.grid.sheet) ? this.group : [this.grid.sheet];
+  }
+  /** Ô nhập: ghi vào mọi trang trong nhóm */
+  writeInput(r: number, c: number, v: string) {
+    const list = this.sheetsTarget();
+    if (list.length === 1) { this.wb.setInput(list[0], r, c, v); return; }
+    this.wb.group(() => { for (const sh of list) this.wb.setInput(sh, r, c, v); });
+  }
+  /** Ctrl+Enter: điền nội dung vào mọi ô đang chọn (công thức dời tham chiếu như Excel) */
+  fillSelection(v: string) {
+    const list: [number, number, string][] = [];
+    const base = { r: this.grid.sel.ar, c: this.grid.sel.ac };
+    for (const a of this.grid.ranges()) {
+      const u = this.wb.used(this.grid.sheet);
+      const r2 = a.r2 >= MAX_ROWS - 1 ? Math.max(a.r1, u.rows - 1) : a.r2, c2 = a.c2 >= MAX_COLS - 1 ? Math.max(a.c1, u.cols - 1) : a.c2;
+      if ((r2 - a.r1 + 1) * (c2 - a.c1 + 1) > 200_000) { this.toast('Vùng chọn quá lớn (tối đa 200.000 ô).', 'err'); return; }
+      for (let r = a.r1; r <= r2; r++) for (let c = a.c1; c <= c2; c++) {
+        if (this.wb.mergeCovered(this.grid.sheet, r, c)) continue;
+        list.push([r, c, v.startsWith('=') ? shiftFormula(v, r - base.r, c - base.c) : v]);
+      }
+    }
+    this.safe(() => this.wb.group(() => { for (const sh of this.sheetsTarget()) this.wb.writeCells(sh, list); }));
+    this.grid.invalidate(); this.syncSelection();
+  }
+
+  // ---------- Dán Đặc biệt ----------
+  private async pasteSpecialOpen() {
+    let text: string | null = null;
+    if (!this.wb.clip) { try { text = await navigator.clipboard.readText(); } catch { text = null; } }
+    pasteSpecialDialog(this, text);
+  }
+  pasteSpecialRun(o: PasteOpts) {
+    if (!this.wb.clip) { this.pasteBtn(); return; }
+    this.safe(() => {
+      const g = this.wb.pasteSpecial(this.grid.sheet, this.grid.range, o);
+      this.grid.selectRange(g);
+      this.lastAct = () => this.safe(() => { const g2 = this.wb.pasteSpecial(this.grid.sheet, this.grid.range, o); this.grid.selectRange(g2); });
+    });
+    this.grid.layout(); this.syncSelection();
+  }
+  pasteTextAt(text: string) { this.pasteAt(text); }
+
+  // ---------- Chổi định dạng ----------
+  painterOn(sticky: boolean) {
+    const g = this.grid.range, s = this.grid.sheet;
+    const h0 = Math.min(g.r2 - g.r1 + 1, 500), w0 = Math.min(g.c2 - g.c1 + 1, 200);
+    const styles: (Style | undefined)[][] = [];
+    for (let i = 0; i < h0; i++) { const row: (Style | undefined)[] = []; for (let j = 0; j < w0; j++) { const st = this.wb.style(s, g.r1 + i, g.c1 + j); row.push(Object.keys(st).length ? { ...st, ln: undefined } : undefined); } styles.push(row); }
+    this.painter = { styles, h: h0, w: w0, sticky };
+    $('#gridwrap').classList.add('painting');
+    this.grid.marquee = { sheet: s, range: g }; this.grid.invalidate();
+    this.updateFlags();
+  }
+  painterToggle() { if (this.painter) this.painterOff(); else this.painterOn(false); }
+  painterOff() { if (!this.painter) return; this.painter = null; $('#gridwrap').classList.remove('painting'); this.grid.marquee = null; this.grid.invalidate(); this.updateFlags(); this.ribbon.refresh(); }
+  private painterApply() {
+    const p = this.painter;
+    if (!p) return;
+    const s = this.grid.sheet, g = this.grid.range;
+    const tgt = g.r1 === g.r2 && g.c1 === g.c2 ? { r1: g.r1, c1: g.c1, r2: g.r1 + p.h - 1, c2: g.c1 + p.w - 1 } : g;
+    this.safe(() => this.wb.group(() => this.wb.paintStyles(s, tgt, p.styles)));
+    if (!p.sticky) this.painterOff();
+    this.grid.invalidate(); this.syncSelection();
+  }
+
+  // ---------- Định dạng Ô ----------
+  usedFormats(): string[] {
+    const set = new Set<string>();
+    for (const id of this.wb.sheetIds()) for (const st of this.wb.meta(id).styles.values()) if (st.fmt) set.add(st.fmt);
+    return [...set].slice(0, 200);
+  }
+  applyFormatCells(areas: Range[], patch: Style | null, bspec: Record<string, import('../core/workbook').Border | null> | null, merge: boolean | null) {
+    const s = this.grid.sheet;
+    const run = () => this.safe(() => this.wb.group(() => {
+      for (const sh of this.sheetsTarget()) for (const a of areas) {
+        if (patch) this.wb.setStyle(sh, a, patch);
+        if (bspec) this.wb.setBorders(sh, a, bspec as any);
+      }
+      if (merge === true) for (const a of areas) this.wb.merge(s, a, false);
+      if (merge === false) for (const a of areas) this.wb.unmerge(s, a);
+    }));
+    run();
+    this.lastAct = () => { const a0 = this.grid.ranges(); this.safe(() => this.wb.group(() => { for (const a of a0) { if (patch) this.wb.setStyle(s, a, patch); if (bspec) this.wb.setBorders(s, a, bspec as any); } })); };
+    if (patch?.wr || patch?.fs || patch?.rot) this.fitRows();
+    this.grid.invalidate(); this.syncSelection(); this.ribbon.refresh();
+  }
+
+  // ---------- Liên kết ----------
+  setLink(url: string | null, text: string | null) {
+    const s = this.grid.sheet, { ar, ac } = this.grid.sel;
+    this.safe(() => this.wb.group(() => {
+      if (url) {
+        if (text !== null && text !== this.wb.display(s, ar, ac).text) this.wb.setInput(s, ar, ac, text || url);
+        else if (this.wb.rawText(s, ar, ac) === '') this.wb.setInput(s, ar, ac, url.replace(/^mailto:/, '').replace(/^#/, ''));
+        this.wb.setStyle(s, { r1: ar, c1: ac, r2: ar, c2: ac }, { ln: url, fg: '#0563C1', u: true });
+      } else this.wb.setStyle(s, { r1: ar, c1: ac, r2: ar, c2: ac }, { ln: undefined, fg: undefined, u: undefined });
+    }));
+    this.grid.invalidate(); this.syncSelection();
+  }
+  /** Mở liên kết của ô (nhấp vào ô có liên kết) */
+  followLink(r: number, c: number) {
+    const url = this.wb.style(this.grid.sheet, r, c).ln;
+    if (!url) return false;
+    if (!/^(https?:|mailto:|#)/i.test(url)) { this.toast('Không mở liên kết này vì lý do an toàn: ' + url, 'err'); return true; }
+    if (url.startsWith('#')) { if (!this.gotoRef(url.slice(1))) this.toast('Không tìm thấy vị trí liên kết: ' + url.slice(1), 'err'); return true; }
+    const d = desk() as any;
+    if (d?.openExternal) d.openExternal(url); else window.open(url, '_blank', 'noopener');
+    return true;
+  }
+  clearLinks() { this.act(() => this.eachArea((a) => this.wb.setStyle(this.grid.sheet, a, { ln: undefined, fg: undefined, u: undefined }))); }
+
+  // ---------- Điền Chuỗi / Điền Nhanh ----------
+  fillSeries(o: SeriesOpts & { dir: 'rows' | 'cols'; trend?: boolean }): boolean {
+    try { this.wb.fillSeries(this.grid.sheet, this.grid.range, o); } catch (e) { this.toast((e as Error).message, 'err'); return false; }
+    this.grid.invalidate(); this.syncSelection(); return true;
+  }
+  /** Ctrl+E: Điền Nhanh theo cột đang chọn, học từ các ô đã gõ ở đầu cột */
+  flashFill() {
+    const g = this.grid, s = g.sheet, c = g.sel.ac, u = this.wb.used(s);
+    // cột nguồn: các cột liền kề bên trái/phải có dữ liệu
+    const reg = this.wb.currentRegion(s, g.sel.ar, c);
+    const srcCols: number[] = [];
+    for (let cc = reg.c1; cc <= reg.c2; cc++) if (cc !== c) srcCols.push(cc);
+    if (!srcCols.length) { this.toast('Điền Nhanh cần một cột dữ liệu liền kề làm mẫu.', 'err'); return; }
+    let r1 = reg.r1; if (this.wb.guessHeader(s, reg)) r1++;
+    const r2 = Math.min(reg.r2, u.rows - 1);
+    const rows: string[][] = [], ex: string[] = [], at: number[] = [];
+    for (let r = r1; r <= r2; r++) { rows.push(srcCols.map((cc) => this.wb.display(s, r, cc).text)); at.push(r); }
+    // ví dụ = các ô đã có ở đầu cột đích
+    for (let i = 0; i < at.length; i++) { const t = this.wb.display(s, at[i], c).text; if (!t) break; ex.push(t); }
+    if (!ex.length) { this.toast('Hãy gõ một vài ví dụ ở đầu cột rồi bấm Ctrl+E.', 'err'); return; }
+    const out = flashFill(rows, ex);
+    if (!out) { this.toast('Điền Nhanh không nhận ra mẫu. Hãy gõ thêm ví dụ rồi thử lại.', 'err'); return; }
+    const list: [number, number, string][] = [];
+    out.forEach((v, i) => { if (i >= ex.length && v !== null && this.wb.rawText(s, at[i], c) === '') list.push([at[i], c, needsApos(v) ? "'" + v : v]); });
+    if (!list.length) { this.toast('Không có ô nào để điền.'); return; }
+    this.safe(() => this.wb.writeCells(s, list));
+    g.selectRange({ r1: at[0], c1: c, r2: at[at.length - 1], c2: c });
+    this.toast(`Điền Nhanh: đã điền ${list.length} ô (Ctrl+Z để hoàn tác).`, 'ok');
+  }
+
+  // ---------- Phân tích Nhanh ----------
+  quickCF(kind: 'bar' | 'scale' | 'gt' | 'top' | 'clear') {
+    const s = this.grid.sheet, g = this.grid.range;
+    this.safe(() => {
+      if (kind === 'clear') this.wb.clearCF(s, g);
+      else if (kind === 'bar') this.wb.addCF(s, { range: g, type: 'bar', colors: ['#638EC6'] });
+      else if (kind === 'scale') this.wb.addCF(s, { range: g, type: 'scale', colors: ['#F8696B', '#FFEB84', '#63BE7B'] });
+      else if (kind === 'gt') { cfRuleDialog(this.wb, s, g, 'gt', () => this.grid.invalidate()); return; }
+      else this.wb.addCF(s, { range: g, type: 'top', rank: 10, percent: true, fmt: { bg: '#FFC7CE', fg: '#9C0006' } });
+    });
+    this.grid.invalidate();
+  }
+  quickTotal(fn: string, dir: 'row' | 'col') {
+    const s = this.grid.sheet, g = this.grid.range;
+    const list: [number, number, string][] = [];
+    if (dir === 'row') { for (let c = g.c1; c <= g.c2; c++) list.push([g.r2 + 1, c, `=${fn}(${rangeToA1({ r1: g.r1, c1: c, r2: g.r2, c2: c })})`]); }
+    else for (let r = g.r1; r <= g.r2; r++) list.push([r, g.c2 + 1, `=${fn}(${rangeToA1({ r1: r, c1: g.c1, r2: r, c2: g.c2 })})`]);
+    this.safe(() => this.wb.writeCells(s, list));
+    this.grid.invalidate(); this.syncSelection();
+  }
+
+  // ---------- biểu đồ trang riêng, làm mới ----------
+  private chartSheet() {
+    const s = this.grid.sheet, g = this.dataRange();
+    if (!g) { this.toast('Hãy chọn vùng dữ liệu (có tiêu đề và số) trước khi tạo biểu đồ.', 'err'); return; }
+    chartDialog({ wb: this.wb, sheet: s, range: g, onDone: (ch) => {
+      if (!ch) { this.grid.focusKeys(); return; }
+      this.safe(() => this.wb.group(() => {
+        let i = 1; while (this.wb.sheetIdByName('Biểu đồ' + i) !== undefined) i++;
+        const id = this.wb.addSheet('Biểu đồ' + i, this.wb.sheetIds().indexOf(s));
+        this.wb.addChart(id, { ...ch, w: 900, h: 560, anchor: { r: 0, c: 0, dx: 8, dy: 8 } });
+        this.grid.setSheet(id); this.renderSheets();
+      }));
+    } });
+  }
+  private refreshPivots(sheet: number | null) {
+    let n = 0;
+    this.safe(() => this.wb.group(() => {
+      for (const id of sheet === null ? this.wb.sheetIds() : [sheet]) for (const p of [...this.wb.meta(id).pivots]) { this.wb.refreshPivot(id, p.id!); n++; }
+    }));
+    this.grid.invalidate();
+    this.toast(n ? `Đã làm mới ${n} PivotTable.` : 'Không có dữ liệu nào để làm mới.');
+  }
+  /** Ctrl+W / Ctrl+F4: đóng sổ (hỏi lưu nếu có thay đổi chưa ghi ra tệp) */
+  private closeBook() {
+    if (this.ed.isEditing()) this.ed.commit(0, 0);
+    const go = () => { sessionStorage.setItem('xl-warn-closed', this.wb.name); this.newBook(); };
+    if (!(this.fileDirty && this.fileName)) { go(); return; }
+    openDialog(`Lưu thay đổi vào “${this.fileName}”?`, h('p', {}, 'Sổ làm việc có thay đổi chưa lưu ra tệp. Bản nháp vẫn được giữ trong mục Gần đây.'), [
+      { label: 'Không lưu', kind: 'danger', act: () => go() },
+      { label: 'Hủy', act: () => {} },
+      { label: 'Lưu', kind: 'primary', act: () => { this.saveXlsx(false).then((ok) => { if (ok) go(); }); } },
+    ]);
+  }
+  /** Chỉ báo trên thanh trạng thái: Mở rộng Vùng chọn / Thêm vào Vùng chọn / Chế độ End / Chổi định dạng */
+  updateFlags() {
+    let el = document.getElementById('st-flags');
+    if (!el) { el = document.createElement('span'); el.id = 'st-flags'; el.className = 'st-flags'; $('#mode').after(el); }
+    const g = this.grid;
+    el.textContent = [g.extMode ? 'Mở rộng Vùng chọn' : '', g.addMode ? 'Thêm vào Vùng chọn' : '', this.endMode ? 'Chế độ End' : '', this.painter ? 'Chổi định dạng' + (this.painter.sticky ? ' (nhiều lần)' : '') : ''].filter(Boolean).join(' · ');
+  }
+
   // ---------- thông báo ----------
   toast(msg: string, kind: 'ok' | 'err' | '' = '', action?: { label: string; act: () => void }) {
     const t = document.createElement('div');
@@ -2104,7 +2654,7 @@ class CellEditor implements EditHost {
     }
     this.finish();
     if (v !== this.orig) {
-      try { this.wb.setInput(this.at.s, this.at.r, this.at.c, v); } catch (e) { this.app.toast((e as Error).message, 'err'); }
+      try { if (this.at.s === this.grid.sheet) this.app.writeInput(this.at.r, this.at.c, v); else this.wb.setInput(this.at.s, this.at.r, this.at.c, v); } catch (e) { this.app.toast((e as Error).message, 'err'); }
     }
     this.backToCell();
     if (dr || dc) this.grid.moveActive(dr, dc); else this.app.syncSelection();
@@ -2270,6 +2820,7 @@ class CellEditor implements EditHost {
       if (k === 'Tab') { e.preventDefault(); this.acceptAc(); return; }
       if (k === 'Escape') { e.preventDefault(); this.closeAc(); return; }
     }
+    if (this.editKey(e)) return;
     if (k === 'Enter' && e.altKey) {
       e.preventDefault();
       const el = this.el, p = el.selectionStart ?? el.value.length;
@@ -2278,8 +2829,8 @@ class CellEditor implements EditHost {
       this.onInput(from);
       return;
     }
-    if (k === 'Enter') { e.preventDefault(); this.commit(...this.app.enterMove(e.shiftKey)); return; }
-    if (k === 'Tab') { e.preventDefault(); this.commit(0, e.shiftKey ? -1 : 1); return; }
+    if (k === 'Enter') { e.preventDefault(); this.commitEnter(e.shiftKey); return; }
+    if (k === 'Tab') { e.preventDefault(); if (this.app.tabStart === null && this.grid.isSingle()) this.app.tabStart = this.at.c; this.commit(0, e.shiftKey ? -1 : 1); return; }
     if (k === 'Escape') { e.preventDefault(); this.cancel(); return; }
     if (k === 'F2') { e.preventDefault(); this.mode = this.mode === 'enter' ? 'edit' : 'enter'; this.app.setMode(this.mode === 'enter' ? 'Nhập' : 'Sửa'); return; }
     const arrows: Record<string, [number, number]> = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] };
@@ -2290,8 +2841,126 @@ class CellEditor implements EditHost {
     }
   }
 
+  /** Enter khi sửa: Tab rồi Enter về cột bắt đầu (như Excel) */
+  private commitEnter(shift: boolean) {
+    const ts = this.app.tabStart;
+    const [dr, dc] = this.app.enterMove(shift);
+    if (ts !== null && dr > 0 && !dc) {
+      const r = this.at.r + 1;
+      if (!this.commit(0, 0)) return;
+      this.app.tabStart = null;
+      this.grid.select(r, ts);
+      return;
+    }
+    this.app.tabStart = null;
+    this.commit(dr, dc);
+  }
+  /** Chèn chữ tại con trỏ của ô đang sửa */
+  private insertText(t: string) {
+    const el = this.el, a = el.selectionStart ?? el.value.length, b = el.selectionEnd ?? a;
+    el.value = el.value.slice(0, a) + t + el.value.slice(b);
+    el.setSelectionRange(a + t.length, a + t.length);
+    this.onInput(el === this.ta ? 'cell' : 'bar');
+  }
+  /** Tên hàm ngay trước con trỏ (=SUM| hoặc =SUM(|) */
+  private fnAtCaret(): { name: string; start: number; paren: boolean } | null {
+    const el = this.el, p = el.selectionStart ?? el.value.length;
+    if (!el.value.startsWith('=')) return null;
+    const m = /([A-Za-z][A-Za-z0-9.]*)(\(?)$/.exec(el.value.slice(0, p));
+    if (!m || !this.wb.hf.getRegisteredFunctionNames().includes(m[1].toUpperCase())) return null;
+    return { name: m[1].toUpperCase(), start: p - m[0].length, paren: !!m[2] };
+  }
+  /** Phím riêng khi đang sửa ô (F4, Ctrl+A, Ctrl+Shift+A, Ctrl+Enter, F9, Ctrl+; …) */
+  private editKey(e: KeyboardEvent): boolean {
+    const combo = comboOf(e), el = this.el;
+    const done = () => { e.preventDefault(); e.stopPropagation(); return true; };
+    switch (combo) {
+      case 'F4': {
+        if (!el.value.startsWith('=')) return done();
+        const r = cycleRef(el.value, el.selectionStart ?? 0, el.selectionEnd ?? 0);
+        el.value = r.text; el.setSelectionRange(r.start, r.end);
+        this.mirror(el === this.ta ? 'cell' : 'bar'); this.place();
+        return done();
+      }
+      case 'Ctrl+A': {
+        const f = this.fnAtCaret();
+        if (!f) return false;
+        done();
+        const before = el.value.slice(0, f.start), after = el.value.slice(el.selectionStart ?? el.value.length);
+        funcArgsDialog(this.app, f.name, (t) => {
+          el.value = before + t.slice(1) + after.replace(/^\)/, '');
+          const p = before.length + t.length - 1;
+          this.refocus(); el.setSelectionRange(p, p); this.mirror(el === this.ta ? 'cell' : 'bar');
+        });
+        return true;
+      }
+      case 'Ctrl+Shift+A': {
+        const f = this.fnAtCaret();
+        if (!f) return false;
+        const names = argNames(f.name);
+        const p = el.selectionStart ?? el.value.length;
+        el.value = el.value.slice(0, f.start) + f.name + '(' + names.join(';') + ')' + el.value.slice(p);
+        const q = f.start + f.name.length + 1;
+        el.setSelectionRange(q, q + (names[0]?.length ?? 0));
+        this.mirror(el === this.ta ? 'cell' : 'bar'); this.closeAc();
+        return done();
+      }
+      case 'Ctrl+Enter': {
+        done();
+        const v = el.value;
+        if (this.grid.isSingle() && !this.grid.areas.length) { this.commit(0, 0); return true; }
+        const bad = this.wb.validate(this.at.s, this.at.r, this.at.c, v);
+        if (bad) { const rule = this.wb.dvAt(this.at.s, this.at.r, this.at.c); this.app.toast(bad, 'err'); if (!rule?.errorStyle || rule.errorStyle === 'stop') { el.select(); return true; } }
+        this.finish();
+        this.app.fillSelection(v);
+        return true;
+      }
+      case 'Ctrl+Shift+Enter': this.commitEnter(false); return done();
+      case 'F9': {
+        // tính phần công thức đang bôi đen (như Excel)
+        const a = el.selectionStart ?? 0, b = el.selectionEnd ?? 0;
+        if (!el.value.startsWith('=')) return done();
+        const part = a === b ? el.value.slice(1) : el.value.slice(a, b);
+        const v = this.wb.evalFormula('=' + part, this.at.s);
+        if (v === undefined) return done();
+        const lit = typeof v === 'string' ? (v.startsWith('#') ? v : '"' + v.replace(/"/g, '""') + '"') : typeof v === 'number' ? String(v).replace('.', ',') : String(v).toUpperCase();
+        if (a === b) el.value = '=' + lit; else el.value = el.value.slice(0, a) + lit + el.value.slice(b);
+        el.setSelectionRange(a === b ? el.value.length : a, a === b ? el.value.length : a + lit.length);
+        this.mirror(el === this.ta ? 'cell' : 'bar');
+        return done();
+      }
+      case 'Ctrl+;': { const t = new Date(); this.insertText(`${pad2(t.getDate())}/${pad2(t.getMonth() + 1)}/${t.getFullYear()}`); return done(); }
+      case 'Ctrl+Shift+;': { const t = new Date(); this.insertText(`${t.getHours()}:${pad2(t.getMinutes())}`); return done(); }
+      case "Ctrl+'": case "Ctrl+Shift+'": {
+        if (this.at.r === 0) return done();
+        this.insertText(combo === "Ctrl+'" ? this.wb.rawText(this.at.s, this.at.r - 1, this.at.c).replace(/^=/, el.value ? '' : '=') : this.wb.display(this.at.s, this.at.r - 1, this.at.c).text);
+        return done();
+      }
+      case 'Ctrl+Delete': {
+        const a = el.selectionStart ?? 0, nl = el.value.indexOf('\n', a);
+        el.value = el.value.slice(0, a) + (nl < 0 ? '' : el.value.slice(nl));
+        el.setSelectionRange(a, a); this.mirror(el === this.ta ? 'cell' : 'bar');
+        return done();
+      }
+      case 'Ctrl+F2': {
+        // chuyển qua lại ô ↔ thanh công thức
+        const p = el.selectionStart ?? el.value.length;
+        if (this.origin === 'cell') { this.origin = 'bar'; this.ta.readOnly = true; this.ta.classList.add('mirror'); this.fx.focus(); this.fx.setSelectionRange(p, p); }
+        else { this.origin = 'cell'; this.ta.readOnly = false; this.ta.classList.remove('mirror'); this.ta.focus({ preventScroll: true }); this.ta.setSelectionRange(p, p); }
+        return done();
+      }
+      case 'Shift+F3': {
+        const f = this.fnAtCaret();
+        if (f) { done(); funcArgsDialog(this.app, f.name, (t) => { el.value = el.value.slice(0, f.start) + t.slice(1); this.refocus(); this.mirror(el === this.ta ? 'cell' : 'bar'); }); return true; }
+        return false;
+      }
+    }
+    return false;
+  }
+
   private navKey(e: KeyboardEvent, ctrl: boolean) {
     const g = this.grid, app = this.app, k = e.key;
+    if (app.keyNav(e)) return;
     const arrows: Record<string, [number, number]> = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] };
     const done = () => e.preventDefault();
     if (arrows[k]) {
@@ -2317,8 +2986,8 @@ class CellEditor implements EditHost {
       return;
     }
     switch (k) {
-      case 'Enter': { done(); const [dr, dc] = app.enterMove(e.shiftKey); if (dr || dc) g.moveActive(dr, dc); return; }
-      case 'Tab': done(); g.moveActive(0, e.shiftKey ? -1 : 1); return;
+      case 'Enter': { done(); app.enterNav(e.shiftKey); return; }
+      case 'Tab': done(); if (g.isSingle() && !g.areas.length && app.tabStart === null) app.tabStart = g.sel.ac; g.moveActive(0, e.shiftKey ? -1 : 1); return;
       case 'Home': done(); g.select(g.sel.ar, 0); return;
       case 'PageDown': case 'PageUp': {
         done();

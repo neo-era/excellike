@@ -28,3 +28,38 @@ export function fillPlan(src: SrcCell[], count: number, forward: boolean): FillI
   for (let k = 1; k <= count; k++) out.push({ copy: forward ? (k - 1) % n : (((n - k) % n) + n) % n });
   return out;
 }
+
+// ---------- Trang đầu ▸ Điền ▸ Chuỗi… ----------
+export interface SeriesOpts { type: 'linear' | 'growth' | 'date' | 'auto'; step?: number; stop?: number; unit?: 'day' | 'weekday' | 'month' | 'year' }
+const DAY = 86400000, EPOCH0 = Date.UTC(1899, 11, 30);
+const toDate = (n: number) => new Date(EPOCH0 + Math.round(n * DAY));
+const toSerial = (d: Date) => Math.round((d.getTime() - EPOCH0) / DAY);
+/** Cộng tháng như EDATE: ngày 31 + 1 tháng → ngày cuối tháng sau */
+function addMonths(n: number, k: number) {
+  const d = toDate(n), y = d.getUTCFullYear(), m = d.getUTCMonth() + k, day = d.getUTCDate();
+  const last = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+  return toSerial(new Date(Date.UTC(y, m, Math.min(day, last)))) + (n - Math.floor(n));
+}
+/** Dãy `count` giá trị bắt đầu từ start (dừng trước khi vượt `stop`) */
+export function seriesValues(start: number, count: number, o: SeriesOpts): number[] {
+  const step = o.step ?? 1, out: number[] = [];
+  const over = (v: number) => o.stop !== undefined && (step >= 0 ? v > o.stop + 1e-9 : v < o.stop - 1e-9);
+  let wd = start;
+  for (let i = 0; i < count; i++) {
+    let v: number;
+    if (o.type === 'growth') v = start * Math.pow(step, i);
+    else if (o.type === 'date') {
+      const u = o.unit ?? 'day';
+      if (u === 'month') v = addMonths(start, i * step);
+      else if (u === 'year') v = addMonths(start, i * step * 12);
+      else if (u === 'weekday') {
+        if (i > 0) { let k = Math.abs(step); const dir = Math.sign(step) || 1; while (k > 0) { wd += dir; const dow = toDate(wd).getUTCDay(); if (dow !== 0 && dow !== 6) k--; } }
+        v = wd;
+      } else v = start + i * step;
+    } else v = start + i * step;
+    v = Math.round(v * 1e10) / 1e10;
+    if (over(v)) break;
+    out.push(v);
+  }
+  return out;
+}

@@ -148,8 +148,10 @@ const cellCenter = (page, r, c) => page.evaluate(({ r, c }) => {
   await page.keyboard.press('Escape');
 
   // Bàn phím: chỉ dùng phím để đi và sửa
+  // như Excel: có cố định ngăn tại B2 thì Ctrl+Home về B2 (ô đầu vùng cuộn)
   await page.keyboard.press('Control+Home');
-  await page.keyboard.press('ArrowRight'); await page.keyboard.press('F2'); await page.keyboard.press('End');
+  check('Ctrl+Home về ô đầu vùng không cố định (B2)', (await page.inputValue('#namebox')) === 'B2');
+  await page.keyboard.press('ArrowUp'); await page.keyboard.press('F2'); await page.keyboard.press('End');
   await page.keyboard.type(' (sửa)'); await page.keyboard.press('Enter');
   check('Điều hướng & sửa bằng bàn phím (F2)', (await disp(page, 'B1')).endsWith('(sửa)'));
 

@@ -1,12 +1,12 @@
 import { DynamicOffsetPlugin, offsetIn, offsetOut } from './offset';
 import { HyperFormula, FunctionPlugin, FunctionArgumentType, CellError, ErrorType } from 'hyperformula';
-import { shiftFormula, fixSheetQuotes, needsQuote } from './formula';
+import { shiftFormula, fixSheetQuotes, needsQuote, quoteSheet, transposeFormula } from './formula';
 import type { ConfigParams, RawCellContent, SimpleCellAddress } from 'hyperformula';
-import { MAX_COLS, MAX_ROWS, type Range, rangeSize } from './address';
+import { MAX_COLS, MAX_ROWS, type Range, rangeSize, toA1 } from './address';
 import { normalizeInput } from './input';
 import { editString, formatValue, isDateFmt, type Align } from './numfmt';
 import { AxisSizes } from './sizes';
-import { fillPlan, type SrcCell } from './series';
+import { fillPlan, seriesValues, type SrcCell, type SeriesOpts } from './series';
 import { toTSV, parseTSV } from './tsv';
 import { parseCSV, toCSV } from './csv';
 import { parseRef } from './address';
@@ -21,8 +21,21 @@ export interface Style {
   fg?: string; bg?: string; al?: Align; fmt?: string;
   fn?: string; fs?: number;          // phông chữ, cỡ chữ (pt)
   wr?: boolean; va?: 't' | 'm' | 'b'; // xuống dòng, căn dọc
-  bd?: { t?: Border; r?: Border; b?: Border; l?: Border };
+  bd?: { t?: Border; r?: Border; b?: Border; l?: Border; d?: Border; u?: Border }; // d: chéo xuống (↘), u: chéo lên (↗)
   ind?: number;                       // thụt lề (bậc)
+  ud?: boolean;                       // gạch chân kép (đi cùng u)
+  vp?: 'sup' | 'sub';                 // chỉ số trên / dưới
+  rot?: number;                       // xoay chữ: -90…90 độ, 255 = chữ dọc
+  shk?: boolean;                      // co chữ vừa ô
+  hx?: 'fill' | 'just' | 'cas' | 'dist'; // căn ngang mở rộng: Điền, Căn đều, Giữa qua vùng chọn, Phân phối
+  lk?: false;                         // bỏ khóa ô (mặc định ô bị khóa khi bảo vệ trang)
+  hid?: boolean;                      // ẩn công thức khi bảo vệ trang
+  ln?: string;                        // siêu kết nối (URL, mailto:, hoặc #Sheet!A1)
+}
+export interface PasteOpts {
+  what?: 'all' | 'formulas' | 'values' | 'formats' | 'comments' | 'validation' | 'theme' | 'noBorders' | 'colWidths' | 'formulasNum' | 'valuesNum' | 'allMerge';
+  op?: 'none' | 'add' | 'sub' | 'mul' | 'div';
+  skipBlanks?: boolean; transpose?: boolean; link?: boolean;
 }
 export interface FilterCond { values?: string[]; text?: string }
 export interface SheetFilter { range: Range; conds: Record<number, FilterCond> }
@@ -675,6 +688,15 @@ export class Workbook {
     apply(after);
     this.record(null, { undo: () => apply(before), redo: () => apply(after) });
   }
+  /** Định dạng ▸ Độ rộng Mặc định… (px) */
+  setDefaultColWidth(s: number, px: number) {
+    const A = this.meta(s).colW, old = A.def;
+    if (old === px) return;
+    const ent = A.entries(), hid = A.hidden();
+    const apply = (d: number) => { A.def = d; A.load(ent, hid); };
+    apply(px);
+    this.record(null, { undo: () => apply(old), redo: () => apply(px) });
+  }
   /** Đặt kích thước nhiều hàng/cột trong một bước hoàn tác */
   setSizes(s: number, ax: 'r' | 'c', list: [number, number][]) {
     const A = ax === 'r' ? this.meta(s).rowH : this.meta(s).colW;
@@ -841,6 +863,207 @@ export class Workbook {
     return { r1: r, c1: c, r2: r + rows.length - 1, c2: c + w - 1 };
   }
 
+  /** Gộp nhiều thao tác thành một bước hoàn tác (Ctrl+Z một lần) */
+  group<T>(fn: () => T): T {
+    const n0 = this.past.length;
+    try { return fn(); }
+    finally { if (this.past.length - n0 > 1) { const parts = this.past.splice(n0); this.past.push({ hf: false, parts }); } }
+  }
+  /** Ghi nhiều ô rời (chuỗi như người dùng gõ) trong một bước hoàn tác */
+  writeCells(s: number, list: [number, number, string | number | boolean | null][]) {
+    if (!list.length) return;
+    const st = this.meta(s).styles;
+    const fmts: StyleOp[] = [];
+    const data = list.map(([r, c, v]) => {
+      if (typeof v !== 'string') return [r, c, v] as const;
+      const n = normalizeInput(v);
+      const k = String(key(r, c));
+      if (n.fmt && !st.get(k)?.fmt) fmts.push([st, k, { ...(st.get(k) ?? {}), fmt: n.fmt }]);
+      return [r, c, n.content as RawCellContent] as const;
+    });
+    const tx = fmts.length ? new StyleTxn(fmts) : null;
+    this.record(() => { for (const [r, c, v] of data) this.hf.setCellContents(this.A(s, r, c), [[v as RawCellContent]]); }, tx?.hist, { post: () => tx?.apply() });
+  }
+  /** Ô cuối cùng có dùng (dữ liệu hoặc định dạng) như Ctrl+End của Excel */
+  lastCell(s: number): { r: number; c: number } {
+    const u = this.used(s);
+    let r = Math.max(0, u.rows - 1), c = Math.max(0, u.cols - 1);
+    for (const k of this.meta(s).styles.keys()) { const p = unkey(+k); if (p.r > r) r = p.r; if (p.c > c) c = p.c; }
+    for (const m of this.meta(s).merges) { r = Math.max(r, m.r2); c = Math.max(c, m.c2); }
+    return { r, c };
+  }
+  /** Ô nằm trong vùng gộp nhưng không phải ô đầu */
+  mergeCovered(s: number, r: number, c: number) { const m = this.mergeAt(s, r, c); return !!m && !(m.r1 === r && m.c1 === c); }
+  sheetIdByName(n: string): number | undefined { return this.hf.getSheetId(n); }
+  /** Công thức hợp lệ cú pháp không (không ghi vào ô) */
+  isValidFormula(f: string, s: number): boolean {
+    try { return this.hf.validateFormula(offsetIn(f, undefined, this.sheetName(s))); } catch { return false; }
+  }
+  /** Ô phụ thuộc trực tiếp vào một ô (kể cả qua vùng) */
+  dependentsOf(s: number, r: number, c: number): { s: number; r: number; c: number }[] {
+    const out: { s: number; r: number; c: number }[] = [];
+    const seen = new Set<string>();
+    const q: any[] = [this.A(s, r, c)];
+    while (q.length) {
+      let deps: any[] = [];
+      try { deps = this.hf.getCellDependents(q.pop()) as any[]; } catch { deps = []; }
+      for (const x of deps) {
+        if (x.start) { const k = JSON.stringify(x); if (!seen.has(k)) { seen.add(k); q.push(x); } continue; }
+        const k = x.sheet + ':' + x.row + ':' + x.col;
+        if (seen.has(k)) continue;
+        seen.add(k); out.push({ s: x.sheet, r: x.row, c: x.col });
+      }
+    }
+    return out;
+  }
+
+  /** Dán Đặc biệt (Ctrl+Alt+V) từ vùng đã Sao chép. Trả về vùng đã dán. Một bước hoàn tác. */
+  pasteSpecial(s: number, target: Range, o: PasteOpts): Range {
+    const cl = this.clip;
+    if (!cl) throw new Error('Chưa có gì được sao chép.');
+    if (cl.cut) throw new Error('Không dùng được Dán Đặc biệt với vùng đã Cắt — hãy Sao chép (Ctrl+C) rồi dán.');
+    if (!this.sheetIds().includes(cl.sheet)) { this.clip = null; throw new Error('Trang tính nguồn không còn.'); }
+    const src = this.clampToUsed(cl.sheet, cl.range);
+    const sh = src.r2 - src.r1 + 1, sw = src.c2 - src.c1 + 1;
+    const bh = o.transpose ? sw : sh, bw = o.transpose ? sh : sw;
+    const tH = target.r2 - target.r1 + 1, tW = target.c2 - target.c1 + 1;
+    const nr = tH > bh && tH % bh === 0 ? tH / bh : 1, nc = tW > bw && tW % bw === 0 ? tW / bw : 1;
+    const out = { r1: target.r1, c1: target.c1, r2: target.r1 + bh * nr - 1, c2: target.c1 + bw * nc - 1 };
+    if (out.r2 >= MAX_ROWS || out.c2 >= MAX_COLS) throw new Error('Vùng dán vượt quá giới hạn trang tính.');
+    if (sh * sw * nr * nc > 500_000) throw new Error('Vùng dán quá lớn (tối đa 500.000 ô).');
+    const what = o.link ? 'link' : o.what ?? 'all';
+    const op = o.op && o.op !== 'none' && what !== 'link' ? o.op : null;
+    const qn = this.quoteNames();
+    // chụp nguồn trước khi ghi (đích có thể chồng nguồn)
+    type Snap = { f?: string; k: unknown; v: unknown; st?: Style; blank: boolean };
+    const snap: Snap[][] = [];
+    const srcSt = this.meta(cl.sheet).styles;
+    for (let i = 0; i < sh; i++) {
+      const row: Snap[] = [];
+      for (let j = 0; j < sw; j++) {
+        const a = this.A(cl.sheet, src.r1 + i, src.c1 + j);
+        const f0 = this.hf.getCellFormula(a);
+        const f = f0 !== undefined ? this.outF(f0, qn) : undefined;
+        const k = f === undefined ? this.hf.getCellSerialized(a) : null;
+        row.push({ f, k, v: this.value(cl.sheet, src.r1 + i, src.c1 + j), st: srcSt.get(String(key(src.r1 + i, src.c1 + j))), blank: f === undefined && (k === null || k === '' || k === undefined) });
+      }
+      snap.push(row);
+    }
+    const dstSt = this.meta(s).styles;
+    const cells: [number, number, RawCellContent][] = [];
+    const sops: StyleOp[] = [];
+    const sym = { add: '+', sub: '-', mul: '*', div: '/' } as const;
+    const single = sh === 1 && sw === 1;
+    const prefix = cl.sheet !== s ? quoteSheet(this.sheetName(cl.sheet)) + '!' : '';
+    for (let a = 0; a < nr; a++) for (let b = 0; b < nc; b++) for (let i = 0; i < sh; i++) for (let j = 0; j < sw; j++) {
+      const x = snap[i][j];
+      if (o.skipBlanks && x.blank) continue;
+      const sr = src.r1 + i, sc = src.c1 + j;
+      const tr = out.r1 + a * bh + (o.transpose ? j : i), tc = out.c1 + b * bw + (o.transpose ? i : j);
+      let content: RawCellContent | undefined;
+      if (what === 'link') content = '=' + prefix + (single ? '$' + toA1(sr, sc).replace(/(\d)/, '$$$1') : toA1(sr, sc));
+      else if (what === 'all' || what === 'formulas' || what === 'noBorders' || what === 'formulasNum' || what === 'allMerge' || what === 'theme')
+        content = x.f !== undefined ? (o.transpose ? transposeFormula(x.f, sr, sc, tr, tc) : shiftFormula(x.f, tr - sr, tc - sc)) : x.blank ? null : (x.k as RawCellContent);
+      else if (what === 'values' || what === 'valuesNum') content = x.blank ? null : valueContent(x.v);
+      if (op && content !== undefined && x.f === undefined && !x.blank && what !== 'values' && what !== 'valuesNum') content = valueContent(x.v);
+      if (op && content !== undefined) content = this.combine(s, tr, tc, content, x.blank, sym[op], qn);
+      if (content !== undefined) cells.push([tr, tc, content]);
+      // định dạng
+      const kk = String(key(tr, tc));
+      if (what === 'all' || what === 'theme' || what === 'allMerge' || what === 'formats') sops.push([dstSt, kk, x.st ? { ...x.st } : undefined]);
+      else if (what === 'noBorders') { const n = x.st ? { ...x.st } : undefined; if (n) delete n.bd; sops.push([dstSt, kk, n && Object.keys(n).length ? n : undefined]); }
+      else if (what === 'formulasNum' || what === 'valuesNum') { const cur = { ...(dstSt.get(kk) ?? {}) }; if (x.st?.fmt) cur.fmt = x.st.fmt; else delete cur.fmt; sops.push([dstSt, kk, Object.keys(cur).length ? cur : undefined]); }
+    }
+    this.group(() => {
+      if (cells.length || sops.length) {
+        const tx = sops.length ? new StyleTxn(sops) : null;
+        this.record(cells.length ? () => { for (const [r, c, v] of cells) this.hf.setCellContents(this.A(s, r, c), [[v]]); } : null, tx?.hist ?? { undo: () => {}, redo: () => {} }, { post: () => tx?.apply() });
+      }
+      if (what === 'colWidths') {
+        const src0 = this.meta(cl.sheet).colW, list: [number, number][] = [];
+        for (let b = 0; b < nc; b++) for (let j = 0; j < (o.transpose ? sh : sw); j++) if (!o.transpose) list.push([out.c1 + b * bw + j, src0.get(src.c1 + j)]);
+        this.setSizes(s, 'c', list);
+      }
+      if (what === 'validation' || what === 'all' || what === 'allMerge' || what === 'theme' || what === 'noBorders') {
+        const add: DVRule[] = [];
+        for (const d of this.meta(cl.sheet).dv) {
+          const g = { r1: Math.max(d.range.r1, src.r1), c1: Math.max(d.range.c1, src.c1), r2: Math.min(d.range.r2, src.r2), c2: Math.min(d.range.c2, src.c2) };
+          if (g.r1 > g.r2 || g.c1 > g.c2 || o.transpose) continue;
+          for (let a = 0; a < nr; a++) for (let b = 0; b < nc; b++) {
+            const dr = out.r1 + a * bh - src.r1, dc = out.c1 + b * bw - src.c1;
+            add.push({ ...d, id: undefined, range: { r1: g.r1 + dr, c1: g.c1 + dc, r2: g.r2 + dr, c2: g.c2 + dc } });
+          }
+        }
+        for (const d of add) this.addDV(s, d);
+      }
+    });
+    return out;
+  }
+  /** Dán Đặc biệt có phép tính: đích (giá trị/công thức) ⊕ nguồn */
+  private combine(s: number, r: number, c: number, content: RawCellContent, srcBlank: boolean, sym: string, qn: string[]): RawCellContent {
+    const a = this.A(s, r, c);
+    const tf0 = this.hf.getCellFormula(a);
+    const tf = tf0 !== undefined ? this.outF(tf0, qn) : undefined;
+    const tv = this.value(s, r, c);
+    const srcIsF = typeof content === 'string' && content.startsWith('=');
+    if (!srcIsF && typeof content === 'string' && content !== '' && !srcBlank) return content; // chữ: dán như thường
+    if (srcBlank && tf === undefined && (tv === null || tv === '')) return null;               // trống ⊕ trống = trống
+    if (tf === undefined && typeof tv === 'string' && tv !== '') return tv;                    // đích là chữ: giữ
+    const sExpr = srcIsF ? '(' + (content as string).slice(1) + ')' : srcBlank || content === null ? '0' : lit(content);
+    if (tf !== undefined || srcIsF) return '=(' + (tf !== undefined ? tf.slice(1) : lit(tv ?? 0)) + ')' + sym + sExpr;
+    const x = typeof tv === 'number' ? tv : 0, y = srcBlank || content === null ? 0 : typeof content === 'number' ? content : Number(content) || 0;
+    if (sym === '/' && y === 0) return '=' + lit(x) + '/0';
+    const v = sym === '+' ? x + y : sym === '-' ? x - y : sym === '*' ? x * y : x / y;
+    return Math.round(v * 1e12) / 1e12;
+  }
+
+  /** Chổi định dạng: dán kiểu ô (lặp khối nguồn cho kín vùng đích), thay toàn bộ định dạng cũ */
+  paintStyles(s: number, g0: Range, src: (Style | undefined)[][]) {
+    const g = this.clampToUsed(s, g0);
+    if (rangeSize(g) > 500_000) throw new Error('Vùng quá lớn (tối đa 500.000 ô).');
+    const st = this.meta(s).styles, h = src.length, w = src[0]?.length ?? 1;
+    const ops: StyleOp[] = [];
+    for (let r = g.r1; r <= g.r2; r++) for (let c = g.c1; c <= g.c2; c++) {
+      const k = String(key(r, c));
+      const n = src[(r - g.r1) % h]?.[(c - g.c1) % w];
+      const ln = st.get(k)?.ln;  // giữ liên kết của ô đích
+      ops.push([st, k, n || ln ? clean({ ...(n ?? {}), ln }) : undefined]);
+    }
+    const tx = new StyleTxn(ops);
+    tx.apply();
+    this.record(null, tx.hist);
+  }
+  /** Tính một công thức tạm (không ghi vào ô) — Đối số Hàm, F9 khi sửa */
+  evalFormula(f: string, s: number): unknown {
+    try {
+      const v: any = this.hf.calculateFormula(f, s);
+      if (Array.isArray(v)) return v[0]?.[0];
+      return v && typeof v === 'object' && 'value' in v ? v.value : v;
+    } catch { return undefined; }
+  }
+
+  /** Trang đầu ▸ Điền ▸ Chuỗi…: dir 'rows' = điền theo hàng (sang phải), 'cols' = theo cột (xuống) */
+  fillSeries(s: number, g: Range, o: SeriesOpts & { dir: 'rows' | 'cols'; trend?: boolean }) {
+    if (o.type === 'auto') { const src = o.dir === 'cols' ? { ...g, r2: g.r1 } : { ...g, c2: g.c1 }; this.fill(s, src, g); return; }
+    const list: [number, number, string | number | boolean | null][] = [];
+    const fmts: StyleOp[] = [];
+    const lines = o.dir === 'cols' ? [g.c1, g.c2] : [g.r1, g.r2];
+    for (let L = lines[0]; L <= lines[1]; L++) {
+      const at = (i: number) => (o.dir === 'cols' ? { r: g.r1 + i, c: L } : { r: L, c: g.c1 + i });
+      const n = o.dir === 'cols' ? g.r2 - g.r1 + 1 : g.c2 - g.c1 + 1;
+      const v0 = this.value(s, at(0).r, at(0).c);
+      if (typeof v0 !== 'number') continue;
+      let step = o.step ?? 1;
+      if (o.trend && o.type !== 'date') { const v1 = this.value(s, at(1).r, at(1).c); if (typeof v1 === 'number') step = o.type === 'growth' ? (v0 ? v1 / v0 : 1) : v1 - v0; }
+      const vals = seriesValues(v0, n, { ...o, step });
+      const f0 = this.effFmt(s, at(0).r, at(0).c);
+      vals.forEach((v, i) => { if (i > 0) { const p = at(i); list.push([p.r, p.c, v]); if (f0) fmts.push([this.meta(s).styles, String(key(p.r, p.c)), { ...(this.meta(s).styles.get(String(key(p.r, p.c))) ?? {}), fmt: f0 }]); } });
+    }
+    if (!list.length) throw new Error('Ô đầu tiên của vùng chọn cần là một số hoặc ngày.');
+    const tx = fmts.length ? new StyleTxn(fmts) : null;
+    this.record(() => { for (const [r, c, v] of list) this.hf.setCellContents(this.A(s, r, c), [[v as RawCellContent]]); }, tx?.hist, { post: () => tx?.apply() });
+  }
+
   // ---------- kéo điền ----------
   fill(s: number, src: Range, tgt: Range) {
     const down = tgt.r2 > src.r2, up = tgt.r1 < src.r1, right = tgt.c2 > src.c2, left = tgt.c1 < src.c1;
@@ -975,6 +1198,44 @@ export class Workbook {
       }
       ops.push([st, k, clean({ ...o, bd: bd && Object.keys(bd).length ? bd : undefined })]);
     }
+    const tx = new StyleTxn(ops);
+    tx.apply();
+    this.record(null, tx.hist);
+  }
+
+  /**
+   * Kẻ viền theo hộp Định dạng Ô ▸ Viền: t/b/l/r = mép ngoài vùng, h/v = đường trong ngang/dọc, d/u = chéo trong từng ô.
+   * undefined = giữ nguyên, null = bỏ. Ô kề bên ngoài vùng cũng được bỏ cạnh chung khi bỏ mép (như Excel).
+   */
+  setBorders(s: number, g0: Range, spec: Partial<Record<'t' | 'b' | 'l' | 'r' | 'h' | 'v' | 'd' | 'u', Border | null>>) {
+    const g = this.clampToUsed(s, g0);
+    if (rangeSize(g) > 500_000) throw new Error('Vùng chọn quá lớn để kẻ viền (tối đa 500.000 ô).');
+    const st = this.meta(s).styles;
+    const ops: StyleOp[] = [];
+    const put = (bd: NonNullable<Style['bd']>, k: keyof NonNullable<Style['bd']>, v: Border | null | undefined) => { if (v === undefined) return; if (v === null) delete bd[k]; else bd[k] = { ...v }; };
+    for (let r = g.r1; r <= g.r2; r++) for (let c = g.c1; c <= g.c2; c++) {
+      const k = String(key(r, c));
+      const o = st.get(k) ?? {};
+      const bd: NonNullable<Style['bd']> = { ...(o.bd ?? {}) };
+      put(bd, 't', r === g.r1 ? spec.t : spec.h);
+      put(bd, 'b', r === g.r2 ? spec.b : spec.h);
+      put(bd, 'l', c === g.c1 ? spec.l : spec.v);
+      put(bd, 'r', c === g.c2 ? spec.r : spec.v);
+      put(bd, 'd', spec.d); put(bd, 'u', spec.u);
+      ops.push([st, k, clean({ ...o, bd: Object.keys(bd).length ? bd : undefined })]);
+    }
+    // bỏ mép ngoài: bỏ luôn cạnh chung của ô kề bên (lưới vẽ cả viền của ô kề)
+    const nb = (r: number, c: number, side: 't' | 'b' | 'l' | 'r') => {
+      if (r < 0 || c < 0 || r >= MAX_ROWS || c >= MAX_COLS) return;
+      const k = String(key(r, c)), o = st.get(k);
+      if (!o?.bd?.[side]) return;
+      const bd = { ...o.bd }; delete bd[side];
+      ops.push([st, k, clean({ ...o, bd: Object.keys(bd).length ? bd : undefined })]);
+    };
+    if (spec.t === null) for (let c = g.c1; c <= g.c2; c++) nb(g.r1 - 1, c, 'b');
+    if (spec.b === null) for (let c = g.c1; c <= g.c2; c++) nb(g.r2 + 1, c, 't');
+    if (spec.l === null) for (let r = g.r1; r <= g.r2; r++) nb(r, g.c1 - 1, 'r');
+    if (spec.r === null) for (let r = g.r1; r <= g.r2; r++) nb(r, g.c2 + 1, 'l');
     const tx = new StyleTxn(ops);
     tx.apply();
     this.record(null, tx.hist);
@@ -1507,10 +1768,10 @@ export interface BookJSON {
 export const isExtName = (n: string) => /^\[\d+\]/.test(n);
 
 // ---- tách tham chiếu ô/vùng trong công thức (dùng cho tính lặp) ----
-interface XRef { text: string; s: number; r1: number; c1: number; r2: number; c2: number }
+export interface XRef { text: string; s: number; r1: number; c1: number; r2: number; c2: number }
 const colNum = (L: string) => { let n = 0; for (const ch of L.toUpperCase()) n = n * 26 + ch.charCodeAt(0) - 64; return n - 1; };
 const REF_RE = /((?:'(?:[^']|'')+'|[A-Za-z_\u00C0-\uFFFF][\w.\u00C0-\uFFFF]*)!)?\$?([A-Za-z]{1,3})\$?(\d{1,7})(?::\$?([A-Za-z]{1,3})\$?(\d{1,7}))?(?![\w(!])/y;
-function compileRefs(f: string, sheetOf: (name: string | undefined) => number | undefined): (string | XRef)[] {
+export function compileRefs(f: string, sheetOf: (name: string | undefined) => number | undefined): (string | XRef)[] {
   const out: (string | XRef)[] = [];
   let buf = '', i = 0;
   while (i < f.length) {
@@ -1554,7 +1815,7 @@ function newMeta(): SheetMeta {
 }
 function clean(st: Style): Style | undefined {
   const o: any = {};
-  for (const [k, v] of Object.entries(st)) if (v !== undefined && v !== false && v !== '' && !(k === 'bd' && (!v || !Object.keys(v).length))) o[k] = v;
+  for (const [k, v] of Object.entries(st)) if (v !== undefined && (v !== false || k === 'lk') && v !== '' && !(k === 'bd' && (!v || !Object.keys(v).length))) o[k] = v;
   return Object.keys(o).length ? o : undefined;
 }
 /** Ngày dd/mm/yyyy → số sê-ri Excel */
@@ -1569,6 +1830,14 @@ export function dateSerial(t: string): number | null {
 function delSpanStart(v: number, span: (a: number, b: number) => { a: number; b: number } | null) {
   for (let x = v; x >= 0; x--) { const r = span(x, x); if (r) return x === v ? r.a : r.a + 1; }
   return 0;
+}
+/** Giá trị → nội dung ô (chữ trông như số/công thức thì thêm ' để giữ là chữ) */
+function valueContent(v: unknown): RawCellContent {
+  if (v === null || v === undefined) return null;
+  if (typeof v === 'number' || typeof v === 'boolean') return v;
+  if (typeof v === 'string') return needsText(v) ? "'" + v : v;
+  const e = (v as any)?.value;
+  return typeof e === 'string' ? e : null;
 }
 const needsText = (v: string) => /^[=+\-'\d.,]/.test(v) || /^(true|false)$/i.test(v);
 /** Dời các vùng (gộp ô, CF, DV, lọc) khi chèn/xóa hàng hoặc cột */

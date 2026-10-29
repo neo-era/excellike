@@ -98,6 +98,23 @@ await X(() => window.open('https://example.com', '_blank'));
 await win.waitForTimeout(400);
 check('Liên kết ngoài không mở cửa sổ mới trong app', app.windows().length === nWin);
 
+// 0.6: Ctrl+F10 phóng to/khôi phục, Ctrl+F9 thu nhỏ; liên kết trong ô mở bằng ứng dụng mặc định
+await X(() => window.__xl.grid.focusKeys());
+// (xvfb không có trình quản lý cửa sổ nên đếm lời gọi maximize/unmaximize thay vì đọc trạng thái)
+await app.evaluate(({ BrowserWindow }) => { const w = BrowserWindow.getAllWindows()[0]; global.__mx = []; const mx = w.maximize.bind(w), ux = w.unmaximize.bind(w); w.maximize = () => { global.__mx.push('max'); mx(); }; w.unmaximize = () => { global.__mx.push('unmax'); ux(); }; });
+await win.keyboard.press('Control+F10'); await win.waitForTimeout(300);
+const mx = await app.evaluate(() => global.__mx);
+check('Ctrl+F10: phóng to / khôi phục cửa sổ', mx.length === 1, JSON.stringify(mx));
+await app.evaluate(({ BrowserWindow }) => { const w = BrowserWindow.getAllWindows()[0]; global.__minCalls = 0; const m = w.minimize.bind(w); w.minimize = () => { global.__minCalls++; m(); }; });
+await win.keyboard.press('Control+F9'); await win.waitForTimeout(300);
+const mins = await app.evaluate(({ BrowserWindow }) => { const w = BrowserWindow.getAllWindows()[0]; w.restore(); w.show(); return global.__minCalls; });
+check('Ctrl+F9: thu nhỏ cửa sổ', mins === 1, 'gọi minimize ' + mins + ' lần');
+await app.evaluate(({ shell }) => { global.__ext = []; shell.openExternal = (u) => { global.__ext.push(u); return Promise.resolve(); }; });
+await X(() => { const a = window.__xl; a.grid.select(40, 0); a.setLink('https://sapulico.vn', 'Sapulico'); a.followLink(40, 0); });
+await win.waitForTimeout(300);
+const ext = await app.evaluate(() => global.__ext);
+check('Nhấp liên kết trong ô (Ctrl+K) mở bằng trình duyệt mặc định', ext.includes('https://sapulico.vn'), JSON.stringify(ext));
+
 // chạy lần hai với tệp khác → mở trong cửa sổ đang chạy (một phiên duy nhất)
 const fx2 = join(work, 'bieu-do.xlsx');
 copyFileSync(join(ROOT, 'tests/fixtures/bieudo.xlsx'), fx2);

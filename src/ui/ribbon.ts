@@ -20,6 +20,8 @@ export interface Btn {
   bar?: () => string;
   /** chữ hiển thị trên nút khác với tên lệnh (tìm kiếm dùng label) */
   text?: string;
+  /** nhấp đúp (Chổi định dạng: dùng nhiều lần) */
+  dbl?: () => void;
 }
 export interface Combo { t: 'combo'; id: string; label: string; w: number; get: () => string; set: (v: string) => void; list: (r: DOMRect) => void; kt?: string; icon?: string }
 export interface Chk { t: 'chk'; id: string; label: string; get: () => boolean; set: (v: boolean) => void; kt?: string }
@@ -166,6 +168,7 @@ export class Ribbon {
       if (hasDrop) el.setAttribute('aria-haspopup', 'menu');
       el.onmousedown = (e) => e.preventDefault();
       el.onclick = () => run(el, 'all');
+      if (it.dbl) el.ondblclick = () => it.dbl!();
     }
     el.dataset.id = it.id;
     if (it.later) { el.classList.add('later'); el.title = tip; el.setAttribute('aria-disabled', 'true'); }
@@ -321,6 +324,12 @@ export class KeyTips {
       if (e.key === 'Alt' || e.key === 'F10') { e.preventDefault(); e.stopPropagation(); this.exit(); return; }
       if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); if (this.level > 0 && !this.typed) this.show(0); else if (this.typed) { this.typed = ''; this.draw(); } else this.exit(); return; }
       if (e.ctrlKey || e.metaKey) { this.exit(); return; }
+      // mũi tên / Tab khi KeyTips đang hiện: chuyển sang điều hướng Ribbon bằng bàn phím (như Excel)
+      if (['ArrowLeft', 'ArrowRight', 'ArrowDown', 'ArrowUp', 'Tab'].includes(e.key) && this.level === 0) {
+        e.preventDefault(); e.stopPropagation(); this.exit();
+        (document.querySelector<HTMLElement>('#tabs [aria-selected="true"]') ?? document.querySelector<HTMLElement>('#tabs [role="tab"]'))?.focus();
+        return;
+      }
       const k = e.key.length === 1 ? e.key.toUpperCase() : '';
       if (!k || !/[A-Z0-9À-Ỹ]/.test(k)) { if (!['Shift', 'Control'].includes(e.key)) this.exit(); return; }
       e.preventDefault(); e.stopPropagation();
@@ -403,3 +412,47 @@ export class KeyTips {
 /** Bỏ dấu tiếng Việt để tìm kiếm không dấu */
 export const fold = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/đ/g, 'd').replace(/Đ/g, 'D').toLowerCase();
 export type { MenuItem };
+
+/** Điều hướng Ribbon bằng bàn phím: ←/→ giữa các thẻ và lệnh, ↓ vào lệnh, Ctrl+←/→ giữa các nhóm, Alt+↓ mở menu, Esc về trang tính */
+export function bindRibbonKeys(onSelectTab: (el: HTMLElement) => void, toGrid: () => void) {
+  const focusables = () => [...document.querySelectorAll<HTMLElement>('#ribbon button:not([disabled]), #ribbon input, #ribbon select')].filter((x) => x.offsetParent !== null);
+  document.addEventListener('keydown', (e) => {
+    const t = e.target as HTMLElement | null;
+    if (!t) return;
+    const inTabs = !!t.closest('#tabs'), inRb = !!t.closest('#ribbon');
+    if (!inTabs && !inRb) return;
+    if (e.key === 'Escape') { e.preventDefault(); toGrid(); return; }
+    if (inTabs) {
+      const tabs = [...document.querySelectorAll<HTMLElement>('#tabs [role="tab"]')].filter((x) => x.offsetParent !== null);
+      const i = tabs.indexOf(t);
+      if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+        e.preventDefault();
+        const n = tabs[(i + (e.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length];
+        if (n) { const id = n.dataset.tab; if (id !== 'file') onSelectTab(n); (document.querySelector<HTMLElement>(`#tabs [data-tab="${id}"]`) ?? n).focus(); }
+      } else if (e.key === 'ArrowDown' || (e.key === 'Tab' && !e.shiftKey)) { e.preventDefault(); focusables()[0]?.focus(); }
+      return;
+    }
+    if (t.tagName === 'INPUT' && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) return;
+    const list = focusables(), i = list.indexOf(t);
+    if (e.ctrlKey && (e.key === 'ArrowRight' || e.key === 'ArrowLeft')) {
+      e.preventDefault();
+      const grps = [...document.querySelectorAll<HTMLElement>('#ribbon .grp')];
+      const gi = grps.findIndex((g) => g.contains(t));
+      const ng = grps[(gi + (e.key === 'ArrowRight' ? 1 : grps.length - 1)) % grps.length];
+      (ng?.querySelector<HTMLElement>('button, input, select'))?.focus();
+      return;
+    }
+    if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { e.preventDefault(); list[(i + (e.key === 'ArrowRight' ? 1 : list.length - 1)) % list.length]?.focus(); return; }
+    if ((e.key === 'ArrowDown' && (e.altKey || t.getAttribute('aria-haspopup') === 'menu')) || (e.key === 'ArrowDown' && t.classList.contains('main'))) {
+      e.preventDefault();
+      const dd = t.classList.contains('main') ? t.parentElement?.querySelector<HTMLElement>('.dd') : t;
+      dd?.click();
+      return;
+    }
+    if (e.key === 'ArrowDown') { e.preventDefault(); list[i + 1]?.focus(); return; }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (i <= 0) document.querySelector<HTMLElement>('#tabs [aria-selected="true"]')?.focus(); else list[i - 1]?.focus();
+    }
+  });
+}

@@ -87,13 +87,20 @@ function cellCss(st: ReturnType<Workbook['style']>, cf: ReturnType<Workbook['cfS
   if (st.b || cf.b) o.push('font-weight:700');
   if (st.i || cf.i) o.push('font-style:italic');
   const deco = [st.u ? 'underline' : '', st.s ? 'line-through' : ''].filter(Boolean).join(' ');
-  if (deco) o.push('text-decoration:' + deco);
+  if (deco) o.push('text-decoration:' + deco + (st.ud ? ' double' : ''));
   if (fg) o.push('color:' + fg);
   if (bg) o.push('background:' + bg);
   if (st.fn) { const fn = st.fn.replace(/[^\p{L}\p{N} _.-]/gu, '').trim(); if (fn) o.push(`font-family:'${fn}',${FONT}`); }
   if (st.fs) o.push(`font-size:${st.fs}pt`);
-  if (st.ind) o.push(`padding-left:${3 + st.ind * 9}px`);
-  o.push('text-align:' + ({ l: 'left', c: 'center', r: 'right' }[align] ?? 'left'));
+  if (st.ind) o.push(`padding-${align === 'r' ? 'right' : 'left'}:${3 + st.ind * 9}px`);
+  const ta = st.hx === 'just' ? 'justify' : st.hx === 'dist' || st.hx === 'cas' ? 'center' : ({ l: 'left', c: 'center', r: 'right' }[align] ?? 'left');
+  o.push('text-align:' + ta);
+  if (st.hx === 'just' || st.hx === 'dist') o.push('white-space:normal');
+  if (st.rot === 255) o.push('writing-mode:vertical-rl;text-orientation:upright');
+  const diag: string[] = [];
+  if (st.bd?.d) diag.push(`linear-gradient(to top right,transparent calc(50% - 0.6px),${st.bd.d.c ?? '#000'} 50%,transparent calc(50% + 0.6px))`);
+  if (st.bd?.u) diag.push(`linear-gradient(to bottom right,transparent calc(50% - 0.6px),${st.bd.u.c ?? '#000'} 50%,transparent calc(50% + 0.6px))`);
+  if (diag.length) o.push('background-image:' + diag.join(','));
   o.push('vertical-align:' + (({ t: 'top', m: 'middle' } as Record<string, string>)[st.va ?? ''] ?? 'bottom'));
   if (st.wr) o.push('white-space:pre-wrap');
   const side = (k: 't' | 'r' | 'b' | 'l', name: string) => {
@@ -139,7 +146,13 @@ function pageHtml(named: string, wb: Workbook, s: number, L: Layout, p: PageSpec
       const est = [...text].reduce((a, ch) => a + (/[.,:\s]/.test(ch) ? 3.5 : 7), 0) * k * (d.style.b ? 1.06 : 1);
       if (est > w) text = '#'.repeat(Math.max(1, Math.floor(w / (7 * k))));
     }
-    return `<td${attr} style="${esc(cellCss(d.style, cf, d.align))}">${esc(text)}</td>`;
+    const st = d.style;
+    let inner = esc(text);
+    if (st.vp) inner = `<${st.vp}>${inner}</${st.vp}>`;
+    if (st.rot && st.rot !== 255) inner = `<span style="display:inline-block;transform:rotate(${-st.rot}deg);white-space:nowrap">${inner}</span>`;
+    if (st.shk && text) inner = `<span style="display:inline-block;max-width:100%;font-size:${Math.max(0.3, Math.min(1, (m.colW.get(c) - 6) / Math.max(1, [...text].length * 7 * ((st.fs ?? 11) / 11))))}em">${inner}</span>`;
+    if (st.hx === 'fill' && text && typeof d.value !== 'number') inner = esc(text.repeat(Math.max(1, Math.floor((m.colW.get(c) - 6) / Math.max(1, [...text].length * 7)))));
+    return `<td${attr} style="${esc(cellCss(st, cf, d.align))}">${inner}</td>`;
   };
   let t = `<table class="${ps.gridlines ? 'grid' : ''}" style="width:${cols.reduce((a, c) => a + m.colW.get(c), 0) + hdW}px"><colgroup>${ps.headings ? `<col style="width:${hdW}px">` : ''}${cols.map((c) => `<col style="width:${m.colW.get(c)}px">`).join('')}</colgroup>`;
   if (ps.headings) t += `<tr style="height:20px"><th class="hd"></th>${cols.map((c) => `<th class="hd">${colName(c)}</th>`).join('')}</tr>`;

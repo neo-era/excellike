@@ -1,6 +1,6 @@
 # ExcelLike – Rà soát tính năng & phím tắt so với Excel 365 (Bước 0 cho v2)
 
-Ngày tra: 28/10/2026. Đối chiếu **ExcelLike 0.4.1** với **Excel 365 cho Windows (Current Channel)**.
+Ngày tra: 28/10/2026 (cập nhật 29/10/2026 cho bản 0.6). Đối chiếu **ExcelLike 0.4.1 → 0.6.0** với **Excel 365 cho Windows (Current Channel)**.
 
 **Nguồn chính thức**
 - Microsoft Support – “Keyboard shortcuts in Excel” (tab Windows): https://support.microsoft.com/office/keyboard-shortcuts-in-excel-1798d9d5-842a-42b8-9c99-9b7213f0040f — 298 dòng phím tắt, 13 mục.
@@ -41,7 +41,7 @@ Ngày tra: 28/10/2026. Đối chiếu **ExcelLike 0.4.1** với **Excel 365 cho 
 | In: xem trước ngay trong Backstage, in vùng chọn/cả sổ, số bản, khổ, lề, co giãn (vừa 1 trang / vừa cột / vừa hàng) | ✅ 0.5 (xem trước từng trang ◀ 1/N ▶, Hiện lề; bản Windows chọn máy in và in thẳng, không qua hộp thoại hệ thống) | P1 |
 | Xuất PDF | ✅ 0.5 (bản Windows ghi tệp .pdf thật) | P1 |
 | Thông tin: bảo vệ sổ bằng mật khẩu, mở chỉ đọc, kiểm tra sổ | ✗ | P3 |
-| Đóng (Ctrl+W), nhiều sổ mở cùng lúc, chuyển cửa sổ (Ctrl+F6, Ctrl+Tab) | ✗ (một sổ một lúc) | P2 |
+| Đóng (Ctrl+W), nhiều sổ mở cùng lúc, chuyển cửa sổ (Ctrl+F6, Ctrl+Tab) | ◐ 0.6 (Ctrl+W/Ctrl+F4 đóng sổ, hỏi lưu; nhiều sổ cùng lúc ✗) | P2 |
 | Mở .xls (97–2003), .xlsb, .ods; lưu .xlsm giữ macro | ✗ | P2 |
 | Tùy chọn (Options): chế độ tính, tính lặp, hướng Enter, phông mặc định… | ◐ 0.5 (Tính lặp + số lần/sai số, hướng Enter) | P2 |
 | Chia sẻ, OneDrive, Phiên bản, Power BI | — | — |
@@ -50,17 +50,17 @@ Ngày tra: 28/10/2026. Đối chiếu **ExcelLike 0.4.1** với **Excel 365 cho 
 | Tính năng | ExcelLike | Ưu tiên |
 |---|---|---|
 | Cắt, Sao chép, Dán | ✅ | – |
-| Dán đặc biệt (Ctrl+Alt+V): giá trị, công thức, định dạng, độ rộng cột, chuyển vị, phép tính, bỏ ô trống; nút Tùy chọn dán sau khi dán | ✗ | P1 |
-| Chổi định dạng (nhấp/nhấp đúp) | ✗ | P1 |
-| Phông, cỡ, Đậm/Nghiêng/Gạch chân, gạch ngang (Ctrl+5), màu chữ, tô nền | ✅ (gạch ngang chưa có nút) | – |
-| Tăng/Giảm cỡ chữ, gạch chân kép, chỉ số trên/dưới | ✗ | P2 |
+| Dán đặc biệt (Ctrl+Alt+V): giá trị, công thức, định dạng, độ rộng cột, chuyển vị, phép tính, bỏ ô trống; nút Tùy chọn dán sau khi dán | ✅ 0.6 (12 kiểu dán + 5 phép tính + bỏ ô trống + chuyển vị + dán liên kết, phím chữ A F V T C N H X W R U; menu Dán và hàng Tùy chọn Dán; Ctrl+Shift+V dán giá trị) | P1 |
+| Chổi định dạng (nhấp/nhấp đúp) | ✅ 0.6 (nhấp đúp = dùng nhiều lần, Esc để thôi) | P1 |
+| Phông, cỡ, Đậm/Nghiêng/Gạch chân, gạch ngang (Ctrl+5), màu chữ, tô nền | ✅ | – |
+| Tăng/Giảm cỡ chữ, gạch chân kép, chỉ số trên/dưới | ✅ 0.6 | P2 |
 | Viền: các kiểu sẵn | ✅ | – |
-| Viền: vẽ viền, màu/kiểu nét, Thêm viền… (hộp thoại) | ✗ | P2 |
+| Viền: vẽ viền, màu/kiểu nét, Thêm viền… (hộp thoại) | ◐ 0.6 (hộp thoại Viền: 7 kiểu nét, màu, 8 cạnh gồm đường chéo; Vẽ viền bằng chuột ✗) | P2 |
 | Bảng màu đầy đủ (màu chủ đề + sắc độ, Màu khác…) | ◐ | P1 |
 | Căn trên/giữa/dưới, trái/giữa/phải, xuống dòng, gộp ô (3 kiểu), bỏ gộp | ✅ | – |
-| Thụt lề (tăng/giảm), xoay chữ (góc, dọc), Căn giữa qua vùng chọn, Co chữ vừa ô | ✗ | P1 (thụt lề), P2 |
+| Thụt lề (tăng/giảm), xoay chữ (góc, dọc), Căn giữa qua vùng chọn, Co chữ vừa ô | ✅ 0.6 (cả Điền, Căn đều, Phân phối) | P1 (thụt lề), P2 |
 | Định dạng số: danh sách nhanh, Kế toán, %, dấu phân cách, tăng/giảm số lẻ | ✅ (Kế toán ◐) | – |
-| Hộp thoại Định dạng ô (Ctrl+1): Số (Tùy chỉnh), Căn chỉnh, Phông, Viền, Tô, Bảo vệ | ✗ | P1 |
+| Hộp thoại Định dạng ô (Ctrl+1): Số (Tùy chỉnh), Căn chỉnh, Phông, Viền, Tô, Bảo vệ | ✅ 0.6 (Tô: màu nền; mẫu/chuyển màu ✗) | P1 |
 | Định dạng có điều kiện: tô ô theo quy tắc, trùng lặp, Top/Bottom, trên/dưới TB, thanh dữ liệu, thang màu, quản lý | ✅ | – |
 | … Bộ biểu tượng, “Ngày xảy ra”, Quy tắc mới bằng công thức | ✗ | P2 |
 | Định dạng như Bảng (Table: tên bảng, hàng tổng, dải màu, tham chiếu có cấu trúc `Bảng1[Cột]`) | ✗ | P1 |
@@ -69,11 +69,11 @@ Ngày tra: 28/10/2026. Đối chiếu **ExcelLike 0.4.1** với **Excel 365 cho 
 | Chèn/Xóa ô (dồn xuống/phải, lên/trái) | ✅ 0.5 | P1 |
 | Định dạng: chiều cao hàng/độ rộng cột theo số, Tự khớp, Ẩn/Hiện hàng-cột-sheet, Di chuyển/Sao chép sheet, Màu thẻ, Bảo vệ sheet, Khóa ô | ✅ 0.5 (trừ Bảo vệ sheet, Khóa ô → 0.9) | P1 |
 | Tổng tự động ▸ Tổng/Trung bình/Đếm/Max/Min | ✅ 0.5 | P1 |
-| Điền ▸ Xuống/Phải/Lên/Trái/Chuỗi…/Flash Fill | ◐ (Xuống, Phải, kéo điền chuỗi) | P2 |
-| Xóa ▸ Tất cả/Định dạng/Nội dung/Ghi chú/Liên kết | ◐ 0.5 (Tất cả, Định dạng, Nội dung; Ghi chú → 0.7) | P1 |
+| Điền ▸ Xuống/Phải/Lên/Trái/Chuỗi…/Flash Fill | ✅ 0.6 (Chuỗi: tuyến tính, tăng trưởng, ngày/ngày làm việc/tháng/năm, bước, giá trị dừng; Điền Nhanh Ctrl+E) | P2 |
+| Xóa ▸ Tất cả/Định dạng/Nội dung/Ghi chú/Liên kết | ◐ 0.6 (Tất cả, Định dạng, Nội dung, Siêu kết nối; Ghi chú → 0.7) | P1 |
 | Sắp xếp & Lọc | ✅ | – |
 | Lọc nâng cao: theo màu, theo số (lớn hơn, top 10), theo ngày (tháng này, quý…) | ◐ (giá trị, chữ chứa) | P2 |
-| Tìm & Chọn: Tìm (Ctrl+F), Thay thế (Ctrl+H), Đi tới (F5/Ctrl+G), Đi tới Đặc biệt (ô trống, công thức, hằng số…) | ✗ | **P1** |
+| Tìm & Chọn: Tìm (Ctrl+F), Thay thế (Ctrl+H), Đi tới (F5/Ctrl+G), Đi tới Đặc biệt (ô trống, công thức, hằng số…) | ✅ 0.6 (hộp Tìm/Thay không chặn trang tính: ký tự đại diện * ? ~, khớp hoa/thường, toàn ô, trong trang/sổ, theo hàng/cột, công thức/giá trị, Tìm Tất cả có danh sách; Đi tới Đặc biệt 14 loại; Tìm theo Định dạng ✗) | **P1** |
 | Phân tích dữ liệu, Copilot, Nhãn độ nhạy, Phần bổ trợ | — | — |
 
 ### Chèn (Insert)
@@ -87,7 +87,7 @@ Ngày tra: 28/10/2026. Đối chiếu **ExcelLike 0.4.1** với **Excel 365 cho 
 | Hình ảnh (đặt trên ô / trong ô), Hình vẽ, Biểu tượng, SmartArt, Ảnh chụp màn hình | ✗ | P2 (ảnh), P3 |
 | Biểu đồ thu nhỏ trong ô (Sparklines) | ✗ | P3 |
 | Slicer, Timeline | ✗ | P3 |
-| Liên kết (Ctrl+K) | ✗ | P2 |
+| Liên kết (Ctrl+K) | ✅ 0.6 (web, vị trí trong sổ, email; nhấp để mở; đọc/ghi .xlsx) | P2 |
 | Bình luận | ✗ (xem Xem lại) | P1 |
 | Hộp kiểm trong ô (Checkbox) | ✗ | P3 |
 | Hộp văn bản, Đầu trang & Chân trang, WordArt, Chữ ký, Đối tượng | ✗ (đầu/chân trang P1 – xem Bố trí trang) | P3 |
@@ -110,7 +110,7 @@ Ngày tra: 28/10/2026. Đối chiếu **ExcelLike 0.4.1** với **Excel 365 cho 
 |---|---|---|
 | Chèn hàm, Tổng tự động, thư viện hàm theo nhóm | ◐ (hộp chọn hàm có tìm kiếm; chưa có các nút nhóm Tài chính/Logic/…) | P2 |
 | Gợi ý hàm khi gõ + chú thích tham số | ✅ | – |
-| Hộp thoại Đối số hàm (Ctrl+A sau tên hàm) | ✗ | P2 |
+| Hộp thoại Đối số hàm (Ctrl+A sau tên hàm) | ✅ 0.6 (kèm Ctrl+Shift+A chèn tên đối số) | P2 |
 | ~420 hàm Excel; mảng động (FILTER, SORT, UNIQUE, SEQUENCE tràn ô), LET, LAMBDA, XLOOKUP | ◐ (XLOOKUP ✅; mảng động/LET/LAMBDA ✗) | P1 (FILTER, SORT, UNIQUE), P2 |
 | Hằng mảng nhiều cột `{1,2;3,4}` | ✗ (đang sai khi đọc tệp) | P1 |
 | Tên vùng: Đặt tên, Trình quản lý tên, Tạo từ vùng chọn, Dán tên (F3) | ✗ (tên trong tệp chưa đọc) | **P1** |
@@ -164,12 +164,12 @@ Ngày tra: 28/10/2026. Đối chiếu **ExcelLike 0.4.1** với **Excel 365 cho 
 ### Hộp thoại Định dạng ô (Ctrl+1)
 | Tab | ExcelLike | Ưu tiên |
 |---|---|---|
-| Số: Chung, Số, Tiền tệ, Kế toán, Ngày, Giờ, %, Phân số, Khoa học, Văn bản, Đặc biệt, **Tùy chỉnh** (gõ mã, xem mẫu) | ◐ (bộ máy định dạng đủ, chưa có hộp thoại) | **P1** |
-| Căn chỉnh: ngang (gồm Điền, Căn đều, Giữa qua vùng chọn, Phân phối), dọc, thụt lề, xuống dòng, co vừa ô, gộp, góc xoay | ◐ | P1 |
-| Phông: kiểu, gạch chân (đơn/kép/kế toán), gạch ngang, chỉ số trên/dưới | ◐ | P1 |
-| Viền: kiểu nét, màu, bấm từng cạnh, đường chéo | ◐ | P1 |
+| Số: Chung, Số, Tiền tệ, Kế toán, Ngày, Giờ, %, Phân số, Khoa học, Văn bản, Đặc biệt, **Tùy chỉnh** (gõ mã, xem mẫu) | ✅ 0.6 | **P1** |
+| Căn chỉnh: ngang (gồm Điền, Căn đều, Giữa qua vùng chọn, Phân phối), dọc, thụt lề, xuống dòng, co vừa ô, gộp, góc xoay | ✅ 0.6 (dọc: Trên/Giữa/Dưới) | P1 |
+| Phông: kiểu, gạch chân (đơn/kép/kế toán), gạch ngang, chỉ số trên/dưới | ✅ 0.6 (kế toán = đơn/kép) | P1 |
+| Viền: kiểu nét, màu, bấm từng cạnh, đường chéo | ✅ 0.6 | P1 |
 | Tô: màu, mẫu (pattern), chuyển màu | ◐ (màu) | P2 |
-| Bảo vệ: Khóa, Ẩn công thức | ✗ | P2 |
+| Bảo vệ: Khóa, Ẩn công thức | ◐ 0.6 (thuộc tính lưu vào .xlsx; Bảo vệ trang tính → 0.9) | P2 |
 
 ### Tương thích tệp .xlsx (đọc → lưu không mất)
 | Nội dung | ExcelLike | Ưu tiên |
@@ -184,32 +184,249 @@ Ngày tra: 28/10/2026. Đối chiếu **ExcelLike 0.4.1** với **Excel 365 cho 
 | PivotTable “sống” (pivotCache) | ✗ (ghi thành bảng giá trị) | P3 |
 | Macro VBA (.xlsm): giữ nguyên khi lưu, không chạy | ✗ | P2 |
 
-## C. Phím tắt
+## C. Phím tắt (cập nhật 0.6 — tra lại trang Microsoft ngày 29/10/2026)
 
-**Tổng trang Microsoft: 298 dòng.** Không làm: Power Pivot (27), Copilot (9), làm mới dữ liệu ngoài (3), macro/VBA/Power Query (Alt+F8, Alt+F11, Alt+F12), lệnh cửa sổ con kiểu Windows cũ (Ctrl+F5/F7/F8/F9/F10), hình nổi Ctrl+Alt+5. **Trong phạm vi: ~245 dòng.**
+Nguồn duy nhất trong mã: `src/ui/keymap.ts` — dùng cho bộ điều phối phím, bảng phím tắt F1 trong app, bảng dưới đây (`node --experimental-strip-types tools/keytable.mjs`) và test e2e (`e2e/v06.mjs` bấm thật từng phím).
 
-| Mục (trang Microsoft) | Số dòng | ExcelLike đã có | Còn thiếu tiêu biểu |
-|---|---|---|---|
-| Thường dùng | 22 | 13 | Ctrl+W, Alt+H…, Shift+F10, Ctrl+9 / Ctrl+0 (ẩn hàng/cột), KeyTips Alt+H,H / Alt+H,B / Alt+H,D,C |
-| Phím truy cập tab | 9 | 0 | Alt+F/H/N/P/M/A/R/W, Alt+Q |
-| Làm việc với Ribbon | 12 | 1 (Ctrl+F1) | F10, Tab/mũi tên trên Ribbon, Ctrl+Shift+F10 |
-| Di chuyển trong ô | 24 | 12 | End + mũi tên, Ctrl+End, Ctrl+Shift+End, Ctrl+PgUp/PgDn (đổi sheet), Alt+PgUp/PgDn, Alt+↓ (danh sách DV), Ctrl+Alt+= / − (thu phóng) |
-| Định dạng ô | 38 | 6 | Ctrl+1, Ctrl+Shift+F, Shift+F2, Ctrl+Shift++, Ctrl+−, Ctrl+Shift+:, Ctrl+`, Ctrl+', Ctrl+Alt+V, Ctrl+2/3/4/5, Ctrl+Shift+& / _, Ctrl+Shift+~ $ % ^ # @ !, Ctrl+K, Ctrl+T/L, Ctrl+8 |
-| Dán đặc biệt | 11 | 0 | A F V T C N H X W R U |
-| Chọn & thao tác | 21 | 10 | Ctrl+A theo vùng hiện tại (lần 2 cả sheet), Ctrl+Space, Shift+Space, F8, Shift+F8, Ctrl+Enter, Ctrl+Shift+*, Ctrl+Shift+Home, Ctrl+Shift+PgUp/PgDn |
-| Dữ liệu, hàm, thanh công thức | 27 (trừ 3 macro/PQ) | 7 | F4 (đổi $ tham chiếu và lặp lệnh), Ctrl+Shift+U, Shift+F9, Ctrl+Alt+F9, Ctrl+Shift+A, Ctrl+E, Ctrl+Shift+", Alt+F1, F11, F3, Alt+M,M,D |
-| Phím chức năng F1–F12 | 39 (trừ ~8 cửa sổ/macro) | 6 | F1 (trợ giúp/bảng phím), Alt+Shift+F1 / Shift+F11 (sheet mới), Ctrl+Shift+F1 (toàn màn hình), Ctrl+F2, F5, F6, F7, F10, Shift+F10, F12 |
-| Phím hữu ích khác | 58 | 30 | End mode, Alt+Space, Shift+kéo để chèn, Ctrl+Tab trong hộp thoại |
-| **Tổng trong phạm vi** | **~245** | **~85 (≈35%)** | |
+Không làm (giữ nguyên lý do): Power Pivot (27 dòng), Copilot (9), Alt+F8/F11/F12 (macro, VBA, Power Query), Ctrl+F6/Ctrl+Tab đổi cửa sổ sổ khác (mỗi cửa sổ một sổ), Ctrl+F5/F7/F8 cửa sổ con kiểu cũ, Alt+Space (Windows xử lý).
+Có ở bản sau (cần tính năng lớn trước): Shift+F2 ghi chú, Ctrl+Shift+F2 chú thích, Ctrl+8 dàn bài, Ctrl+L/Ctrl+T Bảng, F3 / Alt+M,M,D tên vùng → 0.7; F7 chính tả, Alt+Shift+F10 kiểm tra lỗi, Shift+kéo chèn ô → 0.9.
 
-Ghi chú hành vi phải giống Excel: Ctrl+A chọn vùng dữ liệu trước rồi mới cả sheet; F4 khi đang sửa công thức đổi `A1 → $A$1 → A$1 → $A1`, khi không sửa thì lặp lệnh cuối; Ctrl+Y = lặp lại/làm lại; Enter sau Tab quay về cột bắt đầu; Ctrl+D/Ctrl+R chép cả định dạng; Delete giữ định dạng; Backspace xóa rồi vào sửa ô.
+Hành vi đã làm giống Excel: Ctrl+A chọn vùng dữ liệu rồi mới cả trang; Ctrl+Home về ô đầu vùng không cố định; F4 khi sửa đổi $ tham chiếu, khi không sửa thì lặp lệnh cuối (Ctrl+Y cũng lặp khi không có gì để làm lại); Tab…Tab rồi Enter về cột bắt đầu; Enter/Tab đi vòng trong vùng chọn và sang khối kế tiếp; Ctrl+Enter điền mọi ô đang chọn (công thức dời tham chiếu); Delete giữ định dạng; Backspace xóa rồi sửa; Ctrl+D/R chép cả định dạng; Ctrl+Shift++ / Ctrl+− chọn cả hàng/cột thì chèn/xóa luôn; Ctrl+; Ctrl+Shift+: Ctrl+' Ctrl+Shift+" chèn tại con trỏ khi đang sửa; nhóm trang tính áp nhập liệu/định dạng/xóa cho mọi trang trong nhóm.
+
+Tổng 180 mục: ✅ 167 · ◐ 9 · — 4
+
+**Thường dùng**
+
+| Phím | Hành động | Trạng thái |
+|---|---|---|
+| Ctrl+W | Đóng sổ làm việc | ✅ |
+| Ctrl+O | Mở sổ làm việc | ✅ |
+| Ctrl+N | Sổ làm việc mới | ✅ |
+| Ctrl+S | Lưu sổ làm việc | ✅ |
+| Ctrl+P | In (xem trước trong Tệp ▸ In) | ✅ |
+| Ctrl+C | Sao chép | ✅ |
+| Ctrl+V | Dán | ✅ |
+| Ctrl+X | Cắt | ✅ |
+| Ctrl+Z | Hoàn tác | ✅ |
+| Ctrl+Y | Làm lại; nếu không có gì để làm lại thì lặp lại lệnh cuối | ✅ |
+| Delete | Xóa nội dung ô (giữ định dạng) | ✅ |
+| Alt+H, H | Chọn màu tô (KeyTips) | ✅ |
+| Alt+H, A, C | Căn giữa (KeyTips) | ✅ |
+| Alt+H, B | Thêm viền (KeyTips) | ✅ |
+| Alt+H, D, C | Xóa cột (KeyTips) | ✅ |
+| Ctrl+B | Đậm / bỏ đậm | ✅ |
+| Shift+F10 | Mở menu chuột phải | ✅ |
+| Ctrl+9 | Ẩn hàng đang chọn | ✅ |
+| Ctrl+0 | Ẩn cột đang chọn | ✅ |
+| Ctrl+Shift+( | Bỏ ẩn hàng trong vùng chọn | ✅ |
+| Ctrl+Shift+) | Bỏ ẩn cột trong vùng chọn | ✅ |
+
+**Ribbon & KeyTips**
+
+| Phím | Hành động | Trạng thái |
+|---|---|---|
+| Alt+F | Mở thẻ Tệp | ✅ |
+| Alt+H | Mở thẻ Trang đầu | ✅ |
+| Alt+N | Mở thẻ Chèn | ✅ |
+| Alt+P | Mở thẻ Bố trí Trang | ✅ |
+| Alt+M | Mở thẻ Công thức | ✅ |
+| Alt+A | Mở thẻ Dữ liệu | ✅ |
+| Alt+R | Mở thẻ Xem lại | ✅ |
+| Alt+W | Mở thẻ Xem | ✅ |
+| Alt+Q | Tới ô Tìm kiếm lệnh | ✅ |
+| Alt hoặc F10 | Hiện/ẩn KeyTips | ✅ |
+| Tab / Shift+Tab | Chuyển giữa các lệnh trên Ribbon (khi Ribbon đang nhận phím) | ✅ |
+| Phím mũi tên | Di chuyển giữa các mục trên Ribbon | ✅ |
+| Ctrl+Shift+F10 | Hiện chú thích của lệnh đang chọn trên Ribbon | ✅ |
+| Space hoặc Enter | Thực hiện lệnh đang chọn trên Ribbon | ✅ |
+| Alt+↓ / ↓ | Mở danh sách/menu của lệnh đang chọn | ✅ |
+| Ctrl+F1 | Thu gọn / hiện Ribbon | ✅ |
+| Ctrl+← / Ctrl+→ | Nhảy giữa các nhóm lệnh trên Ribbon | ✅ |
+
+**Di chuyển trong ô**
+
+| Phím | Hành động | Trạng thái |
+|---|---|---|
+| ↑ ↓ ← → | Di chuyển một ô | ✅ |
+| Tab / Shift+Tab | Sang ô phải / trái (đi vòng trong vùng chọn) | ✅ |
+| Ctrl+mũi tên | Tới mép vùng dữ liệu | ✅ |
+| End, mũi tên | Chế độ End: End rồi mũi tên = tới ô có dữ liệu kế tiếp | ✅ |
+| Ctrl+End | Tới ô cuối cùng có dùng | ✅ |
+| Ctrl+Shift+End | Mở rộng vùng chọn tới ô cuối cùng có dùng | ✅ |
+| Home | Về đầu hàng | ✅ |
+| Ctrl+Home | Về đầu trang tính (sau ngăn cố định) | ✅ |
+| Page Down | Xuống một màn hình | ✅ |
+| Page Up | Lên một màn hình | ✅ |
+| Alt+Page Down | Sang phải một màn hình | ✅ |
+| Alt+Page Up | Sang trái một màn hình | ✅ |
+| Ctrl+Page Down | Sang trang tính sau | ✅ |
+| Ctrl+Page Up | Về trang tính trước | ✅ |
+| Alt+↓ | Mở danh sách chọn (kiểm tra dữ liệu, nút lọc, hoặc chọn từ các giá trị trong cột) | ✅ |
+| Ctrl+Alt+5, Tab | Duyệt qua các biểu đồ/đối tượng nổi (Esc để thoát) | ✅ |
+| Ctrl+Shift+cuộn chuột | Cuộn ngang | ✅ |
+| Ctrl+Alt+= | Phóng to | ✅ |
+| Ctrl+Alt+− | Thu nhỏ | ✅ |
+
+**Định dạng ô**
+
+| Phím | Hành động | Trạng thái |
+|---|---|---|
+| Ctrl+1 | Hộp thoại Định dạng Ô | ✅ |
+| Ctrl+Shift+F | Định dạng Ô ▸ thẻ Phông | ✅ |
+| F2 | Sửa ô hiện hành | ✅ |
+| Shift+F2 | Chèn/sửa ghi chú ô | ◐ sau (0.7 (Ghi chú ô: đọc/ghi .xlsx)) |
+| Ctrl+Shift+F2 | Chèn/trả lời chú thích dạng chuỗi | ◐ sau (0.7 (Chú thích)) |
+| Ctrl+Shift++ | Hộp thoại Chèn ô (chọn cả hàng/cột thì chèn luôn) | ✅ |
+| Ctrl+− | Hộp thoại Xóa ô (chọn cả hàng/cột thì xóa luôn) | ✅ |
+| Ctrl+Shift+: | Nhập giờ hiện tại | ✅ |
+| Ctrl+; | Nhập ngày hiện tại | ✅ |
+| Ctrl+` | Hiện công thức / giá trị | ✅ |
+| Ctrl+' | Chép công thức ô phía trên vào ô hiện hành | ✅ |
+| Ctrl+Alt+V | Hộp thoại Dán Đặc biệt | ✅ |
+| Ctrl+Shift+V | Dán chỉ giá trị (Excel 365) | ✅ |
+| Ctrl+I | Nghiêng / bỏ nghiêng | ✅ |
+| Ctrl+U | Gạch chân / bỏ gạch chân | ✅ |
+| Ctrl+5 | Gạch ngang / bỏ gạch ngang | ✅ |
+| Ctrl+6 | Hiện / ẩn / hiện chỗ giữ cho đối tượng (biểu đồ) | ✅ |
+| Ctrl+Shift+& | Kẻ viền ngoài | ✅ |
+| Ctrl+Shift+_ | Bỏ viền ngoài | ✅ |
+| Ctrl+8 | Hiện/ẩn ký hiệu dàn bài (nhóm hàng/cột) | ◐ sau (0.7 (Nhóm hàng/cột)) |
+| Ctrl+D | Điền xuống | ✅ |
+| Ctrl+R | Điền sang phải | ✅ |
+| Ctrl+Shift+~ | Định dạng Chung | ✅ |
+| Ctrl+Shift+$ | Định dạng Tiền tệ (2 số lẻ, số âm trong ngoặc) | ✅ |
+| Ctrl+Shift+% | Định dạng Phần trăm, không số lẻ | ✅ |
+| Ctrl+Shift+^ | Định dạng Khoa học, 2 số lẻ | ✅ |
+| Ctrl+Shift+# | Định dạng Ngày (ngày, tháng, năm) | ✅ |
+| Ctrl+Shift+@ | Định dạng Giờ (giờ, phút, SA/CH) | ✅ |
+| Ctrl+Shift+! | Định dạng Số: 2 số lẻ, dấu phân cách hàng nghìn | ✅ |
+| Ctrl+K | Chèn / sửa liên kết | ✅ |
+| F7 | Kiểm tra chính tả | ◐ sau (0.9 (cần từ điển tiếng Việt)) |
+| Ctrl+Q | Phân tích Nhanh cho vùng chọn | ✅ |
+| Ctrl+L hoặc Ctrl+T | Tạo Bảng | ◐ sau (0.7 (Bảng + tham chiếu có cấu trúc)) |
+| Ctrl+Shift+G | Thống kê Sổ làm việc | ✅ |
+
+**Hộp Dán Đặc biệt**
+
+| Phím | Hành động | Trạng thái |
+|---|---|---|
+| A | Dán tất cả | ✅ |
+| F | Chỉ công thức | ✅ |
+| V | Chỉ giá trị | ✅ |
+| T | Chỉ định dạng | ✅ |
+| C | Chỉ chú thích & ghi chú | ✅ |
+| N | Chỉ kiểm tra dữ liệu | ✅ |
+| H | Tất cả, dùng chủ đề nguồn | ✅ |
+| X | Tất cả trừ viền | ✅ |
+| W | Độ rộng cột | ✅ |
+| R | Công thức và định dạng số | ✅ |
+| U | Giá trị và định dạng số | ✅ |
+
+**Chọn & thao tác**
+
+| Phím | Hành động | Trạng thái |
+|---|---|---|
+| Ctrl+A / Ctrl+Shift+Space | Chọn vùng dữ liệu hiện tại; bấm lần nữa chọn cả trang tính | ✅ |
+| Ctrl+Shift+Page Down | Chọn thêm trang tính sau (nhóm trang tính) | ✅ |
+| Ctrl+Shift+Page Up | Chọn thêm trang tính trước (nhóm trang tính) | ✅ |
+| Shift+mũi tên | Mở rộng vùng chọn một ô | ✅ |
+| Ctrl+Shift+mũi tên | Mở rộng vùng chọn tới ô có dữ liệu cuối | ✅ |
+| F8 | Bật/tắt chế độ Mở rộng Vùng chọn | ✅ |
+| Shift+F8 | Thêm vùng không liền kề vào vùng chọn | ✅ |
+| Ctrl+nhấp chuột | Thêm ô/vùng không liền kề vào vùng chọn | ✅ |
+| Alt+Enter | Xuống dòng trong ô | ✅ |
+| Ctrl+Enter | Điền nội dung đang nhập vào mọi ô đang chọn | ✅ |
+| Shift+Enter | Hoàn tất và lên ô trên | ✅ |
+| Ctrl+Space | Chọn cả cột | ✅ |
+| Shift+Space | Chọn cả hàng | ✅ |
+| Ctrl+Shift+Home | Mở rộng vùng chọn tới đầu trang tính | ✅ |
+| Shift+Home | Mở rộng vùng chọn về đầu hàng | ✅ |
+| Shift+Page Down / Up | Mở rộng vùng chọn một màn hình | ✅ |
+| Ctrl+Shift+* | Chọn vùng dữ liệu quanh ô hiện hành | ✅ |
+| F4 (khi không sửa ô) | Lặp lại lệnh/thao tác cuối | ✅ |
+| Alt+; | Chỉ chọn các ô đang hiện | ✅ |
+| Ctrl+[ | Chọn ô tiền lệ trực tiếp | ✅ |
+| Ctrl+Shift+{ | Chọn mọi ô tiền lệ | ✅ |
+| Ctrl+] | Chọn ô phụ thuộc trực tiếp | ✅ |
+| Ctrl+Shift+} | Chọn mọi ô phụ thuộc | ✅ |
+| Ctrl+\ | Chọn ô khác biệt trong hàng (so với cột của ô hiện hành) | ✅ |
+| Ctrl+Shift+\| | Chọn ô khác biệt trong cột (so với hàng của ô hiện hành) | ✅ |
+| Ctrl+Shift+O | Chọn các ô có ghi chú | ✅ |
+| Ctrl+. | Ô hiện hành chuyển tới góc kế tiếp của vùng chọn | ✅ |
+| Shift+Backspace | Thu vùng chọn về ô hiện hành | ✅ |
+| Ctrl+Backspace | Cuộn tới ô hiện hành | ✅ |
+
+**Dữ liệu, hàm, thanh công thức**
+
+| Phím | Hành động | Trạng thái |
+|---|---|---|
+| Ctrl+Alt+P | Bật/tắt chú thích hàm khi gõ công thức | ✅ |
+| Ctrl+Shift+U | Mở rộng / thu gọn thanh công thức | ✅ |
+| Esc | Hủy nhập; đóng menu/hộp thoại; bỏ viền sao chép | ✅ |
+| Enter | Hoàn tất và xuống ô dưới (Tab rồi Enter: về cột bắt đầu) | ✅ |
+| Ctrl+Shift+Enter | Nhập công thức mảng (Excel 365: như Enter, mảng tự tràn) | ✅ |
+| F9 | Tính lại mọi trang tính (khi sửa: tính phần công thức đang bôi đen) | ✅ |
+| Shift+F9 | Tính lại trang tính hiện hành | ✅ |
+| Ctrl+Alt+F9 | Tính lại toàn bộ, kể cả ô không đổi | ✅ |
+| Alt+Shift+F10 | Menu nút Kiểm tra Lỗi | ◐ sau (0.9 (Kiểm tra Lỗi)) |
+| Ctrl+A (sau tên hàm) | Hộp thoại Đối số Hàm | ✅ |
+| Ctrl+Shift+A (sau tên hàm) | Chèn tên đối số và ngoặc | ✅ |
+| Alt+= | Tổng Tự động | ✅ |
+| Ctrl+E | Điền Nhanh (Flash Fill) | ✅ |
+| F4 (khi sửa công thức) | Đổi tham chiếu A1 → $A$1 → A$1 → $A1 | ✅ |
+| Shift+F3 | Chèn Hàm | ✅ |
+| Ctrl+Shift+" | Chép giá trị ô phía trên vào ô hiện hành | ✅ |
+| Alt+F1 | Tạo biểu đồ nhúng từ vùng hiện tại | ✅ |
+| F11 | Tạo biểu đồ trên trang tính riêng | ✅ |
+| Alt+M, M, D | Xác định tên | ◐ sau (0.7 (Tên vùng)) |
+| F3 | Dán tên đã xác định | ◐ sau (0.7 (Tên vùng)) |
+| Alt+F8 / Alt+F11 / Alt+F12 | Macro, VBA, Power Query | — không làm (Không chạy macro/VBA/Power Query) |
+| Ctrl+Shift+L | Bật/tắt Lọc | ✅ |
+| Ctrl+F5 | Làm mới dữ liệu trang tính (PivotTable trên trang) | ✅ |
+| Ctrl+Alt+F5 | Làm mới tất cả (mọi PivotTable) | ✅ |
+
+**Phím chức năng**
+
+| Phím | Hành động | Trạng thái |
+|---|---|---|
+| F1 | Trợ giúp: bảng phím tắt | ✅ |
+| Shift+F11 / Alt+Shift+F1 | Chèn trang tính mới | ✅ |
+| Ctrl+Shift+F1 | Bật/tắt toàn màn hình (ẩn Ribbon, thanh công thức, thanh trạng thái) | ✅ |
+| Ctrl+F2 | Sửa ô trên thanh công thức; đang sửa thì chuyển qua lại ô ↔ thanh công thức | ✅ |
+| F5 / Ctrl+G | Hộp thoại Đi tới | ✅ |
+| Ctrl+F / Shift+F5 | Tìm | ✅ |
+| Ctrl+H | Thay thế | ✅ |
+| Shift+F4 | Tìm tiếp (lặp lần tìm cuối) | ✅ |
+| Ctrl+Shift+F4 | Tìm ngược lại | ✅ |
+| Ctrl+F4 | Đóng sổ làm việc | ✅ |
+| Alt+F4 | Đóng ExcelLike | ✅ |
+| F6 / Shift+F6 | Chuyển giữa trang tính, Ribbon, thanh trạng thái/thu phóng | ✅ |
+| Ctrl+F6 / Ctrl+Tab | Chuyển giữa các cửa sổ sổ làm việc | — không làm (Mỗi cửa sổ một sổ — chuyển bằng Windows (Alt+Tab)) |
+| Ctrl+F9 | Thu nhỏ cửa sổ | ✅ |
+| Ctrl+F10 | Phóng to / khôi phục cửa sổ | ✅ |
+| Ctrl+F7 / Ctrl+F8 / Ctrl+F5 (cửa sổ con) | Di chuyển/đổi cỡ cửa sổ con | — không làm (Không có cửa sổ con trong ExcelLike) |
+| F12 | Lưu thành… | ✅ |
+| Ctrl+F12 | Mở… | ✅ |
+| Shift+F12 | Lưu | ✅ |
+
+**Phím khác**
+
+| Phím | Hành động | Trạng thái |
+|---|---|---|
+| Backspace | Xóa ô hiện hành và bắt đầu sửa | ✅ |
+| Alt+Space | Menu điều khiển cửa sổ | — không làm (Do Windows xử lý) |
+| Shift+kéo ô | Di chuyển và chèn ô | ◐ sau (0.9) |
+| Ctrl+Tab / Ctrl+Shift+Tab (trong hộp thoại) | Chuyển thẻ trong hộp thoại | ✅ |
+| Chổi định dạng (Alt+H, F, P) | Sao chép định dạng (nhấp đúp để dùng nhiều lần, Esc để thôi) | ✅ |
+| Ctrl+Delete (khi sửa) | Xóa từ con trỏ tới cuối dòng | ✅ |
+
 
 ## D. Lộ trình đề xuất (mỗi phiên bản có test + kiểm chứng + bộ cài)
 
 | Phiên bản | Nội dung |
 |---|---|
 | **0.5 – Giao diện giống hệt Excel 365 + In ấn (đã làm)** | Thanh tiêu đề + QAT + ô Tìm lệnh; Ribbon 3 tầng có nút tách đôi và nút ↘ hộp thoại; đủ 9 tab (thêm Bố trí Trang, Xem lại, Trợ giúp); Backstage toàn màn hình; lưới/tiêu đề/vùng chọn/chấm điền đúng màu và nét Excel; thẻ sheet + thanh trạng thái đầy đủ (Chế độ, Trung bình/Đếm/Tổng tùy chọn, 3 nút dạng xem, thanh trượt thu phóng); menu chuột phải đầy đủ + thanh mini; KeyTips (Alt/F10); phông Segoe UI/Aptos (Calibri khi không có). Giữ chạy tốt trên điện thoại (dạng ribbon đơn giản hóa). |
-| **0.6 – Bàn phím giống hệt** | ~245 phím trong phạm vi + Find/Replace/Go To/Go To Special, Dán đặc biệt, Chổi định dạng, Định dạng ô (Ctrl+1), F4, Ctrl+`, bảng phím tắt F1. Test bấm thật từng phím. |
+| **0.6 – Bàn phím giống hệt (đã làm)** | 167/180 mục phím của trang Microsoft trong phạm vi (bảng ở mục C), Tìm & Thay thế, Đi tới/Đặc biệt, Dán Đặc biệt, Chổi định dạng, Định dạng Ô (Ctrl+1), F4, Ctrl+`, Điền Nhanh, Chuỗi, Liên kết, chọn nhiều vùng, nhóm trang tính, Phân tích Nhanh, Bảng tạm Office, bảng phím tắt F1. Test bấm thật từng phím: 164/164 + 3 phím bản Windows. |
 | **0.7 – Dữ liệu dự toán** | Tên vùng (đọc/ghi .xlsx), Bảng (Table) + tham chiếu có cấu trúc, Nhóm hàng/cột + Tổng phụ, Văn bản thành cột, Xóa trùng lặp, Ghi chú ô (đọc/ghi), hằng mảng nhiều cột, mảng động FILTER/SORT/UNIQUE. |
 | **0.8 – In ấn hồ sơ** | Phần lớn đã kéo lên 0.5 theo yêu cầu “in ấn giống Excel 365”. Còn lại: Dạng xem Bố trí trang (thước, sửa đầu/chân trang tại chỗ), kéo đường ngắt trang, trang đầu/chẵn lẻ khác, ảnh trong đầu trang. |
 | **0.9 – Phân tích** | Truy vết tiền lệ/phụ thuộc, Đánh giá công thức, Goal Seek, biểu đồ XY + Kết hợp + tab Thiết kế/Định dạng biểu đồ, ảnh trong sổ, liên kết (Ctrl+K), Bảo vệ sheet. |

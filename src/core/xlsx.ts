@@ -132,6 +132,7 @@ export async function readXlsx(buf: ArrayBuffer | Uint8Array): Promise<{ wb: Wor
   for (const m of relXml.matchAll(/<Relationship\b([^>]*)\/?>/g)) { const a = attrs(m[1]); rels.set(a.Id, a.Target); }
   const dvBySheet = new Map<string, RawDV[]>();
   const breaksBySheet = new Map<string, { rows: number[]; cols: number[] }>();
+  const locLinks = new Map<string, [number, number, string][]>();
   const chartsBySheet = new Map<string, RawChart[]>();
   // tính lặp (File → Options → Formulas → Enable iterative calculation)
   const calcTag = /<(?:\w+:)?calcPr\b[^>]*>/.exec(wbXml)?.[0] ?? '';
@@ -213,6 +214,13 @@ export async function readXlsx(buf: ArrayBuffer | Uint8Array): Promise<{ wb: Wor
       const br = (tag: string) => [...(new RegExp(`<${tag}\\b[\\s\\S]*?</${tag}>`).exec(xml)?.[0] ?? '').matchAll(/<brk\b([^>]*)\/?>/g)].map((b) => +(attrs(b[1]).id ?? 0)).filter((n) => n > 0);
       const rows = br('rowBreaks'), cols = br('colBreaks');
       if (rows.length || cols.length) breaksBySheet.set(a.name, { rows, cols });
+      // liên kết trong sổ (chỉ có location, không r:id) — ExcelJS bỏ qua
+      const ll: [number, number, string][] = [];
+      for (const m of xml.matchAll(/<hyperlink\b([^>]*?)\/?>/g)) {
+        const at = attrs(m[1]);
+        if (at.location && !Object.keys(at).some((k) => /(^|:)id$/.test(k))) { const p = parseRef(String(at.ref).split(':')[0]); if (p) ll.push([p.r1, p.c1, '#' + at.location]); }
+      }
+      if (ll.length) locLinks.set(a.name, ll);
     }
     // biểu đồ: tự đọc bản vẽ + biểu đồ rồi gỡ thẻ <drawing> (ExcelJS không đọc được biểu đồ)
     // ghi chú ở vị trí không chuẩn (openpyxl: xl/comments/comment1.xml) làm ExcelJS lỗi → tự đếm rồi gỡ
@@ -280,8 +288,9 @@ export async function readXlsx(buf: ArrayBuffer | Uint8Array): Promise<{ wb: Wor
     const styles: [number, Style][] = [];
     const masters = new Map<string, { f: string; r: number; c: number }>();
     images += (ws as any).getImages?.().length ?? 0;
-    ws.eachRow({ includeEmpty: false }, (row, rn) => {
+    ws.eachRow({ includeEmpty: true }, (row, rn) => {
       const r = rn - 1;
+      if (!(row as any).cellCount) return;
       row.eachCell({ includeEmpty: true }, (cell, cn) => {
         const c = cn - 1;
         const v: any = cell.value;
@@ -298,6 +307,7 @@ export async function readXlsx(buf: ArrayBuffer | Uint8Array): Promise<{ wb: Wor
             raw = m ? shiftFormula(m.f, r - m.r, c - m.c) : (v.result ?? null);
           } else if (Array.isArray(v.richText)) { raw = v.richText.map((t: any) => t.text).join(''); isText = true; }
           else if (typeof v.text === 'string') { raw = v.text; isText = true; }
+          else if (v.hyperlink && Array.isArray(v.text?.richText)) { raw = v.text.richText.map((t: any) => t.text).join(''); isText = true; }
           else if (typeof v.error === 'string') raw = STD_ERR.has(v.error) ? v.error : null;
           else raw = null;
         } else { raw = v; isText = typeof v === 'string'; }
@@ -306,6 +316,7 @@ export async function readXlsx(buf: ArrayBuffer | Uint8Array): Promise<{ wb: Wor
         if (raw !== null) { (cells[r] ??= [])[c] = raw; }
         const st = styleIn(cell, defName, defSize);
         if (st) styles.push([r * 16384 + c, st]);
+        if (st?.ln && !safeLink(st.ln)) delete st.ln;
       });
     });
     for (const row of cells) if (row) for (let i = 0; i < row.length; i++) if (row[i] === undefined) row[i] = null;
@@ -347,6 +358,10 @@ export async function readXlsx(buf: ArrayBuffer | Uint8Array): Promise<{ wb: Wor
     const print = printIn(ws);
     const props2: any = ws.properties ?? {};
     const tc = props2.tabColor?.argb ? '#' + String(props2.tabColor.argb).slice(-6).toLowerCase() : undefined;
+    for (const [r, c, ln] of locLinks.get(ws.name) ?? []) {
+      const k = r * 16384 + c, e = styles.find((x) => x[0] === k);
+      if (e) e[1].ln = ln; else styles.push([k, { ln }]);
+    }
     sheets.push({ name: ws.name, cells, styles, colW, rowH, freeze, colDef, rowDef, hiddenRows, hiddenCols, merges, cf, dv, filter: fr ? { range: fr, conds: {} } : null, print, breaks: breaksBySheet.get(ws.name), tabColor: tc, state: (ws as any).state === 'hidden' || (ws as any).state === 'veryHidden' ? 'hidden' : undefined });
   });
   if (!sheets.length) throw new Error('Tệp không có trang tính nào.');
@@ -382,8 +397,9 @@ function styleIn(cell: ExcelJS.Cell, defName: string, defSize: number): Style | 
   if (f) {
     if (f.bold) st.b = true;
     if (f.italic) st.i = true;
-    if (f.underline && f.underline !== 'none') st.u = true;
+    if (f.underline && f.underline !== 'none') { st.u = true; if (f.underline === 'double' || f.underline === 'doubleAccounting') st.ud = true; }
     if (f.strike) st.s = true;
+    if (f.vertAlign === 'superscript') st.vp = 'sup'; else if (f.vertAlign === 'subscript') st.vp = 'sub';
     const fc = colorOf(f.color);
     if (fc && !(f.color?.theme === 1 && !f.color?.tint) && fc !== '#000000') st.fg = fc;
     if (f.name && f.name !== defName) st.fn = f.name;
@@ -395,10 +411,20 @@ function styleIn(cell: ExcelJS.Cell, defName: string, defSize: number): Style | 
   if (al) {
     const h = { left: 'l', center: 'c', centerContinuous: 'c', right: 'r' }[al.horizontal as string];
     if (h) st.al = h as Style['al'];
+    const hx = { fill: 'fill', justify: 'just', centerContinuous: 'cas', distributed: 'dist' }[al.horizontal as string];
+    if (hx) st.hx = hx as Style['hx'];
     const v = { top: 't', middle: 'm' }[al.vertical as string];
     if (v) st.va = v as Style['va'];
     if (al.wrapText) st.wr = true;
+    if (al.shrinkToFit) st.shk = true;
+    if (al.indent) st.ind = +al.indent;
+    const rot = al.textRotation === 'vertical' ? 255 : +al.textRotation;
+    if (rot) st.rot = rot > 90 && rot <= 180 ? 90 - rot : rot; // OOXML: 91–180 = âm
   }
+  const pr: any = cell.protection;
+  if (pr) { if (pr.locked === false) st.lk = false; if (pr.hidden) st.hid = true; }
+  const hl: any = (cell as any).hyperlink;
+  if (typeof hl === 'string' && hl) st.ln = hl;
   const nf = fixNumFmt(cell.numFmt);
   if (nf) st.fmt = nf;
   const bd: any = cell.border;
@@ -407,6 +433,12 @@ function styleIn(cell: ExcelJS.Cell, defName: string, defSize: number): Style | 
     for (const [k, side] of [['t', 'top'], ['r', 'right'], ['b', 'bottom'], ['l', 'left']] as const) {
       const b = bd[side];
       if (b?.style && BORDER_IN[b.style]) { const x: Border = { s: BORDER_IN[b.style] }; const c = colorOf(b.color); if (c && c !== '#000000') x.c = c; o[k] = x; }
+    }
+    const dg = bd.diagonal;
+    if (dg?.style && BORDER_IN[dg.style] && (dg.up || dg.down)) {
+      const x: Border = { s: BORDER_IN[dg.style] }; const c = colorOf(dg.color); if (c && c !== '#000000') x.c = c;
+      if (dg.down) o.d = { ...x };
+      if (dg.up) o.u = { ...x };
     }
     if (Object.keys(o).length) st.bd = o;
   }
@@ -521,6 +553,7 @@ export async function writeXlsx(wb: Workbook): Promise<Uint8Array> {
   const withCharts = wb.sheetIds().some((id) => wb.meta(id).charts.length);
   let out = withCharts ? await addChartsToZip(buf, wb) : buf;
   if (wb.extLinks.length || wb.iterate.on) out = await addWorkbookExtras(out, wb);
+  if (json.sheets.some((sh) => (sh.styles as [number, Style][]).some(([, st]) => st.ln?.startsWith('#')))) out = await fixLocations(out);
   if (json.sheets.some((sh) => sh.breaks?.cols.length)) out = await addColBreaks(out, json.sheets.map((sh) => sh.breaks?.cols ?? []));
   return out;
 }
@@ -564,8 +597,9 @@ function styleOut(cell: ExcelJS.Cell, st: Style, wb: Workbook, id: number, r: nu
   const font: any = {};
   if (st.b) font.bold = true;
   if (st.i) font.italic = true;
-  if (st.u) font.underline = true;
+  if (st.u) font.underline = st.ud ? 'double' : true;
   if (st.s) font.strike = true;
+  if (st.vp) font.vertAlign = st.vp === 'sup' ? 'superscript' : 'subscript';
   if (st.fg) font.color = argb(st.fg);
   if (st.fn) font.name = st.fn;
   if (st.fs) font.size = st.fs;
@@ -574,8 +608,18 @@ function styleOut(cell: ExcelJS.Cell, st: Style, wb: Workbook, id: number, r: nu
   const al: any = {};
   if (st.al) al.horizontal = { l: 'left', c: 'center', r: 'right' }[st.al];
   if (st.va) al.vertical = { t: 'top', m: 'middle', b: 'bottom' }[st.va];
+  if (st.hx) al.horizontal = { fill: 'fill', just: 'justify', cas: 'centerContinuous', dist: 'distributed' }[st.hx];
   if (st.wr) al.wrapText = true;
+  if (st.shk) al.shrinkToFit = true;
+  if (st.ind) al.indent = st.ind;
+  if (st.rot) al.textRotation = st.rot === 255 ? 'vertical' : st.rot;
   if (Object.keys(al).length) cell.alignment = al;
+  if (st.lk === false || st.hid) cell.protection = { locked: st.lk !== false, hidden: !!st.hid } as any;
+  // liên kết: chỉ ghi cho ô chữ có nội dung (ExcelJS cần text; số/công thức giữ nguyên giá trị)
+  if (st.ln && safeLink(st.ln)) {
+    const cur: any = cell.value;
+    if (typeof cur === 'string' && cur) cell.value = { text: cur, hyperlink: st.ln } as any;
+  }
   const fmt = st.fmt ?? wb.effFmt(id, r, c, st);
   if (fmt) cell.numFmt = fmt;
   if (st.bd) {
@@ -584,6 +628,8 @@ function styleOut(cell: ExcelJS.Cell, st: Style, wb: Workbook, id: number, r: nu
       const x = st.bd[k];
       if (x) b[side] = { style: x.s, color: argb(x.c ?? '#000000') };
     }
+    const dg = st.bd.d ?? st.bd.u;
+    if (dg) b.diagonal = { up: !!st.bd.u, down: !!st.bd.d, style: dg.s, color: argb(dg.c ?? '#000000') };
     cell.border = b;
   }
 }
@@ -911,4 +957,17 @@ async function addColBreaks(buf: Uint8Array, cols: number[][]): Promise<Uint8Arr
     zip.file(path, xml);
   }
   return zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });
+}
+
+/** Chỉ nhận liên kết an toàn: web, email, tệp, vị trí trong sổ (chặn javascript:, data:…) */
+export function safeLink(u: string): boolean { return /^(https?:|mailto:|file:|#|\\\\|[A-Za-z]:\\)/i.test(u.trim()) || (!/^[a-z][\w+.-]*:/i.test(u.trim()) && !!u.trim()); }
+
+/** ExcelJS ghi location="#Sheet!A1" — Excel cần không có dấu # */
+async function fixLocations(buf: Uint8Array): Promise<Uint8Array> {
+  const zip = await JSZip.loadAsync(buf);
+  for (const f of Object.keys(zip.files).filter((n) => /^xl\/worksheets\/sheet\d+\.xml$/.test(n))) {
+    const xml = await zip.file(f)!.async('string');
+    if (xml.includes('location="#')) zip.file(f, xml.replace(/location="#/g, 'location="'));
+  }
+  return new Uint8Array(await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' }));
 }

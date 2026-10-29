@@ -238,3 +238,14 @@ export function editString(v: unknown, fmt?: string): string {
   if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE';
   return v == null ? '' : String(v);
 }
+
+/** Định dạng số gán bằng phím Ctrl+Shift+~ $ % ^ # @ ! (như Excel; tiền tệ theo vi-VN) */
+export const NF_SHORTCUT: Record<'general' | 'currency' | 'percent' | 'sci' | 'date' | 'time' | 'number', string | undefined> = {
+  general: undefined,
+  currency: '#,##0.00 "₫";(#,##0.00 "₫")',
+  percent: '0%',
+  sci: '0.00E+00',
+  date: 'd-mmm-yy',
+  time: 'h:mm AM/PM',
+  number: '#,##0.00',
+};
