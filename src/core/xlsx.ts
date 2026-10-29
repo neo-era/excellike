@@ -10,6 +10,8 @@ import { Workbook, dateSerial, type ExtLink, type BookJSON, type Border, type Bo
 import type { CFRule, DVRule } from './rules';
 import { cellsOf, type Chart, type ChartType, type Ref } from './chart';
 import { quoteSheet } from './formula';
+import { parseSharedStrings, parseStyles, takeSheetData, unescXml, type FastCell, type FastRow, type XfModel } from './xlsxfast';
+import { isDateFmt } from './numfmt';
 import { MARGIN_PRESETS, normPrint, PAPERS, paperByCode, storePrint, type NPrint } from './paginate';
 
 const EPOCH = Date.UTC(1899, 11, 30);
@@ -122,7 +124,31 @@ function parseDVXml(xml: string): RawDV[] {
 }
 
 // =================== ĐỌC ===================
+/** Đọc .xlsx và dựng sổ tính (dùng cho test, nhập tệp vào sổ đang mở…) */
 export async function readXlsx(buf: ArrayBuffer | Uint8Array): Promise<{ wb: Workbook; warnings: string[] }> {
+  const { book, warnings } = await readXlsxBook(buf);
+  const wb = Workbook.fromJSON(book);
+  warnings.push(...finishImport(wb, book));
+  return { wb, warnings };
+}
+/**
+ * Việc cần sổ đã dựng: gắn biểu đồ (cần độ rộng cột/chiều cao hàng), đếm công thức chưa hỗ trợ.
+ * Khi mở tệp trong app, việc này chạy sau khi trang nạp lại (sổ chỉ dựng MỘT lần).
+ */
+export function finishImport(wb: Workbook, book: BookJSON): string[] {
+  const warnings: string[] = [];
+  book.sheets.forEach((sh) => {
+    const raw = sh.rawCharts as RawChart[] | undefined;
+    const id = wb.sheetIdByName(sh.name);
+    if (raw?.length && id !== undefined) wb.meta(id).charts = raw.map((rc, i) => chartIn(wb, id, rc, i)).filter((c): c is Chart => !!c);
+  });
+  let bad = 0;
+  for (const id of wb.sheetIds()) { const u = wb.used(id); for (let r = 0; r < u.rows && bad < 1000; r++) for (let c = 0; c < u.cols; c++) { const v: any = wb.value(id, r, c); if (v && typeof v === 'object' && v.type === 'ERROR' && wb.isFormula(id, r, c)) bad++; } }
+  if (bad) warnings.push(`${bad} công thức có cú pháp chưa hỗ trợ (hiện #ERROR!).`);
+  return warnings;
+}
+/** Đọc .xlsx thành dữ liệu sổ (chưa dựng bộ tính toán) */
+export async function readXlsxBook(buf: ArrayBuffer | Uint8Array): Promise<{ book: BookJSON; warnings: string[] }> {
   // 1) Tự đọc Kiểm tra dữ liệu (kể cả dạng cột nguyên C:C và dạng mới trong extLst) rồi gỡ khỏi XML,
   //    tránh ExcelJS trải ra từng ô (rất chậm, tốn bộ nhớ)
   const zip = await JSZip.loadAsync(buf);
@@ -133,6 +159,8 @@ export async function readXlsx(buf: ArrayBuffer | Uint8Array): Promise<{ wb: Wor
   const dvBySheet = new Map<string, RawDV[]>();
   const breaksBySheet = new Map<string, { rows: number[]; cols: number[] }>();
   const locLinks = new Map<string, [number, number, string][]>();
+  const extLinksBy = new Map<string, [number, number, string][]>();
+  const fastBy = new Map<string, { cells: FastCell[]; rows: FastRow[] }>();
   const chartsBySheet = new Map<string, RawChart[]>();
   // tính lặp (File → Options → Formulas → Enable iterative calculation)
   const calcTag = /<(?:\w+:)?calcPr\b[^>]*>/.exec(wbXml)?.[0] ?? '';
@@ -199,6 +227,22 @@ export async function readXlsx(buf: ArrayBuffer | Uint8Array): Promise<{ wb: Wor
     const file = zip.file(path);
     if (!file) continue;
     let xml = await file.async('string');
+    // dữ liệu ô tự đọc (nhanh); ExcelJS chỉ đọc phần còn lại của trang tính
+    {
+      const t = takeSheetData(xml);
+      fastBy.set(a.name, { cells: t.cells, rows: t.rows });
+      if (t.xml !== xml) { xml = t.xml; zip.file(path, xml); rezip = true; }
+      // liên kết ngoài (r:id) → địa chỉ trong tệp quan hệ của trang tính
+      const hl = [...xml.matchAll(/<(?:\w+:)?hyperlink\b([^>]*?)\/?>/g)].map((m) => attrs(m[1])).filter((at) => at.id);
+      if (hl.length) {
+        const rx = (await zip.file(relsPath(path))?.async('string')) ?? '';
+        const tg = new Map<string, string>();
+        for (const x of rx.matchAll(/<Relationship\b([^>]*)\/?>/g)) { const ra = attrs(x[1]); if (ra.Id && ra.Target) tg.set(ra.Id, ra.Target); }
+        const ll: [number, number, string][] = [];
+        for (const at of hl) { const u = tg.get(at.id); const p = parseRef(String(at.ref).split(':')[0]); if (u && p) ll.push([p.r1, p.c1, u + (at.location ? '#' + at.location : '')]); }
+        if (ll.length) extLinksBy.set(a.name, ll);
+      }
+    }
     const found: RawDV[] = [];
     const plain = [...xml.matchAll(/<dataValidations\b[\s\S]*?<\/dataValidations>/g)];
     const ext = [...xml.matchAll(/<(\w+):dataValidations\b[\s\S]*?<\/\1:dataValidations>/g)];
@@ -233,8 +277,9 @@ export async function readXlsx(buf: ArrayBuffer | Uint8Array): Promise<{ wb: Wor
           const ra = attrs(rm[0].slice(13, -2));
           if (!/\/(comments|vmlDrawing)$/.test(ra.Type ?? '')) continue;
           const tp = resolve(path, ra.Target ?? '');
+          // ghi chú (comment) được đếm để cảnh báo (dữ liệu ô đọc riêng nên ExcelJS không gắn ghi chú vào ô)
+          if (/comments$/.test(ra.Type)) extraNotes += ((await zip.file(tp)?.async('string')) ?? '').split(/<(?:\w+:)?comment\b/).length - 1;
           if (/^xl\/comments\d+\.xml$/.test(tp) || (/vmlDrawing$/.test(ra.Type) && /^xl\/drawings\/vmlDrawing\d+\.vml$/.test(tp))) continue;
-          if (/comments$/.test(ra.Type)) extraNotes += ((await zip.file(tp)?.async('string')) ?? '').split('<comment ').length - 1;
           ry = ry.replace(rm[0], '');
           if (/vmlDrawing$/.test(ra.Type)) xml = xml.replace(new RegExp(`<legacyDrawing\\b[^>]*r:id="${ra.Id}"[^>]*/>`), '');
           zip.remove(tp);
@@ -269,56 +314,80 @@ export async function readXlsx(buf: ArrayBuffer | Uint8Array): Promise<{ wb: Wor
   const x = new ExcelJS.Workbook();
   await x.xlsx.load(data as any);
   const warnings: string[] = [];
+  const sst = parseSharedStrings((await zip.file('xl/sharedStrings.xml')?.async('string')) ?? '');
+  const xfs: XfModel[] = parseStyles((await zip.file('xl/styles.xml')?.async('string')) ?? '');
+  const date1904 = /<(?:\w+:)?workbookPr\b[^>]*\bdate1904="(1|true)"/.test(wbXml);
   // phông/cỡ chữ phổ biến nhất coi là mặc định (không lưu vào từng ô)
   const fontCount = new Map<string, number>();
-  x.eachSheet((ws) => ws.eachRow({ includeEmpty: false }, (row) => row.eachCell({ includeEmpty: true }, (cell) => {
-    const f: any = cell.font; if (f?.name) { const k = f.name + '|' + (f.size ?? 11); fontCount.set(k, (fontCount.get(k) ?? 0) + 1); }
-  })));
+  for (const fd of fastBy.values()) for (const cl of fd.cells) {
+    const f: any = xfs[cl.s]?.font; if (f?.name) { const k = f.name + '|' + (f.size ?? 11); fontCount.set(k, (fontCount.get(k) ?? 0) + 1); }
+  }
   const [defName, defSizeS] = ([...fontCount.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'Calibri|11').split('|');
   const defSize = +defSizeS;
+  // kiểu ô: dựng một lần cho mỗi xf rồi dùng chung (đối tượng kiểu không bị sửa tại chỗ)
+  const styleCache = new Map<number, Style | null>();
+  const styleOf = (sIdx: number): Style | null => {
+    let st = styleCache.get(sIdx);
+    if (st === undefined) { st = xfs[sIdx] ? styleIn(xfs[sIdx] as any, defName, defSize) : null; styleCache.set(sIdx, st); }
+    return st;
+  };
+  const isDateXf = new Map<number, boolean>();
+  const dateXf = (sIdx: number) => { let v = isDateXf.get(sIdx); if (v === undefined) { v = isDateFmt(xfs[sIdx]?.numFmt); isDateXf.set(sIdx, v); } return v; };
   let images = 0, notes = 0;
   const sheets: SheetJSON[] = [];
   const dsValues = new Map<string, string>(); // ô của sheet danh sách ẩn → giá trị
+  /** giá trị hiển thị gốc của ô (chưa xét công thức) */
+  const plainVal = (cl: FastCell): { raw: unknown; isText: boolean } => {
+    switch (cl.t) {
+      case 's': return { raw: sst[+(cl.v ?? -1)] ?? '', isText: true };
+      case 'inlineStr': return { raw: cl.inline ?? '', isText: true };
+      case 'str': return { raw: cl.v === null ? '' : unescXml(cl.v), isText: true };
+      case 'b': return { raw: cl.v === '1' || cl.v === 'true', isText: false };
+      case 'e': return { raw: cl.v !== null && STD_ERR.has(cl.v) ? cl.v : null, isText: false };
+      case 'd': { if (cl.v === null) return { raw: null, isText: false }; const d = new Date(cl.v); return { raw: isNaN(+d) ? cl.v : Math.round(((d.getTime() - EPOCH) / 86400000) * 1e8) / 1e8, isText: false }; }
+      default: {
+        if (cl.v === null || cl.v === '') return { raw: null, isText: false };
+        let n = Number(cl.v);
+        if (!isFinite(n)) return { raw: null, isText: false };
+        if (date1904 && dateXf(cl.s)) n += 1462;
+        return { raw: n, isText: false };
+      }
+    }
+  };
   x.eachSheet((ws) => {
+    const fd = fastBy.get(ws.name) ?? { cells: [], rows: [] };
     if (ws.name === DS_SHEET) {
-      ws.eachRow((row, rn) => row.eachCell((cell, cn) => { const v: any = cell.value; dsValues.set(colName(cn - 1) + rn, v?.richText ? v.richText.map((t: any) => t.text).join('') : String(v ?? '')); }));
+      for (const cl of fd.cells) { const pv = plainVal(cl); dsValues.set(colName(cl.c) + (cl.r + 1), String(pv.raw ?? '')); }
       return;
     }
     const cells: unknown[][] = [];
     const styles: [number, Style][] = [];
     const masters = new Map<string, { f: string; r: number; c: number }>();
     images += (ws as any).getImages?.().length ?? 0;
-    ws.eachRow({ includeEmpty: true }, (row, rn) => {
-      const r = rn - 1;
-      if (!(row as any).cellCount) return;
-      row.eachCell({ includeEmpty: true }, (cell, cn) => {
-        const c = cn - 1;
-        const v: any = cell.value;
-        let raw: unknown = null;
-        let isText = false;
-        if (cell.note) notes++;
-        if (v === null || v === undefined) raw = null;
-        else if (v instanceof Date) raw = Math.round(((v.getTime() - EPOCH) / 86400000) * 1e8) / 1e8;
-        else if (typeof v === 'object') {
-          if (iterOn && (typeof v.formula === 'string' || typeof v.sharedFormula === 'string') && (typeof v.result === 'number' || typeof v.result === 'string' || typeof v.result === 'boolean')) iterVals.push([ws.name, r, c, v.result]);
-          if (typeof v.formula === 'string') { raw = toVi('=' + stripPrefixes(v.formula)); masters.set(cell.address, { f: raw as string, r, c }); }
-          else if (typeof v.sharedFormula === 'string') {
-            const m = masters.get(v.sharedFormula) ?? (() => { const mc: any = ws.getCell(v.sharedFormula); return mc.formula ? { f: toVi('=' + stripPrefixes(mc.formula)), r: mc.row - 1, c: mc.col - 1 } : null; })();
-            raw = m ? shiftFormula(m.f, r - m.r, c - m.c) : (v.result ?? null);
-          } else if (Array.isArray(v.richText)) { raw = v.richText.map((t: any) => t.text).join(''); isText = true; }
-          else if (typeof v.text === 'string') { raw = v.text; isText = true; }
-          else if (v.hyperlink && Array.isArray(v.text?.richText)) { raw = v.text.richText.map((t: any) => t.text).join(''); isText = true; }
-          else if (typeof v.error === 'string') raw = STD_ERR.has(v.error) ? v.error : null;
-          else raw = null;
-        } else { raw = v; isText = typeof v === 'string'; }
-        // chữ trông như số/công thức/ngày → giữ là chữ (thêm dấu ' như Excel)
-        if (isText && needsApostrophe(raw as string)) raw = "'" + raw;
-        if (raw !== null) { (cells[r] ??= [])[c] = raw; }
-        const st = styleIn(cell, defName, defSize);
-        if (st) styles.push([r * 16384 + c, st]);
-        if (st?.ln && !safeLink(st.ln)) delete st.ln;
-      });
-    });
+    const links = new Map<number, string>();
+    for (const [r, c, ln] of extLinksBy.get(ws.name) ?? []) links.set(r * 16384 + c, ln);
+    let maxC = 0;
+    for (const cl of fd.cells) {
+      const { r, c } = cl;
+      if (c + 1 > maxC) maxC = c + 1;
+      let raw: unknown = null;
+      let isText = false;
+      if (cl.f && cl.f.t !== 'dataTable') {
+        if (iterOn) { const pv = plainVal(cl); if (pv.raw !== null && (typeof pv.raw === 'number' || typeof pv.raw === 'string' || typeof pv.raw === 'boolean')) iterVals.push([ws.name, r, c, pv.raw]); }
+        if (cl.f.t === 'shared' && cl.f.si !== undefined) {
+          if (cl.f.text) { raw = toVi('=' + stripPrefixes(cl.f.text)); masters.set('si' + cl.f.si, { f: raw as string, r, c }); }
+          else { const m = masters.get('si' + cl.f.si); raw = m ? shiftFormula(m.f, r - m.r, c - m.c) : plainVal(cl).raw; }
+        } else if (cl.f.text) raw = toVi('=' + stripPrefixes(cl.f.text));
+        else ({ raw, isText } = plainVal(cl));
+      } else ({ raw, isText } = plainVal(cl));
+      // chữ trông như số/công thức/ngày → giữ là chữ (thêm dấu ' như Excel)
+      if (isText && needsApostrophe(raw as string)) raw = "'" + raw;
+      if (raw !== null) { (cells[r] ??= [])[c] = raw; }
+      let st = cl.s ? styleOf(cl.s) : null;
+      const ln = links.get(r * 16384 + c);
+      if (ln && safeLink(ln)) st = { ...(st ?? {}), ln };
+      if (st) styles.push([r * 16384 + c, st]);
+    }
     for (const row of cells) if (row) for (let i = 0; i < row.length; i++) if (row[i] === undefined) row[i] = null;
     for (let i = 0; i < cells.length; i++) if (!cells[i]) cells[i] = [];
     const props: any = ws.properties ?? {};
@@ -326,7 +395,7 @@ export async function readXlsx(buf: ArrayBuffer | Uint8Array): Promise<{ wb: Wor
     const rowDef = props.defaultRowHeight ? pt2px(props.defaultRowHeight) : 20;
     const colW: [number, number][] = [];
     const hiddenCols: number[] = [];
-    for (let i = 1; i <= Math.max(ws.columnCount, 1); i++) {
+    for (let i = 1; i <= Math.max(ws.columnCount, maxC, 1); i++) {
       const col: any = ws.getColumn(i);
       if (col.hidden) hiddenCols.push(i - 1);
       if (col.width && w2px(col.width) !== colDef && w2px(col.width) > 0) colW.push([i - 1, w2px(col.width)]);
@@ -336,12 +405,11 @@ export async function readXlsx(buf: ArrayBuffer | Uint8Array): Promise<{ wb: Wor
     const fr = afRef ? parseRef(afRef) : null;
     const rowH: [number, number][] = [];
     const hiddenRows: number[] = [];
-    ws.eachRow({ includeEmpty: true }, (row, rn) => {
-      const r = rn - 1;
+    for (const row of fd.rows) {
       // hàng ẩn trong vùng lọc là do lọc → bỏ lọc sẽ hiện lại
-      if (row.hidden) hiddenRows.push(r);
-      if (row.height && pt2px(row.height) !== rowDef && pt2px(row.height) > 0) rowH.push([r, pt2px(row.height)]);
-    });
+      if (row.hidden) hiddenRows.push(row.r);
+      if (row.ht && pt2px(row.ht) !== rowDef && pt2px(row.ht) > 0) rowH.push([row.r, pt2px(row.ht)]);
+    }
     const view: any = ws.views?.[0];
     const freeze = view?.state === 'frozen' ? { rows: view.ySplit ?? 0, cols: view.xSplit ?? 0 } : { rows: 0, cols: 0 };
     const merges = ((ws.model as any).merges ?? []).map((a: string) => parseRef(a)).filter(Boolean) as Range[];
@@ -358,9 +426,13 @@ export async function readXlsx(buf: ArrayBuffer | Uint8Array): Promise<{ wb: Wor
     const print = printIn(ws);
     const props2: any = ws.properties ?? {};
     const tc = props2.tabColor?.argb ? '#' + String(props2.tabColor.argb).slice(-6).toLowerCase() : undefined;
-    for (const [r, c, ln] of locLinks.get(ws.name) ?? []) {
-      const k = r * 16384 + c, e = styles.find((x) => x[0] === k);
-      if (e) e[1].ln = ln; else styles.push([k, { ln }]);
+    if (locLinks.get(ws.name)?.length) {
+      const at = new Map(styles.map((e, i) => [e[0], i]));
+      for (const [r, c, ln] of locLinks.get(ws.name)!) {
+        const k = r * 16384 + c, i = at.get(k);
+        // kiểu dùng chung giữa nhiều ô → tạo bản riêng trước khi gắn liên kết
+        if (i !== undefined) styles[i] = [k, { ...styles[i][1], ln }]; else styles.push([k, { ln }]);
+      }
     }
     sheets.push({ name: ws.name, cells, styles, colW, rowH, freeze, colDef, rowDef, hiddenRows, hiddenCols, merges, cf, dv, filter: fr ? { range: fr, conds: {} } : null, print, breaks: breaksBySheet.get(ws.name), tabColor: tc, state: (ws as any).state === 'hidden' || (ws as any).state === 'veryHidden' ? 'hidden' : undefined });
   });
@@ -379,16 +451,8 @@ export async function readXlsx(buf: ArrayBuffer | Uint8Array): Promise<{ wb: Wor
   if (notes) warnings.push(`Tệp có ${notes} ghi chú (comment) — chưa hỗ trợ, sẽ mất nếu lưu đè.`);
   if (extLinks.length) warnings.push(`Tệp có liên kết tới ${extLinks.length} tệp khác — dùng giá trị lưu sẵn trong tệp (như Excel khi chưa cập nhật liên kết); liên kết được giữ nguyên khi lưu.`);
   const book: BookJSON = { v: 2, name: 'Sổ tính', sheets, calc, iterVals: iterVals.length ? iterVals : undefined, ext: extLinks.length ? { links: extLinks, sheets: extSheets } : undefined };
-  const wb = Workbook.fromJSON(book);
-  // gắn biểu đồ sau khi đã có độ rộng cột/chiều cao hàng
-  for (const id of wb.sheetIds()) {
-    const raw = chartsBySheet.get(wb.sheetName(id));
-    if (raw?.length) wb.meta(id).charts = raw.map((rc, i) => chartIn(wb, id, rc, i)).filter((c): c is Chart => !!c);
-  }
-  let bad = 0;
-  for (const id of wb.sheetIds()) { const u = wb.used(id); for (let r = 0; r < u.rows && bad < 1000; r++) for (let c = 0; c < u.cols; c++) { const v: any = wb.value(id, r, c); if (v && typeof v === 'object' && v.type === 'ERROR' && wb.isFormula(id, r, c)) bad++; } }
-  if (bad) warnings.push(`${bad} công thức có cú pháp chưa hỗ trợ (hiện #ERROR!).`);
-  return { wb, warnings };
+  for (const sh of book.sheets) { const raw = chartsBySheet.get(sh.name); if (raw?.length) sh.rawCharts = raw; }
+  return { book, warnings };
 }
 
 function styleIn(cell: ExcelJS.Cell, defName: string, defSize: number): Style | null {

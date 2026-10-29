@@ -1052,23 +1052,29 @@ export class App {
     for (const c of Object.keys(f.conds)) this.wb.filterColumn(s, +c, null);
     this.grid.layout();
   }
-  private filterPopover(col: number, x: number, y: number) {
+  filterPopover(col: number, x: number, y: number) {
     const s = this.grid.sheet, f = this.wb.meta(s).filter;
     if (!f) return;
     const all = this.wb.filterValues(s, col);
     const cur = f.conds[col];
+    // điều kiện cũ không còn khớp giá trị nào (vd lọc rỗng) → coi như chưa lọc, chọn tất cả như Excel
+    const curVals = cur?.values?.filter((v) => all.includes(v));
     const box = h('div', { class: 'filter-pop' });
     const sortA = h('button', { class: 'mi' }); sortA.innerHTML = ic('sortAZ', 16) + '<span>Sắp xếp A → Z</span>';
     const sortZ = h('button', { class: 'mi' }); sortZ.innerHTML = ic('sortZA', 16) + '<span>Sắp xếp Z → A</span>';
-    const doSort = (desc: boolean) => () => { closeMenu(); this.safe(() => this.wb.sort(s, f.range, [{ col, desc }], true)); };
+    const doSort = (desc: boolean) => () => { closeMenu(); this.safe(() => this.wb.sort(s, this.wb.filterRange(s) ?? f.range, [{ col, desc }], true)); };
     sortA.onclick = doSort(false); sortZ.onclick = doSort(true);
     const q = h('input', { type: 'search', placeholder: 'Tìm…', 'aria-label': 'Tìm giá trị' }) as HTMLInputElement;
     const txt = h('input', { type: 'text', placeholder: 'Lọc theo chữ chứa…', 'aria-label': 'Lọc theo chữ chứa' }) as HTMLInputElement;
     txt.value = cur?.text ?? '';
     const list = h('div', { class: 'fvals', role: 'group', 'aria-label': 'Giá trị' });
-    const chosen = new Set(cur?.values ?? all);
+    const chosen = new Set(curVals?.length ? curVals : all);
     const shown = all.slice(0, 1000);
     const allBox = h('input', { type: 'checkbox' }) as HTMLInputElement;
+    const ok = h('button', { class: 'btn primary' }, 'Lọc') as HTMLButtonElement;
+    // như Excel: không chọn giá trị nào thì không cho bấm Lọc
+    const canOk = () => { ok.disabled = chosen.size === 0 && !txt.value.trim(); };
+    txt.oninput = canOk;
     const render = () => {
       const qq = q.value.trim().toLowerCase();
       list.replaceChildren(h('label', { class: 'chk' }, allBox, ' (Chọn tất cả)'));
@@ -1077,14 +1083,15 @@ export class App {
         if (qq && !v.toLowerCase().includes(qq)) continue;
         const cb = h('input', { type: 'checkbox' }) as HTMLInputElement;
         cb.checked = chosen.has(v);
-        cb.onchange = () => { if (cb.checked) chosen.add(v); else chosen.delete(v); allBox.checked = shown.every((x) => chosen.has(x)); };
+        cb.onchange = () => { if (cb.checked) chosen.add(v); else chosen.delete(v); allBox.checked = shown.every((x) => chosen.has(x)); canOk(); };
         list.append(h('label', { class: 'chk' }, cb, ' ' + (v === '' ? '(Trống)' : v)));
       }
+      if (!all.length) list.append(h('p', { class: 'muted' }, 'Không có dữ liệu bên dưới hàng tiêu đề.'));
+      canOk();
     };
     allBox.onchange = () => { for (const v of shown) if (allBox.checked) chosen.add(v); else chosen.delete(v); render(); };
     q.oninput = render;
     render();
-    const ok = h('button', { class: 'btn primary' }, 'Lọc');
     const clr = h('button', { class: 'btn' }, 'Bỏ lọc cột');
     ok.onclick = () => {
       const values = chosen.size === all.length ? undefined : [...chosen];
@@ -1141,11 +1148,12 @@ export class App {
         return;
       }
       this.toast('Đang mở ' + file.name + '…');
-      const { readXlsx } = await import('../core/xlsx');
-      const { wb, warnings } = await readXlsx(new Uint8Array(await file.arrayBuffer()));
+      // đọc thành dữ liệu sổ rồi nạp lại trang: sổ chỉ dựng một lần (khi khởi động), không dựng hai lần như trước
+      const { readXlsxBook } = await import('../core/xlsx');
+      const { book, warnings } = await readXlsxBook(new Uint8Array(await file.arrayBuffer()));
       await this.saveNow(false);
       const id = 'b' + Date.now();
-      await saveBook({ id, name: baseName(file.name), updated: Date.now(), data: { ...wb.toJSON(), name: baseName(file.name) }, handle, fileName: file.name });
+      await saveBook({ id, name: baseName(file.name), updated: Date.now(), data: { ...book, name: baseName(file.name), pendingImport: true } as any, handle, fileName: file.name });
       lsSet('xl-last', id);
       if (warnings.length) sessionStorage.setItem('xl-warn', warnings.join('\n'));
       this.fileDirty = false;

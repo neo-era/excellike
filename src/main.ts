@@ -45,6 +45,16 @@ async function boot() {
   }
   if (!wb) { wb = Workbook.create(); lsSet('xl-last', id); }
   const app = new App(wb, id);
+  // tệp .xlsx vừa mở: gắn biểu đồ, kiểm công thức (cần sổ đã dựng) rồi lưu lại bản nháp
+  if (rec && !failed && (rec.data as any)?.pendingImport) {
+    import('./core/xlsx').then(({ finishImport }) => {
+      const w = finishImport(app.wb, rec!.data as any);
+      if (w.length) app.toast('Lưu ý khi mở tệp: ' + w.join(' '), 'err');
+      app.charts?.sync();
+      app.grid.invalidate();
+      void app.saveNow(false);
+    }).catch((e) => console.error('finishImport: ' + e));
+  }
   if (safe) app.toast('Đang ở chế độ an toàn: lần mở trước bị lỗi nên ExcelLike mở sổ trống, giao diện tiếng Việt. Sổ cũ vẫn ở Tệp ▸ Mở.', 'err');
   if (rec && !failed) { app.fileHandle = rec.handle ?? null; app.fileName = rec.fileName ?? ''; app.fileDirty = !!rec.fileDirty; }
   if (failed) app.toast('Không mở được sổ tính lần trước nên đã mở sổ mới. Bản cũ vẫn được giữ trong Tệp → Mở…', 'err');

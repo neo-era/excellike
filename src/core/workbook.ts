@@ -53,7 +53,7 @@ export interface PrintSetup {
   header?: string; footer?: string;                 // mã Excel &L &C &R &P &N…
 }
 export interface SheetMeta {
-  styles: Map<string, Style>;
+  styles: Map<number, Style>;
   colW: AxisSizes;
   rowH: AxisSizes;
   freeze: { rows: number; cols: number };
@@ -603,7 +603,7 @@ export class Workbook {
       if (change < this.iterate.delta) break;
     }
   }
-  style(s: number, r: number, c: number): Style { const m = this.meta(s).styles; return m.size ? m.get(String(key(r, c))) ?? NO_STYLE : NO_STYLE; }
+  style(s: number, r: number, c: number): Style { const m = this.meta(s).styles; return m.size ? m.get(key(r, c)) ?? NO_STYLE : NO_STYLE; }
   isFormula(s: number, r: number, c: number) { return this.hf.doesCellHaveFormula(this.A(s, r, c)); }
   /** Định dạng hiệu lực: style.fmt hoặc suy ra từ kiểu giá trị (ngày, %) */
   effFmt(s: number, r: number, c: number, st = this.style(s, r, c)): string | undefined {
@@ -647,7 +647,7 @@ export class Workbook {
   }
   setInput(s: number, r: number, c: number, text: string): Changed[] {
     const { content, fmt } = normalizeInput(text);
-    const k = String(key(r, c));
+    const k = key(r, c);
     const st = this.meta(s).styles;
     const old = st.get(k);
     const tx = fmt && !old?.fmt ? new StyleTxn([[st, k, { ...(old ?? {}), fmt }]]) : null;
@@ -677,16 +677,16 @@ export class Workbook {
     const g = this.clampToUsed(s, g0);
     if (rangeSize(g) > 500_000) throw new Error('Vùng chọn quá lớn để định dạng (tối đa 500.000 ô).');
     const st = this.meta(s).styles;
-    const before = new Map<string, Style | undefined>();
-    const after = new Map<string, Style | undefined>();
+    const before = new Map<number, Style | undefined>();
+    const after = new Map<number, Style | undefined>();
     for (let r = g.r1; r <= g.r2; r++)
       for (let c = g.c1; c <= g.c2; c++) {
-        const k = String(key(r, c));
+        const k = key(r, c);
         const o = st.get(k);
         before.set(k, o);
         after.set(k, clean({ ...(o ?? {}), ...patch }));
       }
-    const apply = (m: Map<string, Style | undefined>) => m.forEach((v, k) => setOrDel(st, k, v));
+    const apply = (m: Map<number, Style | undefined>) => m.forEach((v, k) => setOrDel(st, k, v));
     apply(after);
     this.record(null, { undo: () => apply(before), redo: () => apply(after) });
   }
@@ -832,8 +832,8 @@ export class Workbook {
     if (!this.sheetIds().includes(cl.sheet)) { this.clip = null; return null; }
     const srcSt = this.meta(cl.sheet).styles, dstSt = this.meta(s).styles;
     const ops: StyleOp[] = [];
-    if (cl.cut) for (let i = 0; i <= h; i++) for (let j = 0; j <= w; j++) ops.push([srcSt, String(key(src.r1 + i, src.c1 + j)), undefined]);
-    for (let i = 0; i <= h; i++) for (let j = 0; j <= w; j++) ops.push([dstSt, String(key(r + i, c + j)), srcSt.get(String(key(src.r1 + i, src.c1 + j)))]);
+    if (cl.cut) for (let i = 0; i <= h; i++) for (let j = 0; j <= w; j++) ops.push([srcSt, key(src.r1 + i, src.c1 + j), undefined]);
+    for (let i = 0; i <= h; i++) for (let j = 0; j <= w; j++) ops.push([dstSt, key(r + i, c + j), srcSt.get(key(src.r1 + i, src.c1 + j))]);
     const tx = new StyleTxn(ops);
     const range = { sheet: cl.sheet, start: { sheet: cl.sheet, row: src.r1, col: src.c1 }, end: { sheet: cl.sheet, row: src.r2, col: src.c2 } };
     const target = this.A(s, r, c);
@@ -853,10 +853,10 @@ export class Workbook {
     if (!rows.length) return null;
     const w = Math.max(...rows.map((x) => x.length));
     if (r + rows.length > MAX_ROWS || c + w > MAX_COLS) throw new Error('Vùng dán vượt quá giới hạn trang tính.');
-    const fmts: [string, string][] = [];
+    const fmts: [number, string][] = [];
     const data = rows.map((row, i) => Array.from({ length: w }, (_, j) => {
       const n = normalizeInput(row[j] ?? '');
-      if (n.fmt) fmts.push([String(key(r + i, c + j)), n.fmt]);
+      if (n.fmt) fmts.push([key(r + i, c + j), n.fmt]);
       return n.content as RawCellContent;
     }));
     const st = this.meta(s).styles;
@@ -879,7 +879,7 @@ export class Workbook {
     const data = list.map(([r, c, v]) => {
       if (typeof v !== 'string') return [r, c, v] as const;
       const n = normalizeInput(v);
-      const k = String(key(r, c));
+      const k = key(r, c);
       if (n.fmt && !st.get(k)?.fmt) fmts.push([st, k, { ...(st.get(k) ?? {}), fmt: n.fmt }]);
       return [r, c, n.content as RawCellContent] as const;
     });
@@ -947,7 +947,7 @@ export class Workbook {
         const f0 = this.hf.getCellFormula(a);
         const f = f0 !== undefined ? this.outF(f0, qn) : undefined;
         const k = f === undefined ? this.hf.getCellSerialized(a) : null;
-        row.push({ f, k, v: this.value(cl.sheet, src.r1 + i, src.c1 + j), st: srcSt.get(String(key(src.r1 + i, src.c1 + j))), blank: f === undefined && (k === null || k === '' || k === undefined) });
+        row.push({ f, k, v: this.value(cl.sheet, src.r1 + i, src.c1 + j), st: srcSt.get(key(src.r1 + i, src.c1 + j)), blank: f === undefined && (k === null || k === '' || k === undefined) });
       }
       snap.push(row);
     }
@@ -971,7 +971,7 @@ export class Workbook {
       if (op && content !== undefined) content = this.combine(s, tr, tc, content, x.blank, sym[op], qn);
       if (content !== undefined) cells.push([tr, tc, content]);
       // định dạng
-      const kk = String(key(tr, tc));
+      const kk = key(tr, tc);
       if (what === 'all' || what === 'theme' || what === 'allMerge' || what === 'formats') sops.push([dstSt, kk, x.st ? { ...x.st } : undefined]);
       else if (what === 'noBorders') { const n = x.st ? { ...x.st } : undefined; if (n) delete n.bd; sops.push([dstSt, kk, n && Object.keys(n).length ? n : undefined]); }
       else if (what === 'formulasNum' || what === 'valuesNum') { const cur = { ...(dstSt.get(kk) ?? {}) }; if (x.st?.fmt) cur.fmt = x.st.fmt; else delete cur.fmt; sops.push([dstSt, kk, Object.keys(cur).length ? cur : undefined]); }
@@ -1026,7 +1026,7 @@ export class Workbook {
     const st = this.meta(s).styles, h = src.length, w = src[0]?.length ?? 1;
     const ops: StyleOp[] = [];
     for (let r = g.r1; r <= g.r2; r++) for (let c = g.c1; c <= g.c2; c++) {
-      const k = String(key(r, c));
+      const k = key(r, c);
       const n = src[(r - g.r1) % h]?.[(c - g.c1) % w];
       const ln = st.get(k)?.ln;  // giữ liên kết của ô đích
       ops.push([st, k, n || ln ? clean({ ...(n ?? {}), ln }) : undefined]);
@@ -1059,7 +1059,7 @@ export class Workbook {
       if (o.trend && o.type !== 'date') { const v1 = this.value(s, at(1).r, at(1).c); if (typeof v1 === 'number') step = o.type === 'growth' ? (v0 ? v1 / v0 : 1) : v1 - v0; }
       const vals = seriesValues(v0, n, { ...o, step });
       const f0 = this.effFmt(s, at(0).r, at(0).c);
-      vals.forEach((v, i) => { if (i > 0) { const p = at(i); list.push([p.r, p.c, v]); if (f0) fmts.push([this.meta(s).styles, String(key(p.r, p.c)), { ...(this.meta(s).styles.get(String(key(p.r, p.c))) ?? {}), fmt: f0 }]); } });
+      vals.forEach((v, i) => { if (i > 0) { const p = at(i); list.push([p.r, p.c, v]); if (f0) fmts.push([this.meta(s).styles, key(p.r, p.c), { ...(this.meta(s).styles.get(key(p.r, p.c)) ?? {}), fmt: f0 }]); } });
     }
     if (!list.length) throw new Error('Ô đầu tiên của vùng chọn cần là một số hoặc ngày.');
     const tx = fmts.length ? new StyleTxn(fmts) : null;
@@ -1094,7 +1094,7 @@ export class Workbook {
         const t = vertical ? { r: fwd ? src.r2 + k : src.r1 - k, c: line } : { r: line, c: fwd ? src.c2 + k : src.c1 - k };
         const si = 'copy' in it ? it.copy : fwd ? (k - 1) % cells.length : ((cells.length - (k % cells.length)) % cells.length);
         const from = cells[si];
-        sops.push([m.styles, String(key(t.r, t.c)), m.styles.get(String(key(from.r, from.c)))]);
+        sops.push([m.styles, key(t.r, t.c), m.styles.get(key(from.r, from.c))]);
         if ('copy' in it) {
           const sn = snaps[si];
           const content = sn.formula ? shiftFormula(String(sn.raw), t.r - from.r, t.c - from.c) : sn.raw;
@@ -1162,7 +1162,7 @@ export class Workbook {
     const clears: [number, number][] = [];
     for (let r = g.r1; r <= Math.min(g.r2, u.rows - 1); r++) for (let c = g.c1; c <= Math.min(g.c2, u.cols - 1); c++)
       if ((r !== g.r1 || c !== g.c1) && this.hf.getCellSerialized(this.A(s, r, c)) !== null) clears.push([r, c]);
-    const st = m.styles, k0 = String(key(g.r1, g.c1));
+    const st = m.styles, k0 = key(g.r1, g.c1);
     const tx = center ? new StyleTxn([[st, k0, { ...(st.get(k0) ?? {}), al: 'c' }]]) : null;
     this.record(clears.length ? () => { for (const [r, c] of clears) this.hf.setCellContents(this.A(s, r, c), [[null]]); } : null, {
       undo: () => { this.meta(s).merges = before; tx?.hist.undo(); },
@@ -1186,7 +1186,7 @@ export class Workbook {
     const b: Border = color ? { s: style, c: color } : { s: style };
     const ops: StyleOp[] = [];
     for (let r = g.r1; r <= g.r2; r++) for (let c = g.c1; c <= g.c2; c++) {
-      const k = String(key(r, c));
+      const k = key(r, c);
       const o = st.get(k) ?? {};
       let bd: Style['bd'] = { ...(o.bd ?? {}) };
       if (kind === 'none') bd = undefined;
@@ -1216,7 +1216,7 @@ export class Workbook {
     const ops: StyleOp[] = [];
     const put = (bd: NonNullable<Style['bd']>, k: keyof NonNullable<Style['bd']>, v: Border | null | undefined) => { if (v === undefined) return; if (v === null) delete bd[k]; else bd[k] = { ...v }; };
     for (let r = g.r1; r <= g.r2; r++) for (let c = g.c1; c <= g.c2; c++) {
-      const k = String(key(r, c));
+      const k = key(r, c);
       const o = st.get(k) ?? {};
       const bd: NonNullable<Style['bd']> = { ...(o.bd ?? {}) };
       put(bd, 't', r === g.r1 ? spec.t : spec.h);
@@ -1229,7 +1229,7 @@ export class Workbook {
     // bỏ mép ngoài: bỏ luôn cạnh chung của ô kề bên (lưới vẽ cả viền của ô kề)
     const nb = (r: number, c: number, side: 't' | 'b' | 'l' | 'r') => {
       if (r < 0 || c < 0 || r >= MAX_ROWS || c >= MAX_COLS) return;
-      const k = String(key(r, c)), o = st.get(k);
+      const k = key(r, c), o = st.get(k);
       if (!o?.bd?.[side]) return;
       const bd = { ...o.bd }; delete bd[side];
       ops.push([st, k, clean({ ...o, bd: Object.keys(bd).length ? bd : undefined })]);
@@ -1295,7 +1295,7 @@ export class Workbook {
       for (let c = g.c1; c <= g.c2; c++) {
         const a = this.A(s, r, c), f = this.hf.getCellFormula(a);
         cells.push(f !== undefined ? { raw: this.outF(f, qn), f: true } : { raw: this.hf.getCellSerialized(a), f: false });
-        styles.push(st.get(String(key(r, c))));
+        styles.push(st.get(key(r, c)));
       }
       rows.push({ r, cells, styles, keyv: keys.map((k) => this.value(s, r, k.col)) });
     }
@@ -1313,7 +1313,7 @@ export class Workbook {
     });
     const data = rows.map((row, j) => row.cells.map((cell) => (cell.f ? shiftFormula(String(cell.raw), slots[j] - row.r, 0) : cell.raw)));
     const ops: StyleOp[] = [];
-    rows.forEach((row, j) => row.styles.forEach((v, i) => ops.push([st, String(key(slots[j], g.c1 + i)), v])));
+    rows.forEach((row, j) => row.styles.forEach((v, i) => ops.push([st, key(slots[j], g.c1 + i), v])));
     const tx = new StyleTxn(ops);
     const contiguous = slots.length === g.r2 - d1 + 1;
     this.record(() => {
@@ -1345,11 +1345,26 @@ export class Workbook {
     if (!this.meta(s).filter) return;
     this.filterChange(s, () => { const m = this.meta(s); this.setFilterHidden(s, m.filter!.range, []); m.filter = null; });
   }
+  /**
+   * Vùng lọc thực tế như Excel: hàng tiêu đề + mọi hàng có dữ liệu liền kề bên dưới (tới hàng trống hoàn toàn).
+   * Không sửa vùng đã lưu (chỉ khi áp dụng lọc mới cập nhật, như Excel).
+   * Tệp .xlsx đôi khi chỉ ghi vùng lọc là hàng tiêu đề (vd A2:K2) — khi đó vẫn lấy được dữ liệu bên dưới.
+   */
+  filterRange(s: number): Range | null {
+    const f = this.meta(s).filter;
+    if (!f) return null;
+    const u = this.used(s);
+    const g = f.range;
+    const rowHas = (r: number) => { for (let c = g.c1; c <= g.c2; c++) if (this.has(s, r, c)) return true; return false; };
+    let r2 = Math.min(g.r2, Math.max(g.r1, u.rows - 1));
+    while (r2 + 1 < u.rows && rowHas(r2 + 1)) r2++;
+    return r2 === g.r2 ? g : { ...g, r2 };
+  }
   filterValues(s: number, col: number): string[] {
     const f = this.meta(s).filter;
     if (!f) return [];
     const set = new Set<string>();
-    const r2 = Math.min(f.range.r2, this.used(s).rows - 1);
+    const r2 = Math.min(this.filterRange(s)!.r2, this.used(s).rows - 1);
     for (let r = f.range.r1 + 1; r <= r2; r++) set.add(this.display(s, r, col).text);
     return [...set].sort((a, b) => (a === '' ? 1 : b === '' ? -1 : COLLATOR.compare(a, b)));
   }
@@ -1366,10 +1381,8 @@ export class Workbook {
     const m = this.meta(s), f = m.filter;
     if (!f) return;
     // mở rộng vùng lọc xuống các hàng dữ liệu mới liền kề
-    const u = this.used(s);
-    let r2 = f.range.r2;
-    while (r2 + 1 < u.rows && [...Array(f.range.c2 - f.range.c1 + 1).keys()].some((i) => this.has(s, r2 + 1, f.range.c1 + i))) r2++;
-    f.range = { ...f.range, r2 };
+    f.range = this.filterRange(s)!;
+    const r2 = f.range.r2;
     const hidden: number[] = [];
     const conds = Object.entries(f.conds).map(([c, v]) => [+c, v] as const);
     for (let r = f.range.r1 + 1; r <= r2; r++) {
@@ -1545,7 +1558,7 @@ export class Workbook {
     const before = m.pivots, after = before.filter((x) => x.id !== id);
     const ops: StyleOp[] = [];
     const a = p.area;
-    if (a) for (let r = a.r1; r <= a.r2; r++) for (let c = a.c1; c <= a.c2; c++) ops.push([m.styles, String(key(r, c)), undefined]);
+    if (a) for (let r = a.r1; r <= a.r2; r++) for (let c = a.c1; c <= a.c2; c++) ops.push([m.styles, key(r, c), undefined]);
     const tx = new StyleTxn(ops);
     this.record(a ? () => this.hf.setCellContents(this.A(s, a.r1, a.c1), Array.from({ length: a.r2 - a.r1 + 1 }, () => Array(a.c2 - a.c1 + 1).fill(null))) : null, {
       undo: () => { tx.hist.undo(); this.meta(s).pivots = before; },
@@ -1568,7 +1581,7 @@ export class Workbook {
       if (!inOld(r, c) && this.has(s, r, c)) throw new Error('Vùng đặt PivotTable đang có dữ liệu. Hãy chọn chỗ trống khác.');
     const m = this.meta(s);
     const ops: StyleOp[] = [];
-    if (old) for (let r = old.r1; r <= old.r2; r++) for (let c = old.c1; c <= old.c2; c++) ops.push([m.styles, String(key(r, c)), undefined]);
+    if (old) for (let r = old.r1; r <= old.r2; r++) for (let c = old.c1; c <= old.c2; c++) ops.push([m.styles, key(r, c), undefined]);
     res.cells.forEach((row, i) => row.forEach((v, j) => {
       const k = res.kinds[i][j];
       const st: Style = {};
@@ -1576,7 +1589,7 @@ export class Workbook {
       if (k === 't') st.b = true;
       if (k === 'g') { st.b = true; st.bg = '#ddebf7'; st.bd = { t: { s: 'thin' } }; }
       if (typeof v === 'number') st.fmt = '#,##0.##';
-      ops.push([m.styles, String(key(area.r1 + i, area.c1 + j)), Object.keys(st).length ? st : undefined]);
+      ops.push([m.styles, key(area.r1 + i, area.c1 + j), Object.keys(st).length ? st : undefined]);
     }));
     const tx = new StyleTxn(ops);
     // nới rộng cột cho vừa nội dung (không thu hẹp), như Excel tự khớp độ rộng cột của Pivot
@@ -1629,11 +1642,11 @@ export class Workbook {
         if (/^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(tt)) return +tt;
         if (/^-?\d{1,3}(,\d{3})+(\.\d+)?$/.test(tt)) return +tt.replace(/,/g, '');
         const pm = /^(-?\d+(?:\.(\d+))?)\s*%$/.exec(tt);
-        if (pm) { ops.push([st, String(key(r, c)), { fmt: pm[2] ? '0.' + '0'.repeat(Math.min(pm[2].length, 4)) + '%' : '0%' }]); return +pm[1] / 100; }
+        if (pm) { ops.push([st, key(r, c), { fmt: pm[2] ? '0.' + '0'.repeat(Math.min(pm[2].length, 4)) + '%' : '0%' }]); return +pm[1] / 100; }
         if (/^-?[\d.,]+$/.test(tt)) return "'" + t;
       }
       const nn = normalizeInput(t);
-      if (nn.fmt) ops.push([st, String(key(r, c)), { fmt: nn.fmt }]);
+      if (nn.fmt) ops.push([st, key(r, c), { fmt: nn.fmt }]);
       return nn.content as RawCellContent;
     }));
     const tx = new StyleTxn(ops);
@@ -1705,7 +1718,7 @@ export class Workbook {
     const ids = d.sheets.map((x) => wb.hf.getSheetId(x.name)!);
     d.sheets.forEach((sh, i) => {
       const m = wb.meta(ids[i]);
-      setAll(m.styles, new Map((sh.styles as [number, Style][]).map(([k, v]) => [String(k), v])));
+      setAll(m.styles, new Map((sh.styles as [number, Style][]).map(([k, v]) => [+k, v])));
       if (sh.colDef) m.colW = new AxisSizes(sh.colDef, MAX_COLS);
       if (sh.rowDef) m.rowH = new AxisSizes(sh.rowDef, MAX_ROWS);
       m.colW.load((sh.colW ?? []) as [number, number][], sh.hiddenCols ?? []);
@@ -1758,6 +1771,8 @@ export interface SheetJSON {
   hiddenCols?: number[]; breaks?: { rows: number[]; cols: number[] }; tabColor?: string; state?: 'hidden';
   merges?: Range[]; cf?: CFRule[]; dv?: DVRule[]; filter?: SheetFilter | null;
   charts?: unknown[]; pivots?: unknown[]; print?: PrintSetup | null;
+  /** biểu đồ đọc từ .xlsx, gắn sau khi sổ đã dựng (finishImport) */
+  rawCharts?: unknown[];
 }
 export interface ExtLink { index: number; path: string; xml: string; rels?: string }
 export interface BookJSON {
@@ -1894,16 +1909,16 @@ function shiftAll(m: SheetMeta, ax: 'r' | 'c', pt: (x: number) => number, span: 
     }
   }
 }
-function setOrDel(m: Map<string, Style>, k: string, v: Style | undefined) { if (v) m.set(k, { ...v }); else m.delete(k); }
-function remapStyles(m: Map<string, Style>, f: (r: number, c: number) => { r: number; c: number } | null) {
-  const out = new Map<string, Style>();
-  for (const [k, v] of m) { const p = unkey(+k); const q = f(p.r, p.c); if (q) out.set(String(key(q.r, q.c)), v); }
+function setOrDel(m: Map<number, Style>, k: number, v: Style | undefined) { if (v) m.set(k, { ...v }); else m.delete(k); }
+function remapStyles(m: Map<number, Style>, f: (r: number, c: number) => { r: number; c: number } | null) {
+  const out = new Map<number, Style>();
+  for (const [k, v] of m) { const p = unkey(+k); const q = f(p.r, p.c); if (q) out.set(key(q.r, q.c), v); }
   return out;
 }
 // Bảng định dạng của mỗi sheet luôn là MỘT đối tượng Map cố định (chỉ sửa tại chỗ),
 // để các mục hoàn tác giữ tham chiếu tới nó không bị "lạc" sang bản cũ.
-function setAll(m: Map<string, Style>, src: Map<string, Style>) { if (m === src) return; m.clear(); src.forEach((v, k) => m.set(k, v)); }
-type MetaSnap = { styles: Map<string, Style>; colW: [number, number][]; rowH: [number, number][]; hidden: number[]; colHidden: number[]; freeze: { rows: number; cols: number }; merges: Range[]; cf: CFRule[]; dv: DVRule[]; filter: SheetFilter | null; charts: Chart[]; pivots: PivotDef[]; print: PrintSetup | null; breaks: { rows: number[]; cols: number[] }; tabColor?: string; sheetHidden?: boolean };
+function setAll(m: Map<number, Style>, src: Map<number, Style>) { if (m === src) return; m.clear(); src.forEach((v, k) => m.set(k, v)); }
+type MetaSnap = { styles: Map<number, Style>; colW: [number, number][]; rowH: [number, number][]; hidden: number[]; colHidden: number[]; freeze: { rows: number; cols: number }; merges: Range[]; cf: CFRule[]; dv: DVRule[]; filter: SheetFilter | null; charts: Chart[]; pivots: PivotDef[]; print: PrintSetup | null; breaks: { rows: number[]; cols: number[] }; tabColor?: string; sheetHidden?: boolean };
 function snapMeta(m: SheetMeta): MetaSnap {
   return { styles: new Map(m.styles), colW: m.colW.entries(), rowH: m.rowH.entries(), hidden: m.rowH.hidden(), colHidden: m.colW.hidden(), freeze: { ...m.freeze }, merges: m.merges, cf: m.cf, dv: m.dv, filter: m.filter ? JSON.parse(JSON.stringify(m.filter)) : null, charts: m.charts, pivots: m.pivots, print: m.print, breaks: { rows: [...m.breaks.rows], cols: [...m.breaks.cols] }, tabColor: m.tabColor, sheetHidden: m.hidden };
 }
@@ -1915,13 +1930,13 @@ function restoreMeta(m: SheetMeta, s: MetaSnap) {
 }
 
 /** Một nhóm thay đổi định dạng: chỉ lưu các ô bị đổi (trước/sau), không chép cả bảng */
-type StyleOp = [Map<string, Style>, string, Style | undefined];
+type StyleOp = [Map<number, Style>, number, Style | undefined];
 class StyleTxn {
   private before: StyleOp[] = [];
   private after: StyleOp[] = [];
   constructor(private ops: StyleOp[]) {}
   apply() {
-    const seen = new Map<Map<string, Style>, Set<string>>();
+    const seen = new Map<Map<number, Style>, Set<number>>();
     for (const [m, k, v] of this.ops) {
       let ks = seen.get(m);
       if (!ks) { ks = new Set(); seen.set(m, ks); }

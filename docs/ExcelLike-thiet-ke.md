@@ -366,6 +366,27 @@ Review độc lập Đợt 4: 1 lỗi nặng (Esc ở hộp thoại hỏi lưu l
 - `lic.exe` dưới Wine: 6 loại key đều trả đúng mã lỗi.
 - Khóa ký **không** nằm trong repo hay trong bộ cài nào. Bản sao lưu đặt ở tài liệu dự án `claude/ExcelLike-khoa-ky.md`.
 
+## 6k. Bản 0.6.3 (29/10/2026) — mở tệp nhanh hơn ~7,5 lần, sửa Lọc với vùng lọc chỉ có tiêu đề
+
+**Đo trên tệp mẫu** (6 trang × 6.000 hàng × 12 cột, 108.000 công thức, viền và định dạng số; `e2e/perf-open.mjs`):
+
+| | 0.6.2 | 0.6.3 |
+|---|---|---|
+| Mở tệp .xlsx | 46,7 s | 4,9–6,2 s |
+| Mở lại app với sổ đó | 16,3 s | 2,5 s |
+
+**Nguyên nhân và cách sửa:**
+1. **Bảng kiểu ô dùng khóa chuỗi** (`Map<string, Style>` với khóa "98304"…). Chuỗi dạng số làm bảng băm của V8 trùng khóa hàng loạt: nạp 72.000 kiểu mất 1,1–1,6 s mỗi trang tính, và mỗi lần vẽ ô cũng chậm theo. Đổi sang khóa số (`Map<number, Style>`) thì việc nạp còn 14 ms.
+2. **ExcelJS dựng một đối tượng cho từng ô.** Nay dữ liệu ô (sheetData), chuỗi dùng chung và kiểu ô được tự đọc bằng `src/core/xlsxfast.ts`. ExcelJS chỉ đọc phần còn lại (cột, ô gộp, định dạng có điều kiện, in ấn…). Kiểu ô dựng một lần cho mỗi xf rồi dùng chung, đối tượng kiểu không bao giờ bị sửa tại chỗ. Liên kết ngoài, hàng ẩn/chiều cao hàng và ngày theo hệ 1904 cũng tự đọc.
+3. **Sổ trước đây được dựng hai lần khi mở tệp** (đọc xong dựng, rồi nạp lại trang dựng lần nữa). Nay `readXlsxBook()` chỉ trả dữ liệu sổ. `finishImport()` gắn biểu đồ và đếm công thức lỗi sau khi trang nạp lại (cờ `pendingImport`).
+
+**Kết luận về lỗi cửa sổ trắng:** khả năng cao là do mở lại sổ lớn bị chậm (mục 1). Lúc khởi động trang mất hàng chục giây, nên trông như treo.
+
+**Lọc:**
+- Tệp .xlsx có vùng lọc chỉ gồm hàng tiêu đề (vd `A2:K2`) trước đây cho danh sách giá trị rỗng. Nay vùng lọc thực tế = tiêu đề + các hàng có dữ liệu liền kề bên dưới (`filterRange`), giống Excel.
+- Điều kiện lọc cũ không còn khớp giá trị nào thì coi như chọn tất cả.
+- Không chọn giá trị nào thì không bấm Lọc được.
+
 ## 7. Kiểm chứng cuối theo tiêu chí Bước 0
 
 | # | Tiêu chí | Kết quả |

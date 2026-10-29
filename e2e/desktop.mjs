@@ -124,6 +124,8 @@ copyFileSync(join(ROOT, 'tests/fixtures/bieudo.xlsx'), fx2);
 const second = spawn(electronBin, [...(process.getuid?.() === 0 ? ['--no-sandbox'] : []), ROOT, fx2], { env, stdio: 'ignore' });
 const secondExit = await new Promise((r) => { second.on('exit', (code) => r(code)); setTimeout(() => r('timeout'), 15000); });
 await win.waitForFunction(() => window.__xl && window.__xl.fileName === 'bieu-do.xlsx', null, { timeout: 15000 }).catch(() => {});
+// biểu đồ được gắn ngay sau khi sổ dựng xong (bước hoàn tất nhập tệp)
+await win.waitForFunction(() => window.__xl && window.__xl.wb.sheetIds().some((i) => window.__xl.wb.meta(i).charts.length), null, { timeout: 10000 }).catch(() => {});
 const charts = await X(() => (window.__xl ? window.__xl.wb.sheetIds().reduce((a, i) => a + window.__xl.wb.meta(i).charts.length, 0) : -1));
 check('Mở tệp thứ hai: chuyển vào cửa sổ đang chạy, có biểu đồ', secondExit === 0 && charts > 0, `exit=${secondExit} charts=${charts}`);
 check('Chỉ một cửa sổ', app.windows().length === 1);
