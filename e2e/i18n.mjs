@@ -117,7 +117,7 @@ await Promise.all([page.waitForEvent('load'), page.selectOption('#opt-lang', 'en
 await page.waitForFunction(() => window.__xl && window.__xl.grid);
 await wait(300);
 const VI = /[À-ỹĐđ]/;
-const SKIP = '.t2c-prev, .ol-cols, .ol-sub select, .cell-editor, #fx-input, #namebox, .sheets .st, #doc-title, .fr-results td, .keys-row kbd, .clip-it, .fn-list b, .ac-list b, .bs-recent .rr b, .bs-recent .rr span small, .nv-name, #nav-pane .nv-list';
+const SKIP = '[data-noi18n], .t2c-prev, .ol-cols, .ol-sub select, .cell-editor, #fx-input, #namebox, .sheets .st, #doc-title, .fr-results td, .keys-row kbd, .clip-it, .fn-list b, .ac-list b, .bs-recent .rr b, .bs-recent .rr span small, .nv-name, #nav-pane .nv-list';
 const scan = (root) => X(([root, SKIP]) => {
   const out = new Set();
   const r = document.querySelector(root); if (!r) return [];
@@ -174,6 +174,41 @@ await X(() => { const x = window.__xl, s = x.grid.sheet; x.wb.createTable(s, { r
 await wait(150);
 await tab('tdesign'); add(await scan('#ribbon'), 'ribbon:tdesign'); add(await scan('#tabs'), 'tabs2');
 await page.screenshot({ path: OUT + 'i18n-en-tdesign.png', clip: { x: 0, y: 0, width: 1920, height: 170 } });
+// 0.8–0.9: hộp thoại, ngăn và tab ngữ cảnh mới
+const dlgAt = async (t, id, nth, nm) => {
+  await tab(t); await page.click(`#ribbon [data-id="${id}"]`); await wait(200);
+  if (nth !== null) { await page.locator('.menu [role^=menuitem]').nth(nth).click(); await wait(250); }
+  add(await scan('.dlg'), 'dlg:' + nm); add(await scan('.watch-pane'), 'pane:' + nm);
+  await page.keyboard.press('Escape'); await wait(80);
+  await X(() => { document.querySelectorAll('.dlg-back').forEach((e) => e.remove()); window.__xl.grid.focusKeys(); });
+};
+await X(() => { const x = window.__xl, s = x.grid.sheet; for (let r = 0; r < 8; r++) { x.wb.setInput(s, 300 + r, 0, String(45000 + r * 30)); x.wb.setInput(s, 300 + r, 1, String(10 + r)); } x.wb.setInput(s, 300, 2, '=A301*B301'); x.wb.setInput(s, 301, 2, '=1/0'); x.grid.selectRange({ r1: 300, c1: 0, r2: 307, c2: 1 }); x.syncSelection(); });
+for (const [t, id, nth, nm] of [['data', 'd-whatif', 0, 'Scenario'], ['data', 'd-whatif', 1, 'Goal Seek'], ['data', 'd-whatif', 2, 'Data Table'], ['data', 'd-fc', null, 'Forecast'], ['data', 'd-adv', null, 'Advanced Filter'], ['data', 'd-cons', null, 'Consolidate'],
+  ['insert', 'sp-line', null, 'Sparklines'], ['insert', 'symbol', null, 'Symbol'], ['insert', 'icons', null, 'Icons'], ['review', 'r-allow', null, 'Allow Ranges'], ['review', 'r-pbook', null, 'Protect Book'], ['review', 'r-psheet', null, 'Protect Sheet']]) await dlgAt(t, id, nth, nm);
+await X(() => { const x = window.__xl; x.grid.select(300, 2); x.syncSelection(); });
+await dlgAt('formulas', 'eval-f', null, 'Evaluate');
+await X(() => { const x = window.__xl; x.grid.select(301, 2); x.syncSelection(); });
+await dlgAt('formulas', 'err-chk', null, 'Error Check');
+await tab('formulas'); await page.click('#ribbon [data-id="watch"]'); await wait(200); add(await scan('.watch-pane'), 'pane:watch'); await page.click('#ribbon [data-id="watch"]'); await wait(100);
+await X(() => { const x = window.__xl, s = x.grid.sheet; x.wb.setInput(s, 310, 0, 'teh'); x.grid.select(310, 0); x.grid.focusKeys(); });
+await page.keyboard.press('F7'); await wait(1500); add(await scan('.dlg'), 'dlg:Spelling'); await page.keyboard.press('Escape'); await wait(80);
+await X(() => document.querySelectorAll('.dlg-back').forEach((e) => e.remove()));
+// tab ngữ cảnh: Biểu đồ, Biểu đồ thu nhỏ, Định dạng Hình, Bố trí Trang
+await X(() => { const x = window.__xl, s = x.grid.sheet; const id = x.wb.addChart(s, { type: 'col', series: [{ vals: { sheet: s, range: { r1: 300, c1: 1, r2: 307, c2: 1 } } }], anchor: { r: 295, c: 4, dx: 0, dy: 0 }, w: 360, h: 220 }); x.grid.select(295, 4); x.charts.sync(); x.charts.select(id); });
+await wait(250);
+for (const t of ['cdesign', 'cformat']) if (await has(`#tabs [data-tab="${t}"]`)) { await tab(t); add(await scan('#ribbon'), 'ribbon:' + t); add(await scan('#tabs'), 'tabs:' + t); } else ok(false, 'thiếu tab ' + t);
+await X(() => { const x = window.__xl, s = x.grid.sheet; x.charts.select(null); const id = x.wb.addChart(s, { type: 'shape', shape: 'rect', series: [], anchor: { r: 296, c: 10, dx: 0, dy: 0 }, w: 120, h: 60 }); x.charts.sync(); x.charts.select(id); });
+await wait(250);
+if (await has('#tabs [data-tab="oformat"]')) { await tab('oformat'); add(await scan('#ribbon'), 'ribbon:oformat'); } else ok(false, 'thiếu tab oformat');
+await X(() => { const x = window.__xl, s = x.grid.sheet; x.charts.select(null); x.wb.addSparklines(s, 'line', { sheet: s, range: { r1: 300, c1: 0, r2: 300, c2: 1 } }, { r1: 300, c1: 5, r2: 300, c2: 5 }); x.grid.select(300, 5); x.syncSelection(); });
+await wait(250);
+const spT = await X(() => [...document.querySelectorAll('#tabs [data-tab]')].map((b) => b.dataset.tab).find((t) => t === 'sdesign'));
+if (spT) { await tab(spT); add(await scan('#ribbon'), 'ribbon:' + spT); } else ok(false, 'thiếu tab Sparkline');
+await X(() => { window.__xl.grid.select(0, 0); window.__xl.syncSelection(); });
+await page.click('#views [data-view="layout"]'); await wait(500);
+add(await X(() => { const r = document.querySelector('.pl-view')?.shadowRoot; if (!r) return []; const VI = /[À-ÖØ-öø-ỹĐđ]/, out = []; r.querySelectorAll('.hfz [data-ph], .hfz [title], .pl-tip').forEach((e) => { for (const v of [e.getAttribute('data-ph'), e.getAttribute('title'), e.classList.contains('pl-tip') ? e.textContent : null]) if (v && VI.test(v)) out.push(v); }); return out; }), 'layout');
+add(await scan('#status'), 'status:layout');
+await page.click('#views [data-view="normal"]'); await wait(200);
 writeFileSync(OUT + 'i18n-missing.txt', [...missing].join('\n'));
 console.log(`chữ còn tiếng Việt khi chọn English: ${missing.size} (xem e2e/shots/i18n-missing.txt)`);
 ok(missing.size === 0, 'English: không còn chữ tiếng Việt trên giao diện');

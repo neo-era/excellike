@@ -1,4 +1,5 @@
 import { DynamicOffsetPlugin, offsetIn, offsetOut } from './offset';
+import { DEFAULT_ALLOW, type PwHash, type ProtectAllow, type SheetProtect } from './protect';
 import { DynArrayPlugin, DYN_NAMES } from './dynarray';
 import { areaRange, type Area, encodeStructured, decodeStructured, tableCellStyle, tableNameError, dataRows, inTable, xtExpr, totalFormula, type TableDef, type TableReg, type TotalFn } from './tables';
 import { encFormulaNames, decFormulaNames, encName, nameError, renameInFormula } from './names';
@@ -37,6 +38,8 @@ export interface Style {
   lk?: false;                         // bỏ khóa ô (mặc định ô bị khóa khi bảo vệ trang)
   hid?: boolean;                      // ẩn công thức khi bảo vệ trang
   ln?: string;                        // siêu kết nối (URL, mailto:, hoặc #Sheet!A1)
+  ie?: boolean;                       // Bỏ qua Lỗi (Kiểm tra Lỗi) cho ô này
+  cb?: boolean;                       // hộp kiểm trong ô (giá trị TRUE/FALSE)
 }
 export interface PasteOpts {
   what?: 'all' | 'formulas' | 'values' | 'formats' | 'comments' | 'validation' | 'theme' | 'noBorders' | 'colWidths' | 'formulasNum' | 'valuesNum' | 'allMerge';
@@ -57,6 +60,12 @@ export interface PrintSetup {
   titleRowRange?: [number, number] | null; titleColRange?: [number, number] | null;
   headings?: boolean; center?: { h?: boolean; v?: boolean }; firstPage?: number | null; order?: 'down' | 'over';
   header?: string; footer?: string;                 // mã Excel &L &C &R &P &N…
+  /** trang đầu khác / trang chẵn khác (0.8): null = dùng như trang thường */
+  hfFirst?: { header: string; footer: string } | null;
+  hfEven?: { header: string; footer: string } | null;
+  scaleHF?: boolean; alignHF?: boolean;             // co giãn theo tài liệu / căn với lề trang
+  /** ảnh trong đầu/chân trang (mã &G), theo vị trí: hl hc hr fl fc fr — data URL */
+  hfImg?: Record<string, string>;
 }
 export interface SheetMeta {
   styles: Map<number, Style>;
@@ -77,7 +86,18 @@ export interface SheetMeta {
   outline: Outline;
   /** Bảng (Ctrl+T); bất biến như outline */
   tables: TableDef[];
+  /** Kịch bản (Phân tích Giả định ▸ Trình quản lý Kịch bản) */
+  scenarios?: Scenario[];
+  /** hàng đang ẩn do Lọc Nâng cao tại chỗ (Xóa lọc chỉ hiện lại các hàng này) */
+  advHidden?: number[];
+  /** Biểu đồ thu nhỏ (Sparkline) */
+  sparks?: SparkGroup[];
+  /** Bảo vệ Trang tính + vùng cho phép sửa */
+  protect?: SheetProtect | null;
+  allowRanges?: { title: string; range: Range; pw?: PwHash }[];
 }
+export interface SparkGroup { type: 'line' | 'column' | 'stacked'; color: string; neg?: string; hi?: boolean; lo?: boolean; first?: boolean; last?: boolean; negPts?: boolean; markers?: boolean; items: { r: number; c: number; src: Ref }[] }
+export interface Scenario { name: string; cells: [number, number][]; values: string[]; comment?: string }
 /** cấp nhóm (1–7) theo hàng/cột; x: các nhóm đang thu gọn, khóa "r|c:cấp:hàng/cột tổng" */
 export interface Outline { r: Record<number, number>; c: Record<number, number>; x: string[] }
 const NO_OUTLINE: Outline = { r: {}, c: {}, x: [] };
@@ -381,6 +401,7 @@ export class Workbook {
   }
   /** Thêm trang tính (index: vị trí trong thứ tự; bỏ trống = cuối) — một bước hoàn tác */
   addSheet(name?: string, index?: number): number {
+    if (this.bookProtect) this.guard(0, 'structure');
     let n = name;
     if (!n) { let i = this.sheetIds().length + 1; while (this.hasName('Sheet' + i)) i++; n = 'Sheet' + i; }
     n = this.checkName(n);
@@ -403,11 +424,13 @@ export class Workbook {
   }
   private hasName(n: string) { return this.sheetIds().some((id) => this.sheetName(id).toLowerCase() === n.toLowerCase()); }
   renameSheet(id: number, name: string) {
+    this.guard(id, 'structure');
     const t = this.checkName(name, id);
     if (t === this.sheetName(id)) return;
     this.record(() => this.hf.renameSheet(id, t));
   }
   removeSheet(id: number) {
+    this.guard(id, 'structure');
     if (this.sheetIds().length <= 1) throw new Error('Sổ tính phải còn ít nhất một sheet.');
     const snap = snapMeta(this.meta(id));
     const xBefore = this.snapRefs();
@@ -429,10 +452,12 @@ export class Workbook {
   }
   setTabColor(id: number, color: string | undefined) { this.metaProp(id, 'tabColor', color || undefined); }
   setSheetHidden(id: number, hide: boolean) {
+    this.guard(id, 'structure');
     if (hide && this.visibleSheetIds().filter((x) => x !== id).length === 0) throw new Error('Sổ làm việc phải còn ít nhất một trang tính hiển thị.');
     this.metaProp(id, 'hidden', hide || undefined);
   }
   moveSheet(id: number, index: number) {
+    this.guard(id, 'structure');
     const before = this.sheetIds();
     const after = before.filter((x) => x !== id);
     after.splice(Math.max(0, Math.min(index, after.length)), 0, id);
@@ -443,6 +468,7 @@ export class Workbook {
   }
   /** Tạo bản sao (Di chuyển hoặc Sao chép… ▸ Tạo bản sao) */
   copySheet(id: number, index?: number): number {
+    this.guard(id, 'structure');
     const base = this.sheetName(id).replace(/ \(\d+\)$/, '');
     let k = 2, n = '';
     do { const suf = ` (${k++})`; n = base.slice(0, 31 - suf.length) + suf; } while (this.hasName(n));
@@ -481,6 +507,7 @@ export class Workbook {
 
   // ---------- ẩn / bỏ ẩn hàng, cột ----------
   private hideAxis(s: number, ax: 'r' | 'c', a: number, b: number, hide: boolean) {
+    this.guard(s, ax === 'r' ? 'formatRows' : 'formatCols');
     const m = this.meta(s), A = ax === 'r' ? m.rowH : m.colW;
     const before = A.hidden(), sizes = A.entries();
     const set = new Set(before);
@@ -505,12 +532,18 @@ export class Workbook {
   /** Như Excel: chèn ngắt trang phía trên hàng và bên trái cột của ô hiện hành */
   insertPageBreak(s: number, r: number, c: number) { this.breaksChange(s, (b) => ({ rows: r > 0 ? [...b.rows, r] : b.rows, cols: c > 0 ? [...b.cols, c] : b.cols })); }
   removePageBreak(s: number, r: number, c: number) { this.breaksChange(s, (b) => ({ rows: b.rows.filter((x) => x !== r), cols: b.cols.filter((x) => x !== c) })); }
+  /** kéo đường ngắt trang (Xem trước Ngắt Trang): ngắt ở `from` dời tới `to` và thành ngắt thủ công như Excel */
+  movePageBreak(s: number, ax: 'r' | 'c', from: number, to: number) {
+    const k = ax === 'r' ? 'rows' : 'cols';
+    this.breaksChange(s, (b) => { const l = b[k].filter((x) => x !== from); if (to > 0 && !l.includes(to)) l.push(to); l.sort((x, y) => x - y); return { ...b, [k]: l }; });
+  }
   resetPageBreaks(s: number) { this.breaksChange(s, () => ({ rows: [], cols: [] })); }
 
   // ---------- chèn / xóa ô có dồn ----------
   insertCells(s: number, g: Range, dir: 'down' | 'right') { this.shiftCells(s, g, dir === 'down' ? 'r' : 'c', 1); }
   deleteCells(s: number, g: Range, dir: 'up' | 'left') { this.shiftCells(s, g, dir === 'up' ? 'r' : 'c', -1); }
   private shiftCells(s: number, g: Range, ax: 'r' | 'c', sign: 1 | -1) {
+    if (this.meta(s).protect) this.guard(s, 'edit', ax === 'r' ? { r1: g.r1, c1: g.c1, r2: MAX_ROWS - 1, c2: g.c2 } : { r1: g.r1, c1: g.c1, r2: g.r2, c2: MAX_COLS - 1 });
     const m = this.meta(s), u = this.used(s);
     const n = ax === 'r' ? g.r2 - g.r1 + 1 : g.c2 - g.c1 + 1;
     // dải bị dồn: cùng các cột (dồn dọc) hoặc cùng các hàng (dồn ngang) từ vùng chọn trở đi
@@ -709,6 +742,7 @@ export class Workbook {
     return out;
   }
   setInput(s: number, r: number, c: number, text: string): Changed[] {
+    if (this.meta(s).protect && !this.cellEditable(s, r, c)) this.guard(s, 'edit', { r1: r, c1: c, r2: r, c2: c });
     const { content, fmt } = normalizeInput(text);
     const k = key(r, c);
     const st = this.meta(s).styles;
@@ -722,6 +756,7 @@ export class Workbook {
     return this.changedOn(s, changes);
   }
   clear(s: number, g: Range) {
+    this.guard(s, 'edit', g);
     const u = this.used(s);
     const r2 = Math.min(g.r2, u.rows - 1), c2 = Math.min(g.c2, u.cols - 1);
     if (r2 < g.r1 || c2 < g.c1) return;
@@ -737,6 +772,7 @@ export class Workbook {
     return { ...g, r2, c2 };
   }
   setStyle(s: number, g0: Range, patch: Style) {
+    if (this.meta(s).protect && !('ie' in patch && Object.keys(patch).length === 1)) { this.guard(s, 'ln' in patch ? 'link' : 'format'); if ('lk' in patch || 'hid' in patch) throw new Error(this.protectBlock(s, 'never')!); }
     const g = this.clampToUsed(s, g0);
     if (rangeSize(g) > 500_000) throw new Error('Vùng chọn quá lớn để định dạng (tối đa 500.000 ô).');
     const st = this.meta(s).styles;
@@ -771,8 +807,8 @@ export class Workbook {
     if (JSON.stringify(before) === JSON.stringify(after)) return;
     this.record(null, { undo: () => A.load(before, hid), redo: () => A.load(after, hid) });
   }
-  setColWidth(s: number, c: number, w: number) { this.sizeChange(this.meta(s).colW, c, w); }
-  setRowHeight(s: number, r: number, h: number) { this.sizeChange(this.meta(s).rowH, r, h); }
+  setColWidth(s: number, c: number, w: number) { this.guard(s, 'formatCols'); this.sizeChange(this.meta(s).colW, c, w); }
+  setRowHeight(s: number, r: number, h: number) { this.guard(s, 'formatRows'); this.sizeChange(this.meta(s).rowH, r, h); }
   private sizeChange(ax: AxisSizes, i: number, v: number) {
     const o = ax.base(i);
     if (o === Math.round(v)) return;
@@ -814,11 +850,12 @@ export class Workbook {
         return { ...ch, series: ch.series.filter((x) => ok(x.vals)).map((x) => ({ ...x, name: ok(x.name) ? x.name : undefined, cats: ok(x.cats) ? x.cats : undefined })) };
       });
       m.pivots = m.pivots.filter((p) => p.src.sheet !== id);
+      if (m.sparks?.length) m.sparks = m.sparks.map((g) => ({ ...g, items: g.items.filter((x) => x.src.sheet !== id) })).filter((g) => g.items.length);
     }
   }
   /** Biểu đồ/Pivot ở mọi sheet có thể tham chiếu tới sheet đang chèn/xóa → dời theo */
-  private snapRefs() { return [...this.metas.entries()].map(([id, m]) => [id, m.charts, m.pivots] as const); }
-  private restoreRefs(x: ReturnType<Workbook['snapRefs']>) { for (const [id, ch, pv] of x) { const m = this.metas.get(id); if (m) { m.charts = ch; m.pivots = pv; } } }
+  private snapRefs() { return [...this.metas.entries()].map(([id, m]) => [id, m.charts, m.pivots, m.sparks] as const); }
+  private restoreRefs(x: ReturnType<Workbook['snapRefs']>) { for (const [id, ch, pv, sp] of x) { const m = this.metas.get(id); if (m) { m.charts = ch; m.pivots = pv; m.sparks = sp; } } }
   private shiftRefs(s: number, ax: 'r' | 'c', span: (a: number, b: number) => { a: number; b: number } | null) {
     const mv = (g: Range): Range | null => {
       const x = ax === 'r' ? span(g.r1, g.r2) : span(g.c1, g.c2);
@@ -831,6 +868,9 @@ export class Workbook {
         return series.length === ch.series.length && series.every((x, i) => x === ch.series[i]) ? ch : { ...ch, series };
       });
       m.pivots = m.pivots.map((p) => (p.src.sheet === s ? (mvRef(p.src) ? { ...p, src: mvRef(p.src)! } : p) : p));
+      if (m.sparks?.some((g) => g.items.some((x) => x.src.sheet === s))) {
+        m.sparks = m.sparks.map((g) => ({ ...g, items: g.items.flatMap((x) => { if (x.src.sheet !== s) return [x]; const src = mvRef(x.src); return src ? [{ ...x, src }] : []; }) })).filter((g) => g.items.length);
+      }
     }
   }
   /** Như Excel: không chèn/xóa hàng, cột cắt ngang một PivotTable */
@@ -844,6 +884,7 @@ export class Workbook {
     }
   }
   insertRows(s: number, at: number, n = 1) {
+    this.guard(s, 'insertRows');
     this.guardPivot(s, 'r', at, n, false);
     this.structural(s, () => this.hf.addRows(s, [at, n]), (m) => {
       shiftAll(m, 'r', (x) => (x >= at ? x + n : x), (a, b) => ({ a: a >= at ? a + n : a, b: b >= at ? b + n : b }));
@@ -852,6 +893,7 @@ export class Workbook {
     }, 'r', (a, b) => ({ a: a >= at ? a + n : a, b: b >= at ? b + n : b }));
   }
   deleteRows(s: number, at: number, n = 1) {
+    this.guard(s, 'deleteRows');
     this.guardPivot(s, 'r', at, n, true);
     this.structural(s, () => this.hf.removeRows(s, [at, n]), (m) => {
       shiftAll(m, 'r', (x) => (x < at ? x : x >= at + n ? x - n : -1), (a, b) => delSpan(a, b, at, n));
@@ -860,6 +902,7 @@ export class Workbook {
     }, 'r', (a, b) => delSpan(a, b, at, n));
   }
   insertCols(s: number, at: number, n = 1) {
+    this.guard(s, 'insertCols');
     this.guardPivot(s, 'c', at, n, false);
     this.structural(s, () => this.hf.addColumns(s, [at, n]), (m) => {
       shiftAll(m, 'c', (x) => (x >= at ? x + n : x), (a, b) => ({ a: a >= at ? a + n : a, b: b >= at ? b + n : b }));
@@ -868,6 +911,7 @@ export class Workbook {
     }, 'c', (a, b) => ({ a: a >= at ? a + n : a, b: b >= at ? b + n : b }));
   }
   deleteCols(s: number, at: number, n = 1) {
+    this.guard(s, 'deleteCols');
     this.guardPivot(s, 'c', at, n, true);
     this.structural(s, () => this.hf.removeColumns(s, [at, n]), (m) => {
       shiftAll(m, 'c', (x) => (x < at ? x : x >= at + n ? x - n : -1), (a, b) => delSpan(a, b, at, n));
@@ -892,6 +936,8 @@ export class Workbook {
     return toTSV(rows);
   }
   paste(s: number, r: number, c: number): Range | null {
+    if (this.clip?.cut && this.meta(this.clip.sheet).protect) this.guard(this.clip.sheet, 'edit', this.clip.range);
+    if (this.meta(s).protect && this.clip) { const g = this.clip.range; this.guard(s, 'edit', { r1: r, c1: c, r2: r + Math.min(g.r2 - g.r1, 100000), c2: c + Math.min(g.c2 - g.c1, 16383) }); }
     const cl = this.clip;
     if (!cl) return null;
     const src = this.clampToUsed(cl.sheet, cl.range);
@@ -928,10 +974,51 @@ export class Workbook {
     if (cl.cut) this.clip = null;
     return { r1: r, c1: c, r2: r + h, c2: c + w };
   }
+  /** Kéo viền vùng chọn: di chuyển (move), sao chép (Ctrl → copy) hoặc chèn (Shift → insert, các ô ở đích
+   *  dời xuống/sang phải, chỗ cũ khép lại) — như Excel. Trả về vùng đích. */
+  dragCells(s: number, src: Range, r: number, c: number, mode: 'move' | 'copy' | 'insert', dir: 'down' | 'right' = 'down'): Range | null {
+    if (r === src.r1 && c === src.c1 && mode !== 'copy') return null;
+    const h = src.r2 - src.r1, w = src.c2 - src.c1;
+    if (mode === 'insert') {
+      // dải bị dồn khi chèn ở đích: các cột (dồn xuống) hoặc các hàng (dồn phải) của đích
+      const [a1, a2, b1, b2] = dir === 'down' ? [c, c + w, src.c1, src.c2] : [r, r + h, src.r1, src.r2];
+      const same = a1 === b1 && a2 === b2, apart = a2 < b1 || a1 > b2;
+      if (!same && !apart) throw new Error('Không thể chèn vào vị trí này: vùng đích chồng một phần lên vùng đang kéo.');
+      const at = dir === 'down' ? r : c, lo = dir === 'down' ? src.r1 : src.c1, hi = dir === 'down' ? src.r2 : src.c2;
+      if (same && at >= lo && at <= hi + 1) return null; // thả ngay trong/sát vùng nguồn: không đổi gì (như Excel)
+    }
+    const keep = this.clip, n0 = this.past.length;
+    try {
+      return this.group(() => {
+        let g = { ...src };
+        if (mode === 'insert') {
+          const tgt = { r1: r, c1: c, r2: r + h, c2: c + w };
+          this.insertCells(s, tgt, dir);
+          if (dir === 'down' && g.c1 === c && g.r1 >= r) { g.r1 += h + 1; g.r2 += h + 1; }
+          if (dir === 'right' && g.r1 === r && g.c1 >= c) { g.c1 += w + 1; g.c2 += w + 1; }
+        }
+        this.clip = { sheet: s, range: g, cut: mode !== 'copy' };
+        const out = this.paste(s, r, c);
+        if (mode === 'insert') {
+          this.deleteCells(s, g, dir === 'down' ? 'up' : 'left');
+          const o = { r1: r, c1: c, r2: r + h, c2: c + w };
+          if (dir === 'down' && g.c1 === c && g.r1 < r) { o.r1 -= h + 1; o.r2 -= h + 1; }
+          if (dir === 'right' && g.r1 === r && g.c1 < c) { o.c1 -= w + 1; o.c2 -= w + 1; }
+          return o;
+        }
+        return out;
+      });
+    } catch (e) {
+      // một bước giữa chừng bị chặn (bảo vệ, ô gộp…): hoàn lại phần đã làm
+      if (this.past.length > n0) { this.undo(); this.future.pop(); }
+      throw e;
+    } finally { this.clip = keep; }
+  }
   pasteText(s: number, r: number, c: number, text: string): Range | null {
     const rows = parseTSV(text);
     if (!rows.length) return null;
     const w = Math.max(...rows.map((x) => x.length));
+    if (this.meta(s).protect) this.guard(s, 'edit', { r1: r, c1: c, r2: Math.min(MAX_ROWS - 1, r + rows.length - 1), c2: Math.min(MAX_COLS - 1, c + w - 1) });
     if (r + rows.length > MAX_ROWS || c + w > MAX_COLS) throw new Error('Vùng dán vượt quá giới hạn trang tính.');
     const fmts: [number, string][] = [];
     const data = rows.map((row, i) => Array.from({ length: w }, (_, j) => {
@@ -953,6 +1040,7 @@ export class Workbook {
   }
   /** Ghi nhiều ô rời (chuỗi như người dùng gõ) trong một bước hoàn tác */
   writeCells(s: number, list: [number, number, string | number | boolean | null][]) {
+    if (this.meta(s).protect) for (const [r, c] of list) if (!this.cellEditable(s, r, c)) this.guard(s, 'edit', { r1: r, c1: c, r2: r, c2: c });
     if (!list.length) return;
     const st = this.meta(s).styles;
     const fmts: StyleOp[] = [];
@@ -977,6 +1065,8 @@ export class Workbook {
   /** Ô nằm trong vùng gộp nhưng không phải ô đầu */
   mergeCovered(s: number, r: number, c: number) { const m = this.mergeAt(s, r, c); return !!m && !(m.r1 === r && m.c1 === c); }
   sheetIdByName(n: string): number | undefined { return this.hf.getSheetId(n); }
+  /** tên trang chưa dùng: “Dự báo”, “Dự báo 2”, … (như Excel khi tạo lại) */
+  uniqueSheetName(base: string): string { if (!this.hasName(base)) return base; let i = 2; while (this.hasName(`${base} ${i}`)) i++; return `${base} ${i}`; }
   /** Công thức hợp lệ cú pháp không (không ghi vào ô) */
   isValidFormula(f: string, s: number): boolean {
     try { return this.hf.validateFormula(offsetIn(f, undefined, this.sheetName(s))); } catch { return false; }
@@ -1036,6 +1126,7 @@ export class Workbook {
 
   /** Dán Đặc biệt (Ctrl+Alt+V) từ vùng đã Sao chép. Trả về vùng đã dán. Một bước hoàn tác. */
   pasteSpecial(s: number, target: Range, o: PasteOpts): Range {
+    if (this.meta(s).protect) this.guard(s, 'edit', target);
     const cl = this.clip;
     if (!cl) throw new Error('Chưa có gì được sao chép.');
     if (cl.cut) throw new Error('Không dùng được Dán Đặc biệt với vùng đã Cắt — hãy Sao chép (Ctrl+C) rồi dán.');
@@ -1144,6 +1235,7 @@ export class Workbook {
 
   /** Chổi định dạng: dán kiểu ô (lặp khối nguồn cho kín vùng đích), thay toàn bộ định dạng cũ */
   paintStyles(s: number, g0: Range, src: (Style | undefined)[][]) {
+    this.guard(s, 'format');
     const g = this.clampToUsed(s, g0);
     if (rangeSize(g) > 500_000) throw new Error('Vùng quá lớn (tối đa 500.000 ô).');
     const st = this.meta(s).styles, h = src.length, w = src[0]?.length ?? 1;
@@ -1173,6 +1265,7 @@ export class Workbook {
 
   /** Trang đầu ▸ Điền ▸ Chuỗi…: dir 'rows' = điền theo hàng (sang phải), 'cols' = theo cột (xuống) */
   fillSeries(s: number, g: Range, o: SeriesOpts & { dir: 'rows' | 'cols'; trend?: boolean }) {
+    if (this.meta(s).protect) this.guard(s, 'edit', g);
     if (o.type === 'auto') { const src = o.dir === 'cols' ? { ...g, r2: g.r1 } : { ...g, c2: g.c1 }; this.fill(s, src, g); return; }
     const list: [number, number, string | number | boolean | null][] = [];
     const fmts: StyleOp[] = [];
@@ -1195,6 +1288,7 @@ export class Workbook {
 
   // ---------- kéo điền ----------
   fill(s: number, src: Range, tgt: Range) {
+    this.guard(s, 'edit', tgt);
     const down = tgt.r2 > src.r2, up = tgt.r1 < src.r1, right = tgt.c2 > src.c2, left = tgt.c1 < src.c1;
     if (!down && !up && !right && !left) return;
     const vertical = down || up;
@@ -1280,6 +1374,7 @@ export class Workbook {
     return out;
   }
   merge(s: number, g0: Range, center = true) {
+    this.guard(s, 'format');
     const g = this.expandToMerges(s, g0);
     if (g.r1 === g.r2 && g.c1 === g.c2) return;
     if (rangeSize(g) > 1_000_000) throw new Error('Vùng gộp quá lớn.');
@@ -1298,6 +1393,7 @@ export class Workbook {
     return clears.length;
   }
   unmerge(s: number, g: Range) {
+    this.guard(s, 'format');
     const m = this.meta(s);
     const before = m.merges, after = m.merges.filter((x) => x.r2 < g.r1 || x.r1 > g.r2 || x.c2 < g.c1 || x.c1 > g.c2);
     if (after.length === before.length) return;
@@ -1307,6 +1403,7 @@ export class Workbook {
 
   // ---------- viền ----------
   setBorder(s: number, g0: Range, kind: BorderKind, style: BorderStyle = 'thin', color?: string) {
+    this.guard(s, 'format');
     const g = this.clampToUsed(s, g0);
     if (rangeSize(g) > 500_000) throw new Error('Vùng chọn quá lớn để kẻ viền (tối đa 500.000 ô).');
     const st = this.meta(s).styles;
@@ -1337,6 +1434,7 @@ export class Workbook {
    * undefined = giữ nguyên, null = bỏ. Ô kề bên ngoài vùng cũng được bỏ cạnh chung khi bỏ mép (như Excel).
    */
   setBorders(s: number, g0: Range, spec: Partial<Record<'t' | 'b' | 'l' | 'r' | 'h' | 'v' | 'd' | 'u', Border | null>>) {
+    this.guard(s, 'format');
     const g = this.clampToUsed(s, g0);
     if (rangeSize(g) > 500_000) throw new Error('Vùng chọn quá lớn để kẻ viền (tối đa 500.000 ô).');
     const st = this.meta(s).styles;
@@ -1401,6 +1499,8 @@ export class Workbook {
     return allText && (numBelow || !!this.style(s, g.r1, g.c1).b);
   }
   sort(s: number, g0: Range, keys: SortKey[], header: boolean) {
+    this.guard(s, 'sort');
+    if (this.meta(s).protect) this.guard(s, 'edit', g0);
     const u = this.used(s);
     const g = { ...g0, r2: Math.min(g0.r2, u.rows - 1), c2: Math.min(g0.c2, u.cols - 1) };
     const d1 = header ? g.r1 + 1 : g.r1;
@@ -1454,6 +1554,7 @@ export class Workbook {
    * Chỉ dồn các ô trong vùng lên (không xóa nguyên hàng), ô thừa ở đáy vùng bị xóa. Trả về số hàng bị loại / còn lại.
    */
   removeDuplicates(s: number, g0: Range, cols: number[], header: boolean): { removed: number; kept: number } {
+    if (this.meta(s).protect) this.guard(s, 'edit', g0);
     const u = this.used(s);
     const g = { ...g0, r2: Math.min(g0.r2, u.rows - 1), c2: Math.min(g0.c2, u.cols - 1) };
     const d1 = header ? g.r1 + 1 : g.r1;
@@ -1499,6 +1600,7 @@ export class Workbook {
    * types: 'g' Chung (tự nhận số/ngày), 't' Văn bản, 'x' Bỏ qua cột. Trả về số cột kết quả.
    */
   textToColumns(s: number, col: number, r1: number, r2: number, o: { delims?: string; consecutive?: boolean; qualifier?: string; widths?: number[]; dest?: { r: number; c: number }; types?: string[] }): number {
+    if (this.meta(s).protect) this.guard(s, 'edit', { r1, c1: o.dest?.c ?? col, r2, c2: MAX_COLS - 1 });
     const parts = (t: string): string[] => {
       if (o.widths) {
         const out: string[] = []; let p = 0;
@@ -1863,6 +1965,351 @@ export class Workbook {
     return { r: r0, c: c0, range: { r1: r0, c1: c0, r2, c2 } };
   }
 
+  // ---------- Phân tích Giả định, Lọc Nâng cao, Hợp nhất (0.9) ----------
+  /** thử giá trị tạm trên bộ tính rồi hoàn lại hết (không ghi lịch sử) */
+  private trial<T>(fn: (set: (s: number, r: number, c: number, v: RawCellContent) => void) => T): T {
+    // tạm bỏ giới hạn lịch sử của bộ tính để các bước thử không đẩy mất lịch sử của người dùng,
+    // rồi hoàn lại đúng số bước đã thử (về đúng giá trị gốc)
+    const ur = (this.hf as unknown as { _crudOperations?: { undoRedo?: { undoLimit: number; undoStack: unknown[] } } })._crudOperations?.undoRedo;
+    const lim = ur?.undoLimit, depth = ur?.undoStack.length ?? 0;
+    if (ur) ur.undoLimit = Number.MAX_SAFE_INTEGER;
+    let n = 0;
+    const set = (s: number, r: number, c: number, v: RawCellContent) => { this.hf.setCellContents(this.A(s, r, c), [[v]]); n++; };
+    try { return fn(set); }
+    finally {
+      if (ur) { while (ur.undoStack.length > depth && this.hf.isThereSomethingToUndo()) this.hf.undo(); ur.undoLimit = lim!; }
+      else for (let i = 0; i < n; i++) if (this.hf.isThereSomethingToUndo()) this.hf.undo();
+      this.hf.clearRedoStack(); this.future = [];
+    }
+  }
+  private num(s: number, r: number, c: number): number | null { const v = this.value(s, r, c); return typeof v === 'number' && isFinite(v) ? v : null; }
+  /**
+   * Tìm Mục tiêu (Goal Seek): đổi ô `by` (giá trị, không phải công thức) để ô `set` (công thức) đạt `target`.
+   * Phương pháp cát tuyến + chia đôi khi đổi dấu, tối đa 100 vòng, sai số 0,001 như Excel.
+   */
+  goalSeek(s: number, set: { r: number; c: number }, target: number, by: { r: number; c: number }): { ok: boolean; x: number; y: number } {
+    if (!this.hf.doesCellHaveFormula(this.A(s, set.r, set.c))) throw new Error('Ô Đặt phải chứa công thức.');
+    if (this.hf.doesCellHaveFormula(this.A(s, by.r, by.c))) throw new Error('Ô Thay đổi phải chứa giá trị, không phải công thức.');
+    const x0 = this.num(s, by.r, by.c) ?? 0;
+    const res = this.trial((put) => {
+      const f = (x: number) => { put(s, by.r, by.c, x); const y = this.num(s, set.r, set.c); return y === null ? NaN : y - target; };
+      let a = x0, fa = f(a);
+      if (Math.abs(fa) < 1e-3) return { ok: true, x: a, y: fa + target };
+      let b = x0 === 0 ? 1 : x0 * 1.01 + 0.01, fb = f(b);
+      let lo: [number, number] | null = null, hi: [number, number] | null = null;
+      const note = (x: number, y: number) => { if (!isFinite(y)) return; if (y < 0) lo = [x, y]; else hi = [x, y]; };
+      note(a, fa); note(b, fb);
+      for (let i = 0; i < 100; i++) {
+        let x: number;
+        if (lo && hi) x = ((lo as [number, number])[0] + (hi as [number, number])[0]) / 2;
+        else if (isFinite(fa) && isFinite(fb) && fb !== fa) x = b - fb * (b - a) / (fb - fa);
+        else x = b * 2 + 1;
+        if (lo && hi) { const sec = isFinite(fa) && isFinite(fb) && fb !== fa ? b - fb * (b - a) / (fb - fa) : NaN; const l = Math.min(lo[0], hi[0]), u = Math.max(lo[0], hi[0]); if (sec > l && sec < u) x = sec; }
+        const fx = f(x);
+        if (Math.abs(fx) < 1e-3 * Math.max(1, Math.abs(target)) / 1000 || Math.abs(fx) < 1e-7) return { ok: true, x, y: fx + target };
+        note(x, fx);
+        a = b; fa = fb; b = x; fb = fx;
+      }
+      const best = [lo, hi].filter(Boolean).sort((p, q) => Math.abs(p![1]) - Math.abs(q![1]))[0];
+      return best && Math.abs(best[1]) < 1e-3 ? { ok: true, x: best[0], y: best[1] + target } : { ok: false, x: best ? best[0] : x0, y: (best ? best[1] : fa) + target };
+    });
+    return res;
+  }
+  /**
+   * Bảng Dữ liệu (Phân tích Giả định ▸ Bảng Dữ liệu): vùng g, ô nhập hàng và/hoặc cột.
+   * Một biến theo cột: cột đầu là giá trị thử, hàng đầu (bỏ ô góc) là công thức. Hai biến: ô góc là công thức.
+   * Ghi kết quả dạng giá trị (bấm lại để cập nhật).
+   */
+  dataTable(s: number, g: Range, rowIn: { r: number; c: number } | null, colIn: { r: number; c: number } | null): number {
+    if (this.meta(s).protect) this.guard(s, 'edit', g);
+    if (!rowIn && !colIn) throw new Error('Hãy nhập ô nhập hàng hoặc ô nhập cột.');
+    if (g.r2 <= g.r1 && g.c2 <= g.c1) throw new Error('Vùng bảng dữ liệu phải có ít nhất 2 hàng hoặc 2 cột.');
+    const out: [number, number, number | string | boolean | null][] = [];
+    const iv = (r: number, c: number): RawCellContent => { const v = this.value(s, r, c); return typeof v === 'object' && v !== null ? String((v as { value?: string }).value ?? '') : (v as RawCellContent); };
+    this.trial((put) => {
+      const read = (r: number, c: number) => { const v = this.value(s, r, c); return typeof v === 'object' && v !== null ? String((v as { value?: string }).value ?? '#VALUE!') : (v as number | string | boolean | null); };
+      if (rowIn && colIn) {
+        for (let r = g.r1 + 1; r <= g.r2; r++) for (let c = g.c1 + 1; c <= g.c2; c++) {
+          put(s, colIn.r, colIn.c, iv(r, g.c1)); put(s, rowIn.r, rowIn.c, iv(g.r1, c));
+          out.push([r, c, read(g.r1, g.c1)]);
+        }
+      } else if (colIn) {
+        for (let r = g.r1 + 1; r <= g.r2; r++) { put(s, colIn.r, colIn.c, iv(r, g.c1)); for (let c = g.c1 + 1; c <= g.c2; c++) out.push([r, c, read(g.r1, c)]); }
+      } else if (rowIn) {
+        for (let c = g.c1 + 1; c <= g.c2; c++) { put(s, rowIn.r, rowIn.c, iv(g.r1, c)); for (let r = g.r1 + 1; r <= g.r2; r++) out.push([r, c, read(r, g.c1)]); }
+      }
+    });
+    this.record(() => { for (const [r, c, v] of out) this.hf.setCellContents(this.A(s, r, c), [[v as RawCellContent]]); });
+    return out.length;
+  }
+  /** Kịch bản (Trình quản lý Kịch bản) của trang */
+  scenarios(s: number): Scenario[] { return this.meta(s).scenarios ?? []; }
+  setScenarios(s: number, list: Scenario[]) {
+    const m = this.meta(s), before = m.scenarios ?? [];
+    this.record(null, { undo: () => { m.scenarios = before; }, redo: () => { m.scenarios = list; } });
+    m.scenarios = list;
+  }
+  showScenario(s: number, sc: Scenario) { this.writeCells(s, sc.cells.map(([r, c], i) => [r, c, sc.values[i] ?? null])); }
+  /** Tóm tắt Kịch bản: bảng giá trị ô thay đổi + ô kết quả theo từng kịch bản (trang tính mới) */
+  scenarioSummary(s: number, results: { r: number; c: number }[]): number {
+    const list = this.scenarios(s);
+    if (!list.length) throw new Error('Chưa có kịch bản nào.');
+    const changing = [...new Map(list.flatMap((x) => x.cells).map(([r, c]) => [r + ':' + c, [r, c] as [number, number]])).values()];
+    const cur = changing.map(([r, c]) => this.rawText(s, r, c));
+    const vals: (string | number | boolean | null)[][] = [];
+    this.trial((put) => {
+      for (const sc of list) {
+        sc.cells.forEach(([r, c], i) => { const n = normalizeInput(sc.values[i] ?? ''); put(s, r, c, n.content as RawCellContent); });
+        vals.push([...changing.map(([r, c]) => this.value(s, r, c) as any), ...results.map((p) => { const v = this.value(s, p.r, p.c); return typeof v === 'object' && v !== null ? String((v as { value?: string }).value) : v as any; })]);
+        changing.forEach(([r, c], i) => { const n = normalizeInput(cur[i]); put(s, r, c, n.content as RawCellContent); });
+      }
+    });
+    let id = -1;
+    this.group(() => {
+      id = this.addSheet(this.uniqueSheetName('Tóm tắt Kịch bản'));
+      const rows: [number, number, string | number | boolean | null][] = [[0, 0, 'Tóm tắt Kịch bản'], [1, 1, 'Giá trị hiện tại'], [2, 0, 'Ô Thay đổi:']];
+      list.forEach((sc, j) => rows.push([1, 2 + j, sc.name]));
+      changing.forEach(([r, c], i) => { rows.push([3 + i, 0, toA1(r, c)]); rows.push([3 + i, 1, this.value(s, r, c) as any]); list.forEach((_, j) => rows.push([3 + i, 2 + j, vals[j][i]])); });
+      const r0 = 3 + changing.length;
+      rows.push([r0, 0, 'Ô Kết quả:']);
+      results.forEach((p, i) => { rows.push([r0 + 1 + i, 0, toA1(p.r, p.c)]); const v = this.value(s, p.r, p.c); rows.push([r0 + 1 + i, 1, typeof v === 'object' && v !== null ? String((v as any).value) : v as any]); list.forEach((_, j) => rows.push([r0 + 1 + i, 2 + j, vals[j][changing.length + i]])); });
+      this.writeCells(id, rows.map(([r, c, v]) => [r, c, typeof v === 'string' ? "'" + v : v]));
+      this.setStyle(id, { r1: 0, c1: 0, r2: 0, c2: 0 }, { b: true, fs: 13 });
+      this.setStyle(id, { r1: 1, c1: 0, r2: 1, c2: 1 + list.length }, { b: true, bg: '#DDEBF7' });
+      this.setColWidth(id, 0, 110);
+    });
+    return id;
+  }
+  /**
+   * Lọc Nâng cao: vùng danh sách (có tiêu đề), vùng điều kiện (tiêu đề + các hàng điều kiện:
+   * cùng hàng = VÀ, khác hàng = HOẶC; >5, <>x, =x, chữ* ký tự đại diện). Lọc tại chỗ hoặc sao chép tới `to`.
+   */
+  advancedFilter(s: number, list: Range, crit: Range | null, o: { to?: { s: number; r: number; c: number }; unique?: boolean }): number {
+    if (!o.to) this.guard(s, 'formatRows');
+    list = this.clampToUsed(s, list);
+    if (crit) crit = this.clampToUsed(s, crit);
+    const heads = new Map<string, number>();
+    for (let c = list.c1; c <= list.c2; c++) heads.set(this.display(s, list.r1, c).text.trim().toLowerCase(), c);
+    const rules: { c: number; test: (v: unknown, t: string) => boolean }[][] = [];
+    if (crit) {
+      for (let r = crit.r1 + 1; r <= crit.r2; r++) {
+        const row: { c: number; test: (v: unknown, t: string) => boolean }[] = [];
+        for (let c = crit.c1; c <= crit.c2; c++) {
+          const raw = this.display(s, r, c).text.trim();
+          if (!raw) continue;
+          const col = heads.get(this.display(s, crit.r1, c).text.trim().toLowerCase());
+          if (col === undefined) throw new Error(`Tiêu đề điều kiện “${this.display(s, crit.r1, c).text}” không có trong vùng danh sách.`);
+          row.push({ c: col, test: critTest(raw) });
+        }
+        if (row.length) rules.push(row);
+      }
+    }
+    const keep: number[] = [];
+    const seen = new Set<string>();
+    for (let r = list.r1 + 1; r <= list.r2; r++) {
+      const ok = !rules.length || rules.some((row) => row.every((x) => x.test(this.value(s, r, x.c), this.display(s, r, x.c).text)));
+      if (!ok) continue;
+      if (o.unique) { const k = []; for (let c = list.c1; c <= list.c2; c++) k.push(this.display(s, r, c).text.toLowerCase()); const key2 = k.join('\u0001'); if (seen.has(key2)) continue; seen.add(key2); }
+      keep.push(r);
+    }
+    if (o.to) {
+      const t = o.to, rows: [number, number, string | number | boolean | null][] = [];
+      [list.r1, ...keep].forEach((r, i) => { for (let c = list.c1; c <= list.c2; c++) { const v = this.value(s, r, c); rows.push([t.r + i, t.c + c - list.c1, typeof v === 'object' && v !== null ? String((v as any).value) : typeof v === 'string' ? (needsText(v) ? "'" + v : v) : v as any]); } });
+      this.writeCells(t.s, rows);
+    } else {
+      const m = this.meta(s), before = m.rowH.hidden();
+      const hide = new Set(before);
+      const ks = new Set(keep), b0 = new Set(before);
+      for (let r = list.r1 + 1; r <= list.r2; r++) { if (ks.has(r)) hide.delete(r); else hide.add(r); }
+      const after = [...hide];
+      m.rowH.setHidden(after);
+      const adv0 = m.advHidden, adv1 = after.filter((r) => r > list.r1 && r <= list.r2 && !b0.has(r)).concat(adv0 ?? []);
+      m.advHidden = adv1;
+      this.record(null, { undo: () => { m.rowH.setHidden(before); m.advHidden = adv0; }, redo: () => { m.rowH.setHidden(after); m.advHidden = adv1; } });
+    }
+    return keep.length;
+  }
+  /** Hiện tất cả hàng của vùng (Xóa lọc nâng cao) */
+  showAllRows(s: number, g: Range) {
+    const m = this.meta(s), adv = new Set(m.advHidden ?? []);
+    if (!adv.size) return;
+    const before = m.rowH.hidden(), after = before.filter((r) => r < g.r1 || r > g.r2 || !adv.has(r)), a0 = m.advHidden;
+    m.rowH.setHidden(after); m.advHidden = undefined;
+    this.record(null, { undo: () => { m.rowH.setHidden(before); m.advHidden = a0; }, redo: () => { m.rowH.setHidden(after); m.advHidden = undefined; } });
+  }
+  /**
+   * Hợp nhất (Dữ liệu ▸ Hợp nhất): gộp nhiều vùng theo nhãn hàng (cột trái) và/hoặc nhãn cột (hàng trên).
+   * fn: sum | count | average | max | min | product. Ghi giá trị từ ô (s, r, c).
+   */
+  consolidate(dest: { s: number; r: number; c: number }, refs: Ref[], fn: 'sum' | 'count' | 'average' | 'max' | 'min' | 'product', top: boolean, left: boolean): Range {
+    if (!refs.length) throw new Error('Hãy thêm ít nhất một vùng tham chiếu.');
+    const rowKeys: string[] = [], colKeys: string[] = [];
+    const acc = new Map<string, number[]>();
+    const ks = new Set<string>();
+    const addKey = (l: string[], k: string) => { const t = (l === rowKeys ? 'r' : 'c') + k; if (!ks.has(t)) { ks.add(t); l.push(k); } };
+    for (const ref of refs) {
+      const g = this.clampToUsed(ref.sheet, ref.range);
+      const c0 = g.c1 + (left ? 1 : 0), r0 = g.r1 + (top ? 1 : 0);
+      for (let r = r0; r <= g.r2; r++) {
+        const rk = left ? this.display(ref.sheet, r, g.c1).text : String(r - r0);
+        if (left && !rk) continue;
+        for (let c = c0; c <= g.c2; c++) {
+          const ck = top ? this.display(ref.sheet, g.r1, c).text : String(c - c0);
+          if (top && !ck) continue;
+          const v = this.value(ref.sheet, r, c);
+          addKey(rowKeys, rk); addKey(colKeys, ck);
+          const k = rk + '\u0001' + ck;
+          if (!acc.has(k)) acc.set(k, []);
+          if (fn === 'count' ? v !== null && v !== '' : typeof v === 'number') acc.get(k)!.push(typeof v === 'number' ? v : 1);
+        }
+      }
+    }
+    const agg = (l: number[]) => {
+      if (!l.length) return fn === 'count' || fn === 'sum' ? 0 : null;
+      switch (fn) {
+        case 'sum': return l.reduce((a, b) => a + b, 0);
+        case 'count': return l.length;
+        case 'average': return l.reduce((a, b) => a + b, 0) / l.length;
+        case 'max': return Math.max(...l);
+        case 'min': return Math.min(...l);
+        case 'product': return l.reduce((a, b) => a * b, 1);
+      }
+    };
+    const out: [number, number, string | number | boolean | null][] = [];
+    const dr = dest.r + (top ? 1 : 0), dc = dest.c + (left ? 1 : 0);
+    if (top) colKeys.forEach((k, j) => out.push([dest.r, dc + j, "'" + k]));
+    rowKeys.forEach((rk, i) => {
+      if (left) out.push([dr + i, dest.c, "'" + rk]);
+      colKeys.forEach((ck, j) => out.push([dr + i, dc + j, agg(acc.get(rk + '\u0001' + ck) ?? []) ?? null]));
+    });
+    this.writeCells(dest.s, out);
+    return { r1: dest.r, c1: dest.c, r2: dr + rowKeys.length - 1, c2: dc + colKeys.length - 1 };
+  }
+
+  // ---------- Biểu đồ thu nhỏ (Chèn ▸ Biểu đồ thu nhỏ) ----------
+  private sparksChange(s: number, f: (l: SparkGroup[]) => SparkGroup[]) {
+    const m = this.meta(s), before = m.sparks ?? [], after = f(before);
+    m.sparks = after;
+    this.record(null, { undo: () => { m.sparks = before; }, redo: () => { m.sparks = after; } });
+  }
+  sparkAt(s: number, r: number, c: number): { g: SparkGroup; i: number } | null {
+    for (const g of this.meta(s).sparks ?? []) { const i = g.items.findIndex((x) => x.r === r && x.c === c); if (i >= 0) return { g, i }; }
+    return null;
+  }
+  /**
+   * Thêm nhóm sparkline: dữ liệu `src` (nhiều hàng/cột), vị trí `loc` là một dải ô (một hàng hoặc một cột)
+   * — mỗi ô vị trí ứng với một hàng (hoặc cột) dữ liệu như Excel.
+   */
+  addSparklines(s: number, type: SparkGroup['type'], src: Ref, loc: Range): number {
+    const n = loc.r2 - loc.r1 + 1, k = loc.c2 - loc.c1 + 1;
+    if (n > 1 && k > 1) throw new Error('Vùng vị trí phải là một hàng hoặc một cột ô.');
+    const cells = Math.max(n, k), g = src.range, rows = g.r2 - g.r1 + 1, cols = g.c2 - g.c1 + 1;
+    const items: SparkGroup['items'] = [];
+    for (let i = 0; i < cells; i++) {
+      const r = loc.r1 + (n > 1 ? i : 0), c = loc.c1 + (k > 1 ? i : 0);
+      let range: Range;
+      if (cells === 1) range = g;
+      else if (rows === cells) range = { r1: g.r1 + i, c1: g.c1, r2: g.r1 + i, c2: g.c2 };
+      else if (cols === cells) range = { r1: g.r1, c1: g.c1 + i, r2: g.r2, c2: g.c1 + i };
+      else throw new Error('Số ô vị trí phải bằng số hàng (hoặc số cột) của vùng dữ liệu.');
+      items.push({ r, c, src: { sheet: src.sheet, range } });
+    }
+    const taken = new Set(items.map((x) => x.r + ':' + x.c));
+    this.sparksChange(s, (l) => [...l.map((gg) => ({ ...gg, items: gg.items.filter((x) => !taken.has(x.r + ':' + x.c)) })).filter((gg) => gg.items.length), { type, color: type === 'stacked' ? '#4472C4' : '#4472C4', neg: '#C00000', markers: false, items }]);
+    return items.length;
+  }
+  updateSparkGroup(s: number, at: { r: number; c: number }, patch: Partial<Omit<SparkGroup, 'items'>>) {
+    const hit = this.sparkAt(s, at.r, at.c);
+    if (!hit) return;
+    this.sparksChange(s, (l) => l.map((g) => (g === hit.g ? { ...g, ...patch } : g)));
+  }
+  clearSparklines(s: number, g0: Range, wholeGroup = false) {
+    const inR2 = (x: { r: number; c: number }) => x.r >= g0.r1 && x.r <= g0.r2 && x.c >= g0.c1 && x.c <= g0.c2;
+    this.sparksChange(s, (l) => l.map((g) => (wholeGroup && g.items.some(inR2) ? { ...g, items: [] } : { ...g, items: g.items.filter((x) => !inR2(x)) })).filter((g) => g.items.length));
+  }
+
+  // ---------- Bảo vệ (Xem lại ▸ Bảo vệ Trang tính / Sổ làm việc) ----------
+  bookProtect: { pw?: PwHash } | null = null;
+  private guard(s: number, kind: string, g?: Range) { const m = this.protectBlock(s, kind, g); if (m) throw new Error(m); }
+  protectSheet(s: number, allow: Partial<ProtectAllow>, pw?: PwHash) {
+    const m = this.meta(s), before = m.protect ?? null, after: SheetProtect = { allow: { ...DEFAULT_ALLOW, ...allow }, ...(pw ? { pw } : {}) };
+    m.protect = after;
+    this.record(null, { undo: () => { m.protect = before; }, redo: () => { m.protect = after; } });
+  }
+  unprotectSheet(s: number) {
+    const m = this.meta(s), before = m.protect ?? null;
+    if (!before) return;
+    m.protect = null;
+    this.record(null, { undo: () => { m.protect = before; }, redo: () => { m.protect = null; } });
+  }
+  setAllowRanges(s: number, list: { title: string; range: Range; pw?: PwHash }[]) {
+    const m = this.meta(s), before = m.allowRanges ?? [];
+    if (m.protect) throw new Error('Không thể sửa Vùng Cho phép khi trang tính đang được bảo vệ. Hãy bỏ bảo vệ trang tính trước.');
+    m.allowRanges = list;
+    this.record(null, { undo: () => { m.allowRanges = before; }, redo: () => { m.allowRanges = list; } });
+  }
+  protectBook(pw?: PwHash) { const b = this.bookProtect; this.bookProtect = pw ? { pw } : {}; const a = this.bookProtect; this.record(null, { undo: () => { this.bookProtect = b; }, redo: () => { this.bookProtect = a; } }); }
+  unprotectBook() { const b = this.bookProtect; this.bookProtect = null; this.record(null, { undo: () => { this.bookProtect = b; }, redo: () => { this.bookProtect = null; } }); }
+  /** công thức bị ẩn (ô có “Ẩn” trên trang được bảo vệ): không hiện ở thanh công thức, Đánh giá, Theo dõi… */
+  formulaHidden(s: number, r: number, c: number): boolean { return !!this.meta(s).protect && !!this.style(s, r, c).hid; }
+  /** ô có sửa được không khi trang bị bảo vệ: ô không khóa hoặc thuộc vùng cho phép sửa */
+  cellEditable(s: number, r: number, c: number): boolean {
+    const m = this.meta(s);
+    if (!m.protect) return true;
+    if (this.style(s, r, c).lk === false) return true;
+    // vùng có mật khẩu riêng (từ tệp Excel): chưa hỗ trợ hỏi mật khẩu từng vùng → coi như vẫn khóa
+    return (m.allowRanges ?? []).some((a) => !a.pw && r >= a.range.r1 && r <= a.range.r2 && c >= a.range.c1 && c <= a.range.c2);
+  }
+  /**
+   * Kiểm tra thao tác trên trang bị bảo vệ; trả về thông báo lỗi như Excel hoặc null nếu được phép.
+   * kind: edit (nhập/xóa/dán ô) | format | formatCols | formatRows | insertRows | insertCols | deleteRows | deleteCols | sort | filter | objects | structure
+   */
+  protectBlock(s: number, kind: string, g?: Range): string | null {
+    const MSG = 'Ô hoặc biểu đồ bạn đang cố thay đổi nằm trên trang tính được bảo vệ. Để thay đổi, hãy bỏ bảo vệ trang tính (Xem lại ▸ Bỏ bảo vệ Trang tính). Bạn có thể được yêu cầu nhập mật khẩu.';
+    if (kind === 'structure') return this.bookProtect ? 'Sổ làm việc đang được bảo vệ cấu trúc: không thể thêm, xóa, đổi tên, di chuyển hay ẩn trang tính. Hãy bỏ bảo vệ Sổ làm việc (Xem lại ▸ Bảo vệ Sổ làm việc).' : null;
+    const p = this.meta(s).protect;
+    if (!p) return null;
+    const a = p.allow;
+    const ok: Record<string, boolean> = { format: a.formatCells, formatCols: a.formatColumns, formatRows: a.formatRows, insertRows: a.insertRows, insertCols: a.insertColumns, deleteRows: a.deleteRows, deleteCols: a.deleteColumns, sort: a.sort, filter: a.autoFilter, objects: a.objects, link: a.insertHyperlinks };
+    if (kind !== 'edit' && kind !== 'sort' && kind in ok) return ok[kind] ? null : MSG;
+    if (kind === 'never') return MSG;
+    if (kind === 'sort' && !a.sort) return MSG;
+    if (!g) return null;
+    const gg = this.clampToUsed(s, g);
+    const n = (gg.r2 - gg.r1 + 1) * (gg.c2 - gg.c1 + 1);
+    if (n > 200_000) return MSG;
+    for (let r = gg.r1; r <= gg.r2; r++) for (let c = gg.c1; c <= gg.c2; c++) if (!this.cellEditable(s, r, c)) return MSG;
+    return null;
+  }
+
+  // ---------- Kiểm tra Lỗi (Công thức ▸ Kiểm tra Lỗi, tam giác xanh) ----------
+  /** loại lỗi Excel đánh dấu ở ô: công thức ra lỗi, số lưu dưới dạng văn bản; null nếu không có hoặc đã Bỏ qua */
+  cellIssue(s: number, r: number, c: number): 'err' | 'numText' | null {
+    const v = this.value(s, r, c);
+    if (v === null || typeof v === 'number' || typeof v === 'boolean') return null;
+    const st = this.style(s, r, c);
+    if (st.ie) return null;
+    if (typeof v === 'object') return this.hf.doesCellHaveFormula(this.A(s, r, c)) ? 'err' : null;
+    if (typeof v === 'string' && /^\s*[+-]?\d/.test(v) && st.fmt !== '@' && !this.hf.doesCellHaveFormula(this.A(s, r, c))) {
+      if (/^[+-]?(\d+(,\d+)?|\d{1,3}(\.\d{3})+(,\d+)?)(e[+-]?\d+)?%?$/i.test(v.trim())) return 'numText';
+    }
+    return null;
+  }
+  /** mọi ô có lỗi trên trang (thứ tự hàng → cột) */
+  issueCells(s: number): { r: number; c: number; kind: 'err' | 'numText' }[] {
+    const u = this.used(s), out: { r: number; c: number; kind: 'err' | 'numText' }[] = [];
+    for (let r = 0; r < u.rows; r++) for (let c = 0; c < u.cols; c++) { const k = this.cellIssue(s, r, c); if (k) out.push({ r, c, kind: k }); }
+    return out;
+  }
+  ignoreIssue(s: number, g: Range) { this.setStyle(s, g, { ie: true }); }
+  /** Chuyển thành Số: các ô “số lưu dưới dạng văn bản” trong vùng */
+  convertToNumber(s: number, g0: Range): number {
+    const g = this.clampToUsed(s, g0), list: [number, number, string | number | boolean | null][] = [];
+    for (let r = g.r1; r <= g.r2; r++) for (let c = g.c1; c <= g.c2; c++) if (this.cellIssue(s, r, c) === 'numText') list.push([r, c, String(this.value(s, r, c)).trim()]);
+    this.writeCells(s, list);
+    return list.length;
+  }
+
   // ---------- nhóm hàng/cột (Dữ liệu ▸ Đại cương) ----------
   private axis(s: number, ax: 'r' | 'c') { return ax === 'r' ? this.meta(s).rowH : this.meta(s).colW; }
   /** ghi một thay đổi đại cương + hàng/cột ẩn thành một bước hoàn tác */
@@ -2027,6 +2474,7 @@ export class Workbook {
   // ---------- ghi chú & chú thích ----------
   /** đặt/xóa ghi chú (text rỗng = xóa) */
   setNote(s: number, r: number, c: number, text: string | null) {
+    this.guard(s, 'objects');
     const st = this.meta(s).styles, k = key(r, c), o = st.get(k);
     const v = text && text.trim() ? text.replace(/\s+$/, '') : undefined;
     if ((o?.nt ?? undefined) === v) return;
@@ -2219,6 +2667,7 @@ export class Workbook {
     this.record(null, { undo: () => this.filterRestore(s, before), redo: () => this.filterRestore(s, after) });
   }
   setFilter(s: number, g0: Range) {
+    this.guard(s, 'filter');
     let g = g0;
     if (g.r1 === g.r2 && g.c1 === g.c2) g = this.currentRegion(s, g.r1, g.c1);
     const u = this.used(s);
@@ -2297,9 +2746,9 @@ export class Workbook {
     this.record(null, { undo: () => ((this.meta(s) as any)[key2] = before), redo: () => ((this.meta(s) as any)[key2] = after) });
   }
   private uid() { return Math.random().toString(36).slice(2, 10); }
-  addCF(s: number, rule: CFRule) { const r = { ...rule, id: rule.id ?? this.uid() }; this.ruleChange(s, 'cf', (l) => [...l, r]); return r.id; }
+  addCF(s: number, rule: CFRule) { this.guard(s, 'format'); const r = { ...rule, id: rule.id ?? this.uid() }; this.ruleChange(s, 'cf', (l) => [...l, r]); return r.id; }
   removeCF(s: number, id: string) { this.ruleChange(s, 'cf', (l) => l.filter((x: CFRule) => x.id !== id)); }
-  clearCF(s: number, g?: Range) { this.ruleChange(s, 'cf', (l) => (g ? l.filter((x: CFRule) => x.range.r2 < g.r1 || x.range.r1 > g.r2 || x.range.c2 < g.c1 || x.range.c1 > g.c2) : [])); }
+  clearCF(s: number, g?: Range) { this.guard(s, 'format'); this.ruleChange(s, 'cf', (l) => (g ? l.filter((x: CFRule) => x.range.r2 < g.r1 || x.range.r1 > g.r2 || x.range.c2 < g.c1 || x.range.c1 > g.c2) : [])); }
   private cfCache = new Map<string, { ver: number; st: CFStats }>();
   cfStyle(s: number, r: number, c: number): CFResult {
     const list = this.meta(s).cf;
@@ -2385,14 +2834,26 @@ export class Workbook {
     this.record(null, { undo: () => (this.meta(s).charts = before), redo: () => (this.meta(s).charts = after) });
   }
   addChart(s: number, ch: Chart): string {
+    this.guard(s, 'objects');
     const c = { legend: 'b' as const, ...ch, id: ch.id ?? this.uid() };
     this.chartsChange(s, (l) => [...l, c]);
     return c.id;
   }
   updateChart(s: number, id: string, patch: Partial<Chart>) {
+    this.guard(s, 'objects');
     this.chartsChange(s, (l) => l.map((c) => (c.id === id ? { ...c, ...patch, id } : c)));
   }
-  removeChart(s: number, id: string) { this.chartsChange(s, (l) => l.filter((c) => c.id !== id)); }
+  removeChart(s: number, id: string) { this.guard(s, 'objects'); this.chartsChange(s, (l) => l.filter((c) => c.id !== id)); }
+  /** thứ tự lớp đối tượng nổi (Đưa Lên trên / Xuống dưới) */
+  orderChart(s: number, id: string, how: 'front' | 'back' | 'fwd' | 'bwd') {
+    this.guard(s, 'objects');
+    this.chartsChange(s, (l) => {
+      const i = l.findIndex((c) => c.id === id); if (i < 0) return l;
+      const a = [...l], [x] = a.splice(i, 1);
+      const j = how === 'front' ? a.length : how === 'back' ? 0 : how === 'fwd' ? Math.min(a.length, i + 1) : Math.max(0, i - 1);
+      a.splice(j, 0, x); return a;
+    });
+  }
 
   // ---------- PivotTable ----------
   /** Đọc vùng nguồn thành bảng: hàng đầu là tên cột */
@@ -2569,6 +3030,7 @@ export class Workbook {
       name: this.name,
       calc: this.iterate.on ? { ...this.iterate } : undefined,
       iterVals: iterVals.length ? iterVals : undefined,
+      protect: this.bookProtect ?? undefined,
       names: (() => { const l = this.listNames().map((n) => ({ name: n.name, expr: n.expr, scope: n.scope !== undefined ? this.sheetName(n.scope) : undefined, comment: n.comment, hidden: n.hidden })); return l.length ? l : undefined; })(),
       ext: this.extLinks.length || ext.length ? { links: this.extLinks, sheets: ext.map((id) => ({ name: this.sheetName(id), cells: this.hf.getSheetSerialized(id) })) } : undefined,
       sheets: this.sheetIds().map((id) => {
@@ -2590,6 +3052,9 @@ export class Workbook {
           breaks: m.breaks.rows.length || m.breaks.cols.length ? m.breaks : undefined,
           outline: Object.keys(m.outline.r).length || Object.keys(m.outline.c).length ? m.outline : undefined,
           tables: m.tables.length ? m.tables : undefined,
+          scenarios: m.scenarios?.length ? m.scenarios : undefined,
+          protect: m.protect ?? undefined, allowRanges: m.allowRanges?.length ? m.allowRanges : undefined,
+          sparks: m.sparks?.length ? m.sparks.map((g) => ({ ...g, items: g.items.map((x) => ({ ...x, src: { sheetName: this.sheetName(x.src.sheet), range: x.src.range } as any })) })) : undefined,
           tabColor: m.tabColor,
           state: m.hidden ? 'hidden' : undefined,
           merges: m.merges,
@@ -2608,6 +3073,7 @@ export class Workbook {
     const wb = new Workbook(buildHF([...d.sheets, ...(d.ext?.sheets ?? [])].map((x) => ({ name: x.name, cells: x.cells as RawCellContent[][] })), pre));
     wb.name = d.name || 'Sổ tính';
     wb.extLinks = d.ext?.links ?? [];
+    wb.bookProtect = d.protect ?? null;
     const ids = d.sheets.map((x) => wb.hf.getSheetId(x.name)!);
     d.sheets.forEach((sh, i) => {
       const m = wb.meta(ids[i]);
@@ -2618,6 +3084,9 @@ export class Workbook {
       m.breaks = { rows: sh.breaks?.rows ?? [], cols: sh.breaks?.cols ?? [] };
       if (sh.outline) m.outline = { r: { ...sh.outline.r }, c: { ...sh.outline.c }, x: [...(sh.outline.x ?? [])] };
       if (sh.tables?.length) { m.tables = sh.tables.map((t) => ({ ...t, cols: t.cols.map((c) => ({ ...c })) })); for (const t of m.tables) wb.tableSeq = Math.max(wb.tableSeq, t.id); }
+      if (sh.scenarios?.length) m.scenarios = sh.scenarios;
+      if (sh.protect) m.protect = { ...sh.protect, allow: { ...DEFAULT_ALLOW, ...sh.protect.allow } };
+      if (sh.allowRanges?.length) m.allowRanges = sh.allowRanges;
       if (sh.tabColor) m.tabColor = sh.tabColor;
       if (sh.state === 'hidden') m.hidden = true;
       m.rowH.load((sh.rowH ?? []) as [number, number][], sh.hiddenRows ?? []);
@@ -2639,6 +3108,7 @@ export class Workbook {
       const m = wb.meta(ids[i]);
       m.charts = (sh.charts ?? []).map((c: any) => ({ ...c, id: c.id ?? Math.random().toString(36).slice(2, 10), series: (c.series ?? []).map((x: any) => ({ name: refIn(x.name), cats: refIn(x.cats), vals: refIn(x.vals) })).filter((x: any) => x.vals) }));
       m.pivots = (sh.pivots ?? []).map((p: any) => ({ ...p, src: refIn(p.src) })).filter((p: any) => p.src);
+      if (sh.sparks?.length) m.sparks = (sh.sparks as any[]).map((g) => ({ ...g, items: g.items.map((x: any) => ({ ...x, src: refIn(x.src) })).filter((x: any) => x.src) }));
     });
     if (d.names?.length) {
       const disp = nameDisplay(wb.hf);
@@ -2681,6 +3151,10 @@ export interface SheetJSON {
   charts?: unknown[]; pivots?: unknown[]; print?: PrintSetup | null;
   outline?: Outline;
   tables?: TableDef[];
+  scenarios?: Scenario[];
+  sparks?: unknown[];
+  protect?: SheetProtect;
+  allowRanges?: { title: string; range: Range; pw?: PwHash }[];
   /** biểu đồ đọc từ .xlsx, gắn sau khi sổ đã dựng (finishImport) */
   rawCharts?: unknown[];
 }
@@ -2696,6 +3170,8 @@ export interface BookJSON {
   calc?: { on: boolean; count?: number; delta?: number };
   iterVals?: [string, number, number, unknown][];
   ext?: { links: ExtLink[]; sheets: { name: string; cells: unknown[][] }[] };
+  /** Bảo vệ Sổ làm việc (cấu trúc) */
+  protect?: { pw?: PwHash };
 }
 /** Sheet đệm giá trị của liên kết ngoài: tên dạng “[1]Tên sheet” (tên sheet thường không được có dấu [ ]) */
 export const isExtName = (n: string) => /^\[\d+\]/.test(n);
@@ -2846,6 +3322,20 @@ function shiftAll(m: SheetMeta, ax: 'r' | 'c', pt: (x: number) => number, span: 
       return cols.length ? [{ ...t, ...g, cols }] : [];
     });
   }
+  if (m.sparks?.length) {
+    m.sparks = m.sparks.map((g) => ({ ...g, items: g.items.flatMap((x) => {
+      const p = pt(ax === 'r' ? x.r : x.c);
+      if (p < 0) return [];
+      return [{ ...x, r: ax === 'r' ? p : x.r, c: ax === 'c' ? p : x.c }];
+    }) })).filter((g) => g.items.length);
+  }
+  if (m.allowRanges?.length) m.allowRanges = m.allowRanges.flatMap((a) => { const g = mv(a.range); return g ? [{ ...a, range: g }] : []; });
+  if (ax === 'r' && m.advHidden?.length) m.advHidden = m.advHidden.map(pt).filter((x) => x >= 0);
+  if (m.scenarios?.length) m.scenarios = m.scenarios.map((sc) => {
+    const keep = sc.cells.map(([r, c]) => (ax === 'r' ? [pt(r), c] : [r, pt(c)]) as [number, number]);
+    const ok = keep.map((x) => x[0] >= 0 && x[1] >= 0);
+    return { ...sc, cells: keep.filter((_, i) => ok[i]), values: sc.values.filter((_, i) => ok[i]) };
+  }).filter((sc) => sc.cells.length);
   if (m.filter) {
     const g = mv(m.filter.range);
     if (!g) m.filter = null;
@@ -2865,14 +3355,14 @@ function remapStyles(m: Map<number, Style>, f: (r: number, c: number) => { r: nu
 // Bảng định dạng của mỗi sheet luôn là MỘT đối tượng Map cố định (chỉ sửa tại chỗ),
 // để các mục hoàn tác giữ tham chiếu tới nó không bị "lạc" sang bản cũ.
 function setAll(m: Map<number, Style>, src: Map<number, Style>) { if (m === src) return; m.clear(); src.forEach((v, k) => m.set(k, v)); }
-type MetaSnap = { tables?: TableDef[]; outline?: Outline; styles: Map<number, Style>; colW: [number, number][]; rowH: [number, number][]; hidden: number[]; colHidden: number[]; freeze: { rows: number; cols: number }; merges: Range[]; cf: CFRule[]; dv: DVRule[]; filter: SheetFilter | null; charts: Chart[]; pivots: PivotDef[]; print: PrintSetup | null; breaks: { rows: number[]; cols: number[] }; tabColor?: string; sheetHidden?: boolean };
+type MetaSnap = { advHidden?: number[]; scenarios?: Scenario[]; protect?: SheetProtect | null; allowRanges?: { title: string; range: Range; pw?: PwHash }[]; sparks?: SparkGroup[]; tables?: TableDef[]; outline?: Outline; styles: Map<number, Style>; colW: [number, number][]; rowH: [number, number][]; hidden: number[]; colHidden: number[]; freeze: { rows: number; cols: number }; merges: Range[]; cf: CFRule[]; dv: DVRule[]; filter: SheetFilter | null; charts: Chart[]; pivots: PivotDef[]; print: PrintSetup | null; breaks: { rows: number[]; cols: number[] }; tabColor?: string; sheetHidden?: boolean };
 function snapMeta(m: SheetMeta): MetaSnap {
-  return { styles: new Map(m.styles), colW: m.colW.entries(), rowH: m.rowH.entries(), hidden: m.rowH.hidden(), colHidden: m.colW.hidden(), freeze: { ...m.freeze }, merges: m.merges, cf: m.cf, dv: m.dv, filter: m.filter ? JSON.parse(JSON.stringify(m.filter)) : null, charts: m.charts, pivots: m.pivots, print: m.print, breaks: { rows: [...m.breaks.rows], cols: [...m.breaks.cols] }, tabColor: m.tabColor, sheetHidden: m.hidden, outline: m.outline, tables: m.tables };
+  return { styles: new Map(m.styles), colW: m.colW.entries(), rowH: m.rowH.entries(), hidden: m.rowH.hidden(), colHidden: m.colW.hidden(), freeze: { ...m.freeze }, merges: m.merges, cf: m.cf, dv: m.dv, filter: m.filter ? JSON.parse(JSON.stringify(m.filter)) : null, charts: m.charts, pivots: m.pivots, print: m.print, breaks: { rows: [...m.breaks.rows], cols: [...m.breaks.cols] }, tabColor: m.tabColor, sheetHidden: m.hidden, outline: m.outline, tables: m.tables, sparks: m.sparks, protect: m.protect, allowRanges: m.allowRanges, advHidden: m.advHidden, scenarios: m.scenarios };
 }
 function restoreMeta(m: SheetMeta, s: MetaSnap) {
   setAll(m.styles, new Map(s.styles)); m.colW.load(s.colW, s.colHidden ?? []); m.rowH.load(s.rowH, s.hidden); m.freeze = { ...s.freeze };
   m.merges = s.merges; m.cf = s.cf; m.dv = s.dv; m.filter = s.filter ? JSON.parse(JSON.stringify(s.filter)) : null;
-  m.charts = s.charts ?? []; m.pivots = s.pivots ?? []; m.print = s.print ?? null; m.outline = s.outline ?? NO_OUTLINE; m.tables = s.tables ?? [];
+  m.charts = s.charts ?? []; m.pivots = s.pivots ?? []; m.print = s.print ?? null; m.outline = s.outline ?? NO_OUTLINE; m.tables = s.tables ?? []; m.sparks = s.sparks; m.protect = s.protect; m.allowRanges = s.allowRanges; m.advHidden = s.advHidden; m.scenarios = s.scenarios;
   m.breaks = { rows: [...(s.breaks?.rows ?? [])], cols: [...(s.breaks?.cols ?? [])] }; m.tabColor = s.tabColor; m.hidden = s.sheetHidden;
 }
 
@@ -2898,4 +3388,21 @@ class StyleTxn {
       redo: () => { for (const [m, k, v] of this.after) setOrDel(m, k, v); },
     };
   }
+}
+
+/** điều kiện Lọc Nâng cao: >5, >=x, <>x, =x, x* ? ~ (ký tự đại diện), chữ thường = “bắt đầu bằng” như Excel */
+export function critTest(raw: string): (v: unknown, text: string) => boolean {
+  const m = /^(<>|>=|<=|=|>|<)?(.*)$/.exec(raw)!;
+  const op = m[1] ?? '', rhs = m[2];
+  const numR = /^-?\d+(?:[.,]\d+)?$/.test(rhs.trim()) ? +rhs.trim().replace(',', '.') : null;
+  const wild = (pat: string, exact: boolean) => new RegExp('^' + pat.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/~\*/g, '\u0001').replace(/~\?/g, '\u0002').replace(/\*/g, '.*').replace(/\?/g, '.').replace(/\u0001/g, '\\*').replace(/\u0002/g, '\\?') + (exact ? '$' : ''), 'i');
+  return (v, text) => {
+    if (numR !== null && typeof v === 'number') {
+      switch (op) { case '>': return v > numR; case '<': return v < numR; case '>=': return v >= numR; case '<=': return v <= numR; case '<>': return v !== numR; default: return v === numR; }
+    }
+    if (op === '>' || op === '<' || op === '>=' || op === '<=') { if (numR !== null) return false; const c = COLLATOR.compare(text, rhs); return op === '>' ? c > 0 : op === '<' ? c < 0 : op === '>=' ? c >= 0 : c <= 0; }
+    if (op === '<>') return !wild(rhs, true).test(text);
+    if (op === '=') return rhs === '' ? text === '' : wild(rhs, true).test(text);
+    return wild(rhs, false).test(text);
+  };
 }

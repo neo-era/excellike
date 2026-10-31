@@ -11,6 +11,7 @@ import { VERSION } from './version';
 import { lang, setLang, tr, type Lang } from './i18n';
 import { TEMPLATES } from './templates';
 import { authorName, setAuthorName } from './notes-ui';
+import { toggleBookProtect } from './protect-ui';
 import { licenseStatus, licenseText, changeKey } from './license';
 
 /** Ngày sửa đổi dạng tương đối như Excel 365 (Vừa xong, 5 phút trước, Hôm qua lúc 14:20…) */
@@ -189,7 +190,7 @@ export class Backstage {
       m.appendChild(dl);
       const c = document.createElement('div'); c.className = 'bs-cmds'; c.style.marginTop = '20px';
       c.append(
-        cmd('protectBook', 'Bảo vệ Sổ làm việc', 'Có ở bản 0.9', () => app.later('Bảo vệ Sổ làm việc', '0.9')),
+        cmd('protectBook', 'Bảo vệ Sổ làm việc', app.wb.bookProtect ? 'Đang bảo vệ cấu trúc — bấm để bỏ' : 'Khóa cấu trúc sổ (thêm/xóa/đổi tên trang tính)', () => { this.close(); toggleBookProtect(app); }),
         cmd('errorCheck', 'Kiểm tra Sổ làm việc', 'Thống kê nội dung sổ làm việc', () => app.bookStats()),
       );
       m.appendChild(c);
@@ -242,6 +243,7 @@ export class Backstage {
       f.innerHTML = `<h2>Chung</h2>
 <label class="fld"><span>Tên người dùng (hiện trong ghi chú, chú thích)</span><input id="opt-author" type="text" maxlength="60"></label>
 <h2>Công thức</h2>
+<label class="chk"><input type="checkbox" id="opt-errchk"${app.grid.errCheck ? ' checked' : ''}> Bật kiểm tra lỗi nền (tam giác xanh)</label>
 <label class="chk"><input type="checkbox" id="opt-iter"${it.on ? ' checked' : ''}> Bật tính toán lặp</label>
 <div class="row2"><label class="fld"><span>Số lần lặp Tối đa</span><input id="opt-iter-n" type="text" inputmode="numeric" value="${it.count}"></label><label class="fld"><span>Thay đổi Tối đa</span><input id="opt-iter-d" type="text" inputmode="decimal" value="${String(it.delta).replace('.', ',')}"></label></div>
 <h2>Nâng cao</h2>
@@ -266,6 +268,7 @@ export class Backstage {
       q<HTMLInputElement>('opt-author').value = authorName() === 'Người dùng' ? '' : authorName();
       q<HTMLInputElement>('opt-author').placeholder = 'Người dùng';
       q('opt-author').onchange = () => setAuthorName(q<HTMLInputElement>('opt-author').value);
+      q('opt-errchk').onchange = () => { app.grid.errCheck = q<HTMLInputElement>('opt-errchk').checked; try { localStorage.setItem('xl-errchk', app.grid.errCheck ? '1' : '0'); } catch { /* bỏ qua */ } app.grid.invalidate(); };
       q<HTMLSelectElement>('opt-lang').value = lang();
       q('opt-lang').onchange = async () => { setLang(q<HTMLSelectElement>('opt-lang').value as Lang); await app.saveNow(false); location.reload(); };
     }

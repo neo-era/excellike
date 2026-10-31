@@ -19,7 +19,9 @@ type Drag =
   | { kind: 'resizeC'; c: number; x0: number; w0: number }
   | { kind: 'resizeR'; r: number; y0: number; h0: number }
   | { kind: 'fill'; src: Range; tgt: Range }
-  | { kind: 'point'; r0: number; c0: number };
+  | { kind: 'point'; r0: number; c0: number }
+  | { kind: 'brk'; ax: 'r' | 'c'; from: number; to: number }
+  | { kind: 'mv'; src: Range; dr0: number; dc0: number; r: number; c: number; mode: 'move' | 'copy' | 'insert'; dir: 'down' | 'right' };
 
 // phông ô và phông tiêu đề lấy từ CSS (--font-cell: Aptos Narrow/Calibri; --font-ui: Segoe UI)
 let FONT = "'Aptos Narrow', Calibri, 'Segoe UI', sans-serif";
@@ -53,6 +55,7 @@ export class Grid {
   private extR = 200;
   private extC = 40;
   private drag: Drag | null = null;
+  private mods = { shift: false, ctrl: false };
   private pointer = { x: 0, y: 0, id: -1, type: '' };
   private autoTimer = 0;
   private colors: Record<string, string> = {};
@@ -423,6 +426,19 @@ export class Grid {
     this.brk = { key, pages, area: L.area, manR: new Set(b.rows), manC: new Set(b.cols) };
     return this.brk;
   }
+  /** đường ngắt trang gần điểm (x, y) trong Xem trước Ngắt Trang (để kéo) */
+  private breakAt(x: number, y: number): { ax: 'r' | 'c'; at: number } | null {
+    if (this.view !== 'break') return null;
+    const L = this.breakLayout();
+    if (!L.area) return null;
+    const ax1 = this.sx(L.area.c1), ay1 = this.sy(L.area.r1), ax2 = this.sx(L.area.c2) + this.colWpx(L.area.c2), ay2 = this.sy(L.area.r2) + this.rowHpx(L.area.r2);
+    if (x < ax1 || x > ax2 || y < ay1 || y > ay2) return null;
+    for (const p of L.pages) {
+      if (p.r1 !== L.area.r1 && Math.abs(this.sy(p.r1) - y) <= 4) return { ax: 'r', at: p.r1 };
+      if (p.c1 !== L.area.c1 && Math.abs(this.sx(p.c1) - x) <= 4) return { ax: 'c', at: p.c1 };
+    }
+    return null;
+  }
   private drawBreaks(rows: number[], cols: number[]) {
     const ctx = this.ctx, z = this.zoom, W = this.width, H = this.height;
     const L = this.breakLayout();
@@ -446,6 +462,14 @@ export class Grid {
     // đường ngắt: thủ công/biên vùng in nét liền, tự động nét đứt (màu xanh như Excel)
     ctx.strokeStyle = '#1f5fbf'; ctx.lineWidth = 2;
     ctx.strokeRect(ax1 + 1, ay1 + 1, ax2 - ax1 - 2, ay2 - ay1 - 2);
+    const dg = this.drag;
+    if (dg?.kind === 'brk') {
+      // đường đang kéo: nét đậm hơn
+      ctx.save(); ctx.lineWidth = 3; ctx.strokeStyle = '#0b3d91'; ctx.setLineDash([]);
+      ctx.beginPath();
+      if (dg.ax === 'r') { const yy = Math.round(this.sy(dg.to)); ctx.moveTo(ax1, yy); ctx.lineTo(ax2, yy); } else { const xx = Math.round(this.sx(dg.to)); ctx.moveTo(xx, ay1); ctx.lineTo(xx, ay2); }
+      ctx.stroke(); ctx.restore();
+    }
     const seenR = new Set<number>(), seenC = new Set<number>();
     for (const p of L.pages) {
       if (p.r1 !== L.area.r1 && !seenR.has(p.r1)) { seenR.add(p.r1); const y = Math.round(this.sy(p.r1)); ctx.setLineDash(L.manR.has(p.r1) ? [] : [6, 4]); ctx.beginPath(); ctx.moveTo(ax1, y); ctx.lineTo(ax2, y); ctx.stroke(); }
@@ -460,6 +484,7 @@ export class Grid {
     if (this.showFormulas) { const t = this.wb.rawText(this.sheet, r, c); if (t.startsWith('=')) d = { ...d, text: t, align: 'l', value: t }; }
     const cf = this.wb.cfStyle(this.sheet, r, c);
     if (this.wb.tables(this.sheet).length) d = { ...d, style: this.wb.viewStyle(this.sheet, r, c) };
+    if (d.style.cb && typeof d.value === 'boolean') d = { ...d, text: '' };
     const st = cf.fg || cf.bg || cf.b || cf.i ? { ...d.style, ...(cf.fg ? { fg: cf.fg } : {}), ...(cf.bg ? { bg: cf.bg } : {}), ...(cf.b ? { b: true } : {}), ...(cf.i ? { i: true } : {}) } : d.style;
     return { d, st, bar: cf.bar };
   }
@@ -786,7 +811,12 @@ export class Grid {
   }
 
   /** tam giác đỏ (ghi chú) / tím (chú thích) ở góc trên phải ô như Excel */
+  /** Kiểm tra Lỗi bật/tắt (Tùy chọn ▸ Công thức: Bật kiểm tra lỗi nền) */
+  errCheck = (() => { try { return localStorage.getItem('xl-errchk') !== '0'; } catch { return true; } })();
   private drawNoteMarks(rows: number[], cols: number[]) {
+    if (this.errCheck) this.drawIssueMarks(rows, cols);
+    if (this.wb.meta(this.sheet).sparks?.length) this.drawSparks(rows, cols);
+    this.drawChecks(rows, cols);
     const list = this.wb.noteCells(this.sheet);
     if (!list.length) return;
     const rs = new Set(rows), cs = new Set(cols), ctx = this.ctx, z = this.zoom;
@@ -799,6 +829,102 @@ export class Grid {
       ctx.fillStyle = st.cm ? (st.cmDone ? '#9e9e9e' : '#7b3fbf') : '#d13438';
       ctx.beginPath(); ctx.moveTo(a.x + a.w - 1 - sz, a.y + 1); ctx.lineTo(a.x + a.w - 1, a.y + 1); ctx.lineTo(a.x + a.w - 1, a.y + 1 + sz); ctx.closePath(); ctx.fill();
     }
+  }
+  /** tam giác xanh góc trên trái ô có lỗi (công thức ra lỗi, số lưu dạng văn bản) như Excel */
+  private drawIssueMarks(rows: number[], cols: number[]) {
+    const ctx = this.ctx, z = this.zoom, u = this.wb.used(this.sheet), sz = Math.max(5, 6 * z);
+    ctx.fillStyle = '#107c41';
+    for (const r of rows) {
+      if (r >= u.rows || this.rowHpx(r) <= 0) continue;
+      for (const c of cols) {
+        if (c >= u.cols || this.colWpx(c) <= 0) continue;
+        if (!this.wb.cellIssue(this.sheet, r, c)) continue;
+        const x = this.sx(c), y = this.sy(r);
+        ctx.beginPath(); ctx.moveTo(x + 1, y + 1); ctx.lineTo(x + 1 + sz, y + 1); ctx.lineTo(x + 1, y + 1 + sz); ctx.closePath(); ctx.fill();
+      }
+    }
+  }
+  /** hộp kiểm trong ô (Chèn ▸ Hộp kiểm) */
+  checkRect(r: number, c: number) {
+    const z = this.zoom, sz = Math.round(Math.min(13 * z, this.rowHpx(r) - 4, this.colWpx(c) - 4));
+    const x = this.sx(c), y = this.sy(r), w = this.colWpx(c), h = this.rowHpx(r);
+    const al = this.wb.style(this.sheet, r, c).al;
+    const bx = al === 'l' ? x + 4 : al === 'r' ? x + w - sz - 4 : x + (w - sz) / 2;
+    return { x: Math.round(bx), y: Math.round(y + (h - sz) / 2), s: sz };
+  }
+  private drawChecks(rows: number[], cols: number[]) {
+    const ctx = this.ctx, wb = this.wb, s = this.sheet;
+    if (!wb.meta(s).styles.size) return;
+    for (const r of rows) for (const c of cols) {
+      const st = wb.style(s, r, c);
+      if (!st.cb) continue;
+      const v = wb.value(s, r, c);
+      if (typeof v !== 'boolean') continue;
+      const b = this.checkRect(r, c);
+      if (b.s < 6) continue;
+      ctx.save();
+      ctx.lineWidth = 1; ctx.strokeStyle = v ? '#107c41' : '#7a7a7a';
+      ctx.fillStyle = v ? '#107c41' : '#ffffff';
+      ctx.beginPath(); ctx.roundRect?.(b.x + 0.5, b.y + 0.5, b.s, b.s, 2); if (!ctx.roundRect) ctx.rect(b.x + 0.5, b.y + 0.5, b.s, b.s); ctx.fill(); ctx.stroke();
+      if (v) { ctx.strokeStyle = '#ffffff'; ctx.lineWidth = Math.max(1.5, b.s / 7); ctx.beginPath(); ctx.moveTo(b.x + b.s * 0.22, b.y + b.s * 0.52); ctx.lineTo(b.x + b.s * 0.42, b.y + b.s * 0.72); ctx.lineTo(b.x + b.s * 0.78, b.y + b.s * 0.3); ctx.stroke(); }
+      ctx.restore();
+    }
+  }
+  /** Biểu đồ thu nhỏ trong ô (đường, cột, thắng/thua) */
+  private drawSparks(rows: number[], cols: number[]) {
+    const ctx = this.ctx, rs = new Set(rows), cs = new Set(cols);
+    for (const g of this.wb.meta(this.sheet).sparks ?? []) for (const it of g.items) {
+      if (!rs.has(it.r) || !cs.has(it.c)) continue;
+      const x = this.sx(it.c) + 3, y = this.sy(it.r) + 3, w = this.colWpx(it.c) - 6, hh = this.rowHpx(it.r) - 6;
+      if (w < 4 || hh < 4) continue;
+      const vals: (number | null)[] = [];
+      // vùng nguồn cắt theo vùng đã dùng và tối đa 2.000 điểm (cả cột A:A không làm chậm mỗi khung hình)
+      const q = it.src.range, u = this.wb.used(it.src.sheet);
+      const r2 = Math.min(q.r2, Math.max(q.r1, u.rows - 1)), c2 = Math.min(q.c2, Math.max(q.c1, u.cols - 1));
+      for (let r = q.r1; r <= r2 && vals.length < 2000; r++) for (let c = q.c1; c <= c2 && vals.length < 2000; c++) { const v = this.wb.value(it.src.sheet, r, c); vals.push(typeof v === 'number' ? v : null); }
+      let mx = -Infinity, mn = Infinity;
+      for (const v of vals) if (v !== null) { if (v > mx) mx = v; if (v < mn) mn = v; }
+      if (mx === -Infinity) continue;
+      const n = vals.length;
+      const iHi = vals.indexOf(mx), iLo = vals.indexOf(mn);
+      ctx.save(); ctx.beginPath(); ctx.rect(x - 2, y - 2, w + 4, hh + 4); ctx.clip();
+      if (g.type === 'line') {
+        const lo = mn, hi = mx === mn ? mn + 1 : mx;
+        const X = (i: number) => x + (n === 1 ? w / 2 : (i / (n - 1)) * w), Y = (v: number) => y + hh - ((v - lo) / (hi - lo)) * hh;
+        ctx.strokeStyle = g.color; ctx.lineWidth = 1.5; ctx.lineJoin = 'round'; ctx.beginPath();
+        let pen = false;
+        vals.forEach((v, i) => { if (v === null) { pen = false; return; } if (pen) ctx.lineTo(X(i), Y(v)); else { ctx.moveTo(X(i), Y(v)); pen = true; } });
+        ctx.stroke();
+        const dot = (i: number, col: string) => { const v = vals[i]; if (v === null || v === undefined) return; ctx.fillStyle = col; ctx.beginPath(); ctx.arc(X(i), Y(v), 2.2, 0, Math.PI * 2); ctx.fill(); };
+        if (g.markers) vals.forEach((_, i) => dot(i, g.color));
+        if (g.negPts) vals.forEach((v, i) => { if (v !== null && v < 0) dot(i, g.neg ?? '#C00000'); });
+        if (g.first) dot(vals.findIndex((v) => v !== null), '#7030A0');
+        if (g.last) { let i = n - 1; while (i > 0 && vals[i] === null) i--; dot(i, '#7030A0'); }
+        if (g.hi) dot(iHi, '#00B050');
+        if (g.lo) dot(iLo, '#C00000');
+      } else {
+        const bw = Math.max(1, w / n - 1);
+        const lo = Math.min(0, mn), hi = Math.max(0, mx) || 1;
+        const Y = (v: number) => y + hh - ((v - lo) / (hi - lo || 1)) * hh, z = g.type === 'stacked' ? y + hh / 2 : Y(0);
+        vals.forEach((v, i) => {
+          if (v === null || (g.type === 'stacked' && v === 0)) return;
+          const bx = x + i * (w / n);
+          ctx.fillStyle = (v < 0 || (g.lo && i === iLo && g.type === 'column')) ? (g.neg ?? '#C00000') : g.hi && i === iHi && g.type === 'column' ? '#00B050' : g.color;
+          if (g.type === 'stacked') ctx.fillRect(bx, v > 0 ? y : z, bw, hh / 2);
+          else { const a = Y(v); ctx.fillRect(bx, Math.min(a, z), bw, Math.max(1, Math.abs(z - a))); }
+        });
+      }
+      ctx.restore();
+    }
+  }
+  /** nút cảnh báo (!) bên trái ô hiện hành có lỗi */
+  errBtn() {
+    if (!this.errCheck) return null;
+    const { ar, ac } = this.sel;
+    if (!this.wb.cellIssue(this.sheet, ar, ac)) return null;
+    const a = this.cellRectM(ar, ac), sz = Math.max(18 * this.zoom, Math.min(a.h, 22 * this.zoom));
+    const x = a.x - sz - 2;
+    return x < this.hdrW ? null : { x, y: a.y, w: sz, h: sz };
   }
   /** mũi tên Kiểm nghiệm Công thức: từ vùng tiền lệ tới ô phụ thuộc (xanh), trỏ ra sheet khác (nét đứt + biểu tượng) */
   arrows: { from: Range; to: { r: number; c: number }; ext?: 'from' | 'to' }[] = [];
@@ -899,6 +1025,14 @@ export class Grid {
     ctx.fillRect(x2 - hs / 2 - 1, y2 - hs / 2 - 1, hs, hs);
     ctx.strokeStyle = C.cell; ctx.lineWidth = 1.5;
     ctx.strokeRect(x2 - hs / 2 - 1, y2 - hs / 2 - 1, hs, hs);
+    const eb = this.errBtn();
+    if (eb) {
+      ctx.fillStyle = C.hdr; ctx.strokeStyle = C['hdr-line']; ctx.lineWidth = 1;
+      ctx.fillRect(eb.x, eb.y, eb.w, eb.h); ctx.strokeRect(eb.x + 0.5, eb.y + 0.5, eb.w - 1, eb.h - 1);
+      const cx = eb.x + eb.w / 2, cy = eb.y + eb.h / 2, k = eb.w * 0.32;
+      ctx.fillStyle = '#f2c811'; ctx.beginPath(); ctx.moveTo(cx, cy - k); ctx.lineTo(cx + k, cy); ctx.lineTo(cx, cy + k); ctx.lineTo(cx - k, cy); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#000'; ctx.font = `700 ${Math.round(9 * z)}px ${UIFONT}`; this.lastFont = ''; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('!', cx, cy + 0.5);
+    }
     // mũi tên chọn từ danh sách (kiểm tra dữ liệu)
     const db = this.dvBtn();
     if (db) {
@@ -907,6 +1041,23 @@ export class Grid {
       ctx.fillStyle = C.fg;
       const cx = db.x + db.w / 2, cy = db.y + db.h / 2;
       ctx.beginPath(); ctx.moveTo(cx - 4 * z, cy - 2 * z); ctx.lineTo(cx + 4 * z, cy - 2 * z); ctx.lineTo(cx, cy + 2.5 * z); ctx.closePath(); ctx.fill();
+    }
+    if (this.drag?.kind === 'mv' && (this.drag.r !== this.drag.src.r1 || this.drag.c !== this.drag.src.c1)) {
+      const d = this.drag, t = { r1: d.r, c1: d.c, r2: d.r + d.src.r2 - d.src.r1, c2: d.c + d.src.c2 - d.src.c1 };
+      ctx.save(); ctx.strokeStyle = C.muted;
+      if (d.mode === 'insert') {
+        // vạch chữ I: chỗ chèn
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        if (d.dir === 'down') { const yy = this.sy(t.r1); ctx.moveTo(this.sx(t.c1), yy); ctx.lineTo(this.sx(t.c2) + this.colWpx(t.c2), yy); }
+        else { const xx = this.sx(t.c1); ctx.moveTo(xx, this.sy(t.r1)); ctx.lineTo(xx, this.sy(t.r2) + this.rowHpx(t.r2)); }
+        ctx.stroke();
+      } else {
+        ctx.setLineDash([4, 3]); ctx.lineWidth = 2;
+        ctx.strokeRect(this.sx(t.c1) + 1, this.sy(t.r1) + 1, this.sx(t.c2) + this.colWpx(t.c2) - this.sx(t.c1) - 2, this.sy(t.r2) + this.rowHpx(t.r2) - this.sy(t.r1) - 2);
+        if (d.mode === 'copy') { ctx.setLineDash([]); ctx.fillStyle = C.muted; ctx.font = `bold ${12 * this.zoom}px sans-serif`; ctx.fillText('+', this.sx(t.c2) + this.colWpx(t.c2) + 3, this.sy(t.r1) + 12 * this.zoom); }
+      }
+      ctx.restore();
     }
     if (this.drag?.kind === 'fill') {
       const t = this.drag.tgt;
@@ -1056,6 +1207,13 @@ export class Grid {
     const hx = this.sx(g.c2) + this.colWpx(g.c2), hy = this.sy(g.r2) + this.rowHpx(g.r2);
     const tol = this.pointer.type === 'touch' ? 14 : 6;
     if (Math.abs(x - hx) <= tol && Math.abs(y - hy) <= tol) return { zone: 'fill' as const, r, c };
+    // viền vùng chọn (kéo để di chuyển) — chỉ chuột, vùng chọn không phải cả hàng/cột
+    if (this.pointer.type !== 'touch' && !(g.r1 === 0 && g.r2 === MAX_ROWS - 1) && !(g.c1 === 0 && g.c2 === MAX_COLS - 1)) {
+      const x1 = this.sx(g.c1), y1 = this.sy(g.r1);
+      const inX = x >= x1 - 3 && x <= hx + 3, inY = y >= y1 - 3 && y <= hy + 3;
+      const nearV = inY && (Math.abs(x - x1) <= 3 || Math.abs(x - hx) <= 3), nearH = inX && (Math.abs(y - y1) <= 3 || Math.abs(y - hy) <= 3);
+      if (nearV || nearH) return { zone: 'border' as const, r, c };
+    }
     return { zone: 'cell' as const, r, c };
   }
 
@@ -1074,7 +1232,7 @@ export class Grid {
       return;
     }
     if (this.edit.isEditing()) {
-      if (this.edit.pointMode() && h.zone === 'cell') {
+      if (this.edit.pointMode() && (h.zone === 'cell' || h.zone === 'border')) {
         e.preventDefault();
         this.drag = { kind: 'point', r0: h.r, c0: h.c };
         this.edit.insertRef(toA1(h.r, h.c), false);
@@ -1090,6 +1248,8 @@ export class Grid {
     if (h.zone === 'ollc') { this.onOutline('lc', h.r, 0); return; }
     if (this.buttonAt(x, y, e.clientX, e.clientY)) return;
     this.scroller.setPointerCapture(e.pointerId);
+    const bk = h.zone === 'cell' ? this.breakAt(x, y) : null;
+    if (bk) { this.drag = { kind: 'brk', ax: bk.ax, from: bk.at, to: bk.at }; return; }
     switch (h.zone) {
       case 'corner': this.selectRange({ r1: 0, c1: 0, r2: MAX_ROWS - 1, c2: MAX_COLS - 1 }); break;
       case 'resizeC': this.drag = { kind: 'resizeC', c: h.c, x0: x, w0: this.m.colW.get(h.c) }; break;
@@ -1112,10 +1272,16 @@ export class Grid {
         break;
       }
       case 'fill': this.startFill(); break;
+      case 'border': {
+        const g = this.range;
+        const r = Math.max(g.r1, Math.min(g.r2, h.r)), c = Math.max(g.c1, Math.min(g.c2, h.c));
+        this.drag = { kind: 'mv', src: g, dr0: r - g.r1, dc0: c - g.c1, r: g.r1, c: g.c1, mode: 'move', dir: 'down' };
+        break;
+      }
       default:
         this.select(h.r, h.c, e.shiftKey || this.extMode, (e.ctrlKey || e.metaKey) && !e.shiftKey);
         this.drag = { kind: 'sel' };
-        this.host.dispatchEvent(new CustomEvent('cell-down', { detail: { r: h.r, c: h.c, ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey }, bubbles: true }));
+        this.host.dispatchEvent(new CustomEvent('cell-down', { detail: { r: h.r, c: h.c, ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey, x: e.clientX, y: e.clientY }, bubbles: true }));
     }
     this.focusKeys();
   }
@@ -1129,6 +1295,11 @@ export class Grid {
   }
   /** Bấm vào nút lọc hoặc nút danh sách → báo cho App mở menu */
   private buttonAt(x: number, y: number, cx: number, cy: number) {
+    const eb = this.errBtn();
+    if (eb && x >= eb.x && x <= eb.x + eb.w && y >= eb.y && y <= eb.y + eb.h) {
+      this.host.dispatchEvent(new CustomEvent('err-btn', { detail: { x: cx, y: cy }, bubbles: true }));
+      return true;
+    }
     const db = this.dvBtn();
     if (db && x >= db.x && x <= db.x + db.w && y >= db.y && y <= db.y + db.h) {
       this.host.dispatchEvent(new CustomEvent('dv-btn', { detail: { x: cx, y: cy }, bubbles: true }));
@@ -1157,11 +1328,14 @@ export class Grid {
       if (e.pointerType === 'mouse') {
         const hh = this.hit(x, y), z = hh.zone;
         if (z === 'cell') this.onHover(hh.r, hh.c); else this.onHover(-1, -1);
-        this.scroller.style.cursor = z === 'resizeC' ? 'col-resize' : z === 'resizeR' ? 'row-resize' : z === 'fill' ? 'crosshair' : z === 'colh' ? 's-resize' : z === 'rowh' ? 'e-resize' : 'cell';
+        const bk = z === 'cell' ? this.breakAt(x, y) : null;
+        if (bk) { this.scroller.style.cursor = bk.ax === 'r' ? 'row-resize' : 'col-resize'; return; }
+        this.scroller.style.cursor = z === 'resizeC' ? 'col-resize' : z === 'resizeR' ? 'row-resize' : z === 'fill' ? 'crosshair' : z === 'border' ? 'move' : z === 'colh' ? 's-resize' : z === 'rowh' ? 'e-resize' : 'cell';
       }
       return;
     }
     this.pointer.x = x; this.pointer.y = y;
+    this.mods = { shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey };
     this.dragTo(x, y);
     this.autoScroll();
   }
@@ -1182,6 +1356,15 @@ export class Grid {
       if (Math.abs(dr) >= Math.abs(dc) && dr) t = dr > 0 ? { ...s, r2: r } : { ...s, r1: r };
       else if (dc) t = dc > 0 ? { ...s, c2: c } : { ...s, c1: c };
       d.tgt = t; this.invalidate();
+    } else if (d.kind === 'brk') {
+      const v = d.ax === 'r' ? this.rowAt(Math.max(this.hdrH + 1, y) + this.rowHpx(r) / 2) : this.colAt(Math.max(this.hdrW + 1, x) + this.colWpx(c) / 2);
+      if (v !== d.to) { d.to = v; this.invalidate(); }
+    } else if (d.kind === 'mv') {
+      const h = d.src.r2 - d.src.r1, w = d.src.c2 - d.src.c1;
+      const nr = Math.max(0, Math.min(MAX_ROWS - 1 - h, r - d.dr0)), nc = Math.max(0, Math.min(MAX_COLS - 1 - w, c - d.dc0));
+      const mode = this.mods.shift ? 'insert' : this.mods.ctrl ? 'copy' : 'move';
+      const dir = Math.abs(nc - d.src.c1) > Math.abs(nr - d.src.r1) ? 'right' : 'down';
+      if (nr !== d.r || nc !== d.c || mode !== d.mode || dir !== d.dir) { d.r = nr; d.c = nc; d.mode = mode; d.dir = dir; this.invalidate(); }
     } else if (d.kind === 'point') {
       this.edit.insertRef(rangeToA1(normRange({ r: d.r0, c: d.c0 }, { r, c })), true);
     }
@@ -1224,6 +1407,16 @@ export class Grid {
       const h = this.m.rowH.get(d.r);
       this.m.rowH.set(d.r, d.h0);
       this.wb.setRowHeight(this.sheet, d.r, h);
+    } else if (d.kind === 'brk') {
+      if (d.to !== d.from) this.wb.movePageBreak(this.sheet, d.ax, d.from, d.to);
+    } else if (d.kind === 'mv') {
+      const mode = e.shiftKey ? 'insert' : (e.ctrlKey || e.metaKey) ? 'copy' : 'move';
+      if (d.r !== d.src.r1 || d.c !== d.src.c1) {
+        try {
+          const g = this.wb.dragCells(this.sheet, d.src, d.r, d.c, mode, d.dir);
+          if (g) this.selectRange(g);
+        } catch (err) { this.host.dispatchEvent(new CustomEvent('grid-error', { detail: (err as Error).message, bubbles: true })); }
+      }
     } else if (d.kind === 'fill') {
       const { src, tgt } = d;
       if (tgt.r1 !== src.r1 || tgt.r2 !== src.r2 || tgt.c1 !== src.c1 || tgt.c2 !== src.c2) {
@@ -1264,7 +1457,7 @@ export class Grid {
     const { x, y } = this.local(e);
     const h = this.hit(x, y);
     if (h.zone === 'resizeC') { this.autoFit(h.c); return; }
-    if (h.zone === 'cell' && !this.edit.isEditing()) this.edit.begin(null, 'edit');
+    if ((h.zone === 'cell' || h.zone === 'border') && !this.edit.isEditing()) this.edit.begin(null, 'edit');
   }
   autoFit(c: number) { this.wb.setColWidth(this.sheet, c, this.fitWidth(c)); }
   /** Độ rộng vừa nội dung cột (px ở 100%) */
@@ -1295,7 +1488,7 @@ export class Grid {
       if (!(g.r1 === 0 && g.r2 === MAX_ROWS - 1 && h.c >= g.c1 && h.c <= g.c2)) this.selectRange({ r1: 0, c1: h.c, r2: MAX_ROWS - 1, c2: h.c });
       this.onContext(cx, cy, 'col'); return;
     }
-    if (h.zone === 'cell' && !inRange(this.range, h.r, h.c)) this.select(h.r, h.c);
+    if ((h.zone === 'cell' || h.zone === 'border') && !inRange(this.range, h.r, h.c)) this.select(h.r, h.c);
     this.onContext(cx, cy, 'cell');
   }
 }

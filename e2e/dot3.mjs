@@ -40,7 +40,13 @@ async function newPage(opts = {}) {
 const X = (page, f, a) => page.evaluate(f, a);
 const goto = async (page, a) => { await page.click('#namebox'); await page.keyboard.type(a); await page.keyboard.press('Enter'); };
 const tab = (page, t) => page.click(`[role="tab"]:has-text("${t}")`);
-const btn = (page, id) => page.click(`#ribbon [data-id="${id}"]`);
+// nút có thể nằm trong nhóm bị ẩn vì cửa sổ hẹp: mở rộng cửa sổ tạm thời
+const btn = async (page, id) => {
+  const sel = `#ribbon [data-id="${id}"]`;
+  if (await page.locator(sel).first().isVisible()) return page.click(sel);
+  const vp = page.viewportSize(); await page.setViewportSize({ width: 2400, height: vp.height }); await page.waitForTimeout(250);
+  await page.click(sel); await page.setViewportSize(vp); await page.waitForTimeout(150);
+};
 const charts = (page) => X(page, () => window.__xl.wb.meta(window.__xl.grid.sheet).charts);
 const inkVariety = (page, sel) => X(page, (sel) => {
   const cv = document.querySelector(sel); const d = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data;

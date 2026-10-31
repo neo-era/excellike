@@ -820,3 +820,46 @@ html.desktop #backstage .bs-page { padding-top: 40px; }
 .tb-sw { display: grid; grid-template-rows: repeat(5, 6px); width: 44px; border: 1px solid #c8c8c8; background: #fff; }
 .tb-sw i { display: block; border-top: 1px solid rgba(0,0,0,.06); }
 #fx-input.ghost { color: var(--muted, #8a8a8a); }
+/* 0.8 Bố trí Trang */
+.pl-view { position: absolute; inset: 0; overflow: auto; z-index: 6; background: #e6e6e6; }
+.ps-alt { border-left: 3px solid var(--line, #d0d0d0); padding-left: 10px; }
+/* 0.9 Kiểm nghiệm công thức */
+.ev-dlg { display: grid; gap: 8px; width: min(620px, 86vw); }
+.ev-head { display: flex; gap: 10px; align-items: baseline; }
+.ev-stack { display: grid; gap: 6px; }
+.ev-box { border: 1px solid var(--line, #c8c8c8); border-radius: 4px; padding: 8px 10px; min-height: 52px; white-space: pre-wrap; word-break: break-all; background: var(--cell, #fff); opacity: .6; }
+.ev-box.cur { opacity: 1; }
+.ev-box u { text-decoration-thickness: 2px; text-underline-offset: 3px; background: color-mix(in srgb, var(--accent, #217346) 14%, transparent); }
+.ev-btns { display: flex; gap: 8px; justify-content: flex-end; }
+.ec-dlg { display: grid; grid-template-columns: 1fr auto; gap: 16px; width: min(600px, 86vw); }
+.ec-left { display: grid; gap: 6px; align-content: start; }
+.ec-fx { padding: 6px 8px; border: 1px solid var(--line, #c8c8c8); border-radius: 4px; min-height: 30px; word-break: break-all; }
+.ec-right { display: grid; gap: 6px; align-content: start; }
+.watch-pane { position: fixed; right: 16px; bottom: 44px; width: min(560px, 92vw); max-height: 40vh; display: grid; grid-template-rows: auto auto 1fr; gap: 6px; padding: 10px 12px; background: var(--panel, #fff); color: var(--fg, #222); border: 1px solid var(--line, #c8c8c8); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.18); z-index: 40; }
+.watch-pane header { display: flex; justify-content: space-between; align-items: center; }
+.watch-pane .x { border: 0; background: none; font-size: 20px; cursor: pointer; color: inherit; }
+.watch-pane .nm-wrap { overflow: auto; }
+/* 0.9 Phân tích */
+.an-form { display: grid; gap: 10px; min-width: 340px; }
+.an-row { display: flex; gap: 8px; align-items: end; flex-wrap: wrap; }
+.an-row .fld { flex: 1; }
+.an-sm { display: grid; grid-template-columns: 1fr auto; gap: 14px; min-width: 420px; }
+.an-sm .nm-list { width: 100%; min-height: 130px; }
+.an-side { display: grid; gap: 6px; align-content: start; }
+.an-info { margin-top: 6px; font-size: 12px; color: var(--muted, #666); }
+.an-vals { max-height: 60vh; overflow: auto; }
+.watch-pane[hidden] { display: none; }
+/* 0.9 Đối tượng */
+.chart-box.obj { background: transparent; border-color: transparent; box-shadow: none; }
+.chart-box.obj.on { border: 1px dashed var(--accent); }
+.chart-box.obj canvas { border-radius: 0; }
+.ic-dlg { display: grid; gap: 8px; width: min(560px, 86vw); }
+.ic-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(48px, 1fr)); gap: 4px; max-height: 50vh; overflow: auto; }
+.ic-it, .sym-it { border: 1px solid transparent; background: none; border-radius: 4px; padding: 6px; cursor: pointer; color: inherit; }
+.ic-it:hover, .sym-it:hover, .ic-it.on, .sym-it.on { border-color: var(--accent, #217346); background: var(--hover, #f0f0f0); }
+.sym-dlg { display: grid; gap: 8px; width: min(560px, 86vw); }
+.sym-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(34px, 1fr)); gap: 2px; max-height: 50vh; overflow: auto; font-size: 18px; }
+.sym-prev { font-family: var(--mono, monospace); min-height: 20px; }
+.obj-ta { width: 100%; min-width: 320px; font: inherit; }
+.sp-dlg { display: grid; grid-template-columns: 1fr auto; gap: 14px; width: min(560px, 86vw); } .sp-ctx { border: 1px solid var(--line, #c8c8c8); border-radius: 4px; padding: 8px; min-height: 48px; margin: 4px 0; white-space: pre-wrap; } .sp-ctx mark { background: #ffd7d7; color: #a80000; } .sp-dlg .nm-list { width: 100%; }
+.pr-dlg { width: min(460px, 86vw); } .pr-list { display: grid; gap: 4px; max-height: 240px; overflow: auto; border: 1px solid var(--line, #c8c8c8); border-radius: 6px; padding: 6px 10px; }

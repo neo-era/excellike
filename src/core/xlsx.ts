@@ -8,12 +8,29 @@ import { normalizeInput } from './input';
 import { numOf } from './rules';
 import { Workbook, dateSerial, type ExtLink, type BookJSON, type Border, type BorderStyle, type SheetJSON, type Style, type PrintSetup } from './workbook';
 import type { CFRule, DVRule } from './rules';
-import { cellsOf, type Chart, type ChartType, type Ref } from './chart';
+import { cellsOf, isObj, paletteOf, type Chart, type ChartType, type Ref, type ShapeKind } from './chart';
 import { quoteSheet } from './formula';
 import { parseSharedStrings, parseStyles, takeSheetData, unescXml, type FastCell, type FastRow, type XfModel } from './xlsxfast';
 import { isDateFmt } from './numfmt';
 import { MARGIN_PRESETS, normPrint, PAPERS, paperByCode, storePrint, type NPrint } from './paginate';
 import type { TableDef, TotalFn } from './tables';
+import type { SheetProtect, PwHash } from './protect';
+import { algOf } from './protect';
+
+/** mật khẩu bảo vệ từ thuộc tính XML (pre = '' cho trang/vùng, 'workbook' cho sổ) */
+function pwFromAttrs(a: Record<string, unknown>, pre: '' | 'workbook'): PwHash | undefined {
+  const k = (n: string) => a[pre ? pre + n : n.charAt(0).toLowerCase() + n.slice(1)];
+  const hv = k('HashValue'), pwd = pre ? a.workbookPassword : a.password;
+  if (hv) { const nm = String(k('AlgorithmName') ?? 'SHA-512'); return { alg: algOf(nm) ?? nm, hash: String(hv), salt: String(k('SaltValue') ?? ''), spin: +(k('SpinCount') ?? 100000) }; }
+  if (pwd) return { alg: 'legacy', hash: String(pwd), salt: '', spin: 0 };
+  return undefined;
+}
+function pwAttrs(pw: PwHash | undefined, pre: '' | 'workbook'): string {
+  if (!pw) return '';
+  const n = (x: string) => (pre ? pre + x : x.charAt(0).toLowerCase() + x.slice(1));
+  if (pw.alg === 'legacy') return ` ${pre ? 'workbookPassword' : 'password'}="${pw.hash}"`;
+  return ` ${n('AlgorithmName')}="${pw.alg}" ${n('HashValue')}="${pw.hash}" ${n('SaltValue')}="${pw.salt}" ${n('SpinCount')}="${pw.spin}"`;
+}
 
 const EPOCH = Date.UTC(1899, 11, 30);
 // Độ rộng cột Excel tính theo số ký tự; phông của app rộng hơn Calibri nên lấy 8px/ký tự để số không bị ####
@@ -187,6 +204,8 @@ export async function readXlsxBook(buf: ArrayBuffer | Uint8Array): Promise<{ boo
   const dvBySheet = new Map<string, RawDV[]>();
   const breaksBySheet = new Map<string, { rows: number[]; cols: number[] }>();
   const locLinks = new Map<string, [number, number, string][]>();
+  const sparksBy = new Map<string, unknown[]>();
+  const protBy = new Map<string, { protect?: SheetProtect; allowRanges?: { title: string; range: Range }[] }>();
   const extLinksBy = new Map<string, [number, number, string][]>();
   const fastBy = new Map<string, { cells: FastCell[]; rows: FastRow[] }>();
   const notesBy = new Map<string, { r: number; c: number; text: string }[]>();
@@ -311,6 +330,40 @@ export async function readXlsxBook(buf: ArrayBuffer | Uint8Array): Promise<{ boo
         if (at.location && !Object.keys(at).some((k) => /(^|:)id$/.test(k))) { const p = parseRef(String(at.ref).split(':')[0]); if (p) ll.push([p.r1, p.c1, '#' + at.location]); }
       }
       if (ll.length) locLinks.set(a.name, ll);
+      // bảo vệ trang tính + vùng cho phép sửa
+      {
+        const pm = /<sheetProtection\b([^>]*)\/?>/.exec(xml);
+        const pr = [...xml.matchAll(/<protectedRange\b([^>]*)\/?>/g)].map((x) => attrs(x[1])).map((x) => { const pw = pwFromAttrs(x, ''); return { title: unescXml(String(x.name ?? 'Vùng')), range: parseRef(String(x.sqref ?? '').split(' ')[0]), ...(pw ? { pw } : {}) }; }).filter((x) => x.range) as { title: string; range: Range; pw?: PwHash }[];
+        if (pm) {
+          const pa = attrs(pm[1]);
+          if (pa.sheet === '1' || pa.sheet === 'true') {
+            const lk = (k: string, def: boolean) => (pa[k] === undefined ? def : pa[k] === '1' || pa[k] === 'true');
+            const allow = { selectLocked: !lk('selectLockedCells', false), selectUnlocked: !lk('selectUnlockedCells', false), formatCells: !lk('formatCells', true), formatColumns: !lk('formatColumns', true), formatRows: !lk('formatRows', true), insertColumns: !lk('insertColumns', true), insertRows: !lk('insertRows', true), insertHyperlinks: !lk('insertHyperlinks', true), deleteColumns: !lk('deleteColumns', true), deleteRows: !lk('deleteRows', true), sort: !lk('sort', true), autoFilter: !lk('autoFilter', true), pivotTables: !lk('pivotTables', true), objects: !lk('objects', false), scenarios: !lk('scenarios', false) };
+            const pw = pwFromAttrs(pa, '');
+            protBy.set(a.name, { protect: { allow, ...(pw ? { pw } : {}) }, allowRanges: pr.length ? pr : undefined });
+          }
+        }
+      }
+      // biểu đồ thu nhỏ (x14:sparklineGroups trong extLst)
+      if (/sparklineGroup/.test(xml)) {
+        const groups: unknown[] = [];
+        for (const gm of xml.matchAll(/<(?:\w+:)?sparklineGroup\b([^>]*)>([\s\S]*?)<\/(?:\w+:)?sparklineGroup>/g)) {
+          const ga = attrs(gm[1]), body = gm[2];
+          const rgb = (tag: string) => { const m = new RegExp(`<(?:\\w+:)?${tag}\\b[^>]*rgb="(?:FF)?([0-9A-Fa-f]{6})"`).exec(body); return m ? '#' + m[1].toUpperCase() : undefined; };
+          const items: unknown[] = [];
+          for (const sm of body.matchAll(/<(?:\w+:)?sparkline>([\s\S]*?)<\/(?:\w+:)?sparkline>/g)) {
+            const f = /<(?:\w+:)?f>([\s\S]*?)<\/(?:\w+:)?f>/.exec(sm[1])?.[1], sq = /<(?:\w+:)?sqref>([\s\S]*?)<\/(?:\w+:)?sqref>/.exec(sm[1])?.[1];
+            const at = sq ? parseRef(sq.trim()) : null;
+            if (!f || !at) continue;
+            const fm = /^(?:'((?:[^']|'')+)'|([^!]+))!(.+)$/.exec(unescXml(f).trim());
+            const g = parseRef((fm ? fm[3] : f).replace(/\$/g, ''));
+            if (g) items.push({ r: at.r1, c: at.c1, src: { sheetName: fm ? (fm[1] ?? fm[2]).replace(/''/g, "'") : a.name, range: g } });
+          }
+          const on = (k: string) => ga[k] === '1' || ga[k] === 'true';
+          if (items.length) groups.push({ type: ga.type === 'column' ? 'column' : ga.type === 'stacked' ? 'stacked' : 'line', color: rgb('colorSeries') ?? '#4472C4', neg: rgb('colorNegative'), hi: on('high'), lo: on('low'), first: on('first'), last: on('last'), negPts: on('negative'), markers: on('markers'), items });
+        }
+        if (groups.length) sparksBy.set(a.name, groups);
+      }
     }
     // biểu đồ: tự đọc bản vẽ + biểu đồ rồi gỡ thẻ <drawing> (ExcelJS không đọc được biểu đồ)
     // ghi chú ở vị trí không chuẩn (openpyxl: xl/comments/comment1.xml) làm ExcelJS lỗi → tự đếm rồi gỡ
@@ -515,7 +568,7 @@ export async function readXlsxBook(buf: ArrayBuffer | Uint8Array): Promise<{ boo
     tbls.forEach((t, i) => { t.id = i + 1 + sheets.reduce((n, x) => n + (x.tables?.length ?? 0), 0); });
     // nút lọc của bảng dùng bộ lọc trang tính khi trang chưa có
     if (!fr) { const t = tbls.find((x) => x.btn && x.header); if (t) fr = { r1: t.r1, c1: t.c1, r2: t.r2 - (t.totals ? 1 : 0), c2: t.c2 }; }
-    sheets.push({ tables: tbls.length ? tbls : undefined, outline, name: ws.name, cells, styles, colW, rowH, freeze, colDef, rowDef, hiddenRows, hiddenCols, merges, cf, dv, filter: fr ? { range: fr, conds: {} } : null, print, breaks: breaksBySheet.get(ws.name), tabColor: tc, state: (ws as any).state === 'hidden' || (ws as any).state === 'veryHidden' ? 'hidden' : undefined });
+    sheets.push({ ...(protBy.get(ws.name) ?? {}), sparks: sparksBy.get(ws.name), tables: tbls.length ? tbls : undefined, outline, name: ws.name, cells, styles, colW, rowH, freeze, colDef, rowDef, hiddenRows, hiddenCols, merges, cf, dv, filter: fr ? { range: fr, conds: {} } : null, print, breaks: breaksBySheet.get(ws.name), tabColor: tc, state: (ws as any).state === 'hidden' || (ws as any).state === 'veryHidden' ? 'hidden' : undefined });
   });
   if (!sheets.length) throw new Error('Tệp không có trang tính nào.');
   // danh sách dài do app ghi ra sheet ẩn → đưa về danh sách gõ sẵn
@@ -525,12 +578,14 @@ export async function readXlsxBook(buf: ArrayBuffer | Uint8Array): Promise<{ boo
       if (g) { d.list = []; for (let r = g.r1; r <= g.r2; r++) d.list.push(dsValues.get(colName(g.c1) + (r + 1)) ?? ''); delete d.listRef; }
     }
   }
-  if (images + pics) warnings.push(`Tệp có ${images + pics} hình ảnh — chưa hiển thị và sẽ mất nếu lưu đè.`);
+  if (images + pics) warnings.push(`Tệp có ${images + pics} hình ảnh định dạng chưa hỗ trợ — sẽ mất nếu lưu đè.`);
   if (unsupportedCharts) warnings.push(`Tệp có ${unsupportedCharts} biểu đồ loại chưa hỗ trợ (tán xạ, radar…) — sẽ mất nếu lưu đè.`);
-  if (shapes) warnings.push(`Tệp có ${shapes} hình vẽ/hộp chữ — chưa hỗ trợ, sẽ mất nếu lưu đè.`);
+  if (shapes) warnings.push(`Tệp có ${shapes} hình vẽ nhóm/đặc biệt chưa hỗ trợ (SmartArt, nhóm hình…) — sẽ mất nếu lưu đè.`);
   void notes; void extraNotes;
   if (extLinks.length) warnings.push(`Tệp có liên kết tới ${extLinks.length} tệp khác — dùng giá trị lưu sẵn trong tệp (như Excel khi chưa cập nhật liên kết); liên kết được giữ nguyên khi lưu.`);
-  const book: BookJSON = { v: 2, name: 'Sổ tính', sheets, calc, names: bookNames.length ? bookNames : undefined, iterVals: iterVals.length ? iterVals : undefined, ext: extLinks.length ? { links: extLinks, sheets: extSheets } : undefined };
+  let bookProt: BookJSON['protect'];
+  { const wm = /<workbookProtection\b([^>]*)\/?>/.exec(wbXml); if (wm) { const wa = attrs(wm[1]); if (wa.lockStructure === '1' || wa.lockStructure === 'true') { const pw = pwFromAttrs(wa, 'workbook'); bookProt = pw ? { pw } : {}; } } }
+  const book: BookJSON = { protect: bookProt, v: 2, name: 'Sổ tính', sheets, calc, names: bookNames.length ? bookNames : undefined, iterVals: iterVals.length ? iterVals : undefined, ext: extLinks.length ? { links: extLinks, sheets: extSheets } : undefined };
   for (const sh of book.sheets) { const raw = chartsBySheet.get(sh.name); if (raw?.length) sh.rawCharts = raw; }
   return { book, warnings };
 }
@@ -721,7 +776,56 @@ export async function writeXlsx(wb: Workbook): Promise<Uint8Array> {
     return out2;
   });
   if (spillAt.some((x) => x.length)) out = await addDynamicArrays(out, spillAt);
+  if (wb.sheetIds().some((id) => wb.meta(id).sparks?.length)) out = await addSparklines(out, wb);
+  if (wb.bookProtect || wb.sheetIds().some((id) => wb.meta(id).protect || wb.meta(id).allowRanges?.length)) out = await addProtection(out, wb);
   return out;
+}
+async function addProtection(buf: Uint8Array, wb: Workbook): Promise<Uint8Array> {
+  const zip = await JSZip.loadAsync(buf);
+  const ids = wb.sheetIds();
+  for (let i = 0; i < ids.length; i++) {
+    const m = wb.meta(ids[i]);
+    if (!m.protect && !m.allowRanges?.length) continue;
+    const path = `xl/worksheets/sheet${i + 1}.xml`;
+    let xml = await zip.file(path)?.async('string');
+    if (!xml) continue;
+    xml = xml.replace(/<sheetProtection\b[^>]*\/>/, '').replace(/<protectedRanges>[\s\S]*?<\/protectedRanges>/, '');
+    let add = '';
+    if (m.protect) {
+      const a = m.protect.allow, b = (v: boolean) => (v ? 0 : 1), pw = m.protect.pw;
+      const pwx = pwAttrs(pw, '');
+      add += `<sheetProtection${pwx} sheet="1" objects="${b(a.objects)}" scenarios="${b(a.scenarios)}" formatCells="${b(a.formatCells)}" formatColumns="${b(a.formatColumns)}" formatRows="${b(a.formatRows)}" insertColumns="${b(a.insertColumns)}" insertRows="${b(a.insertRows)}" insertHyperlinks="${b(a.insertHyperlinks)}" deleteColumns="${b(a.deleteColumns)}" deleteRows="${b(a.deleteRows)}" selectLockedCells="${b(a.selectLocked)}" sort="${b(a.sort)}" autoFilter="${b(a.autoFilter)}" pivotTables="${b(a.pivotTables)}" selectUnlockedCells="${b(a.selectUnlocked)}"/>`;
+    }
+    if (m.allowRanges?.length) add += `<protectedRanges>${m.allowRanges.map((x) => `<protectedRange${pwAttrs(x.pw, '')} sqref="${rangeToA1(x.range)}" name="${xesc(x.title)}"/>`).join('')}</protectedRanges>`;
+    xml = xml.replace(/(<\/sheetData>|<sheetData\/>)/, `$1${add}`);
+    zip.file(path, xml);
+  }
+  if (wb.bookProtect) {
+    let wx = await zip.file('xl/workbook.xml')!.async('string');
+    const pw = wb.bookProtect.pw;
+    const pwx = pwAttrs(pw, 'workbook');
+    wx = wx.replace(/<workbookProtection\b[^>]*\/>/, '').replace(/<(bookViews|sheets)\b/, `<workbookProtection${pwx} lockStructure="1"/><$1`);
+    zip.file('xl/workbook.xml', wx);
+  }
+  return new Uint8Array(await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' }));
+}
+async function addSparklines(buf: Uint8Array, wb: Workbook): Promise<Uint8Array> {
+  const zip = await JSZip.loadAsync(buf);
+  const ids = wb.sheetIds();
+  for (let i = 0; i < ids.length; i++) {
+    const live = new Set(wb.sheetIds());
+    const gs = (wb.meta(ids[i]).sparks ?? []).map((g) => ({ ...g, items: g.items.filter((x) => live.has(x.src.sheet)) })).filter((g) => g.items.length);
+    if (!gs.length) continue;
+    const path = `xl/worksheets/sheet${i + 1}.xml`;
+    let xml = await zip.file(path)?.async('string');
+    if (!xml) continue;
+    const c = (v?: string) => (v && /^#[0-9a-f]{6}$/i.test(v) ? 'FF' + v.slice(1).toUpperCase() : 'FF4472C4');
+    const grp = gs.map((g) => `<x14:sparklineGroup${g.type !== 'line' ? ` type="${g.type}"` : ''} displayEmptyCellsAs="gap"${g.markers ? ' markers="1"' : ''}${g.hi ? ' high="1"' : ''}${g.lo ? ' low="1"' : ''}${g.first ? ' first="1"' : ''}${g.last ? ' last="1"' : ''}${g.negPts ? ' negative="1"' : ''}><x14:colorSeries rgb="${c(g.color)}"/><x14:colorNegative rgb="${c(g.neg ?? '#C00000')}"/><x14:colorAxis rgb="FF000000"/><x14:colorMarkers rgb="${c(g.color)}"/><x14:colorFirst rgb="FF7030A0"/><x14:colorLast rgb="FF7030A0"/><x14:colorHigh rgb="FF00B050"/><x14:colorLow rgb="FFC00000"/><x14:sparklines>${g.items.map((it) => `<x14:sparkline><xm:f>${xesc(quoteSheet(wb.sheetName(it.src.sheet)))}!${absRef(it.src.range)}</xm:f><xm:sqref>${colName(it.c)}${it.r + 1}</xm:sqref></x14:sparkline>`).join('')}</x14:sparklines></x14:sparklineGroup>`).join('');
+    const ext = `<ext uri="{05C60535-1F16-4fd2-B633-F4F36F0B64E0}" xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main"><x14:sparklineGroups xmlns:xm="http://schemas.microsoft.com/office/excel/2006/main">${grp}</x14:sparklineGroups></ext>`;
+    xml = /<extLst>/.test(xml) ? xml.replace('</extLst>', ext + '</extLst>') : xml.replace('</worksheet>', `<extLst>${ext}</extLst></worksheet>`);
+    zip.file(path, xml);
+  }
+  return new Uint8Array(await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' }));
 }
 async function addDynamicArrays(buf: Uint8Array, all: { a: string; ref: string }[][]): Promise<Uint8Array> {
   const zip = await JSZip.loadAsync(buf);
@@ -952,7 +1056,7 @@ function dvOut(rule: DVRule, ds: string[][]): any {
 
 // =================== BIỂU ĐỒ trong tệp (DrawingML) ===================
 const EMU = 9525;
-interface RawChart { type: ChartType | null; title?: string; legend: Chart['legend']; labels: boolean; series: { name?: string; cats?: string; vals: string }[]; from: { c: number; co: number; r: number; ro: number }; to?: { c: number; co: number; r: number; ro: number }; ext?: { cx: number; cy: number } }
+interface RawChart { obj?: Partial<Chart>; type: ChartType | null; title?: string; xTitle?: string; yTitle?: string; legend: Chart['legend']; labels: boolean; series: { name?: string; cats?: string; vals: string; kind?: 'col' | 'line'; y2?: boolean }[]; from: { c: number; co: number; r: number; ro: number }; to?: { c: number; co: number; r: number; ro: number }; ext?: { cx: number; cy: number } }
 
 const dirOf = (p: string) => p.slice(0, p.lastIndexOf('/') + 1);
 function resolve(base: string, target: string) {
@@ -986,7 +1090,42 @@ async function readDrawing(zip: JSZip, dpath: string): Promise<{ charts: RawChar
   let pics = 0, unsupported = 0, shapes = 0;
   for (const m of xml.matchAll(/<(twoCellAnchor|oneCellAnchor|absoluteAnchor)\b[\s\S]*?<\/\1>/g)) {
     const a = m[0];
-    if (/<pic\b/.test(a)) { pics++; continue; }
+    const place = (rc: RawChart) => {
+      rc.from = anchorPart(between(a, 'from')) ?? { c: 0, co: 0, r: 0, ro: 0 };
+      rc.to = anchorPart(between(a, 'to'));
+      const ext = /<ext\b[^>]*\bcx="(\d+)"[^>]*\bcy="(\d+)"/.exec(a);
+      if (ext) rc.ext = { cx: +ext[1], cy: +ext[2] };
+      charts.push(rc);
+    };
+    const nv = /<cNvPr\b([^>]*)\/?>/.exec(a), nva = nv ? attrs(nv[1]) : {};
+    const hex = (x?: string) => { const c = x ? /<solidFill>\s*<srgbClr val="([0-9A-Fa-f]{6})"/.exec(x)?.[1] : undefined; return c ? '#' + c.toLowerCase() : undefined; };
+    if (/<pic\b/.test(a) && !/<grpSp\b/.test(a)) {
+      // ảnh: đọc tệp ảnh trong gói thành data URL
+      const emb = /<blip\b[^>]*\bembed="([^"]+)"/.exec(a)?.[1];
+      const ip = emb ? rels.get(emb) : undefined;
+      const mime = ip ? ({ png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', bmp: 'image/bmp', webp: 'image/webp' } as Record<string, string>)[ip.split('.').pop()!.toLowerCase()] : undefined;
+      const bin = ip && mime ? await zip.file(ip)?.async('base64') : undefined;
+      if (!bin || bin.length > 14_000_000) { pics++; continue; }
+      const sp = between(a, 'spPr') ?? '';
+      place({ obj: { type: 'pic', img: `data:${mime};base64,${bin}`, alt: nva.descr ? unesc(nva.descr) : undefined, border: hex(between(sp, 'ln')) }, type: 'pic', legend: 'none', labels: false, series: [], from: { c: 0, co: 0, r: 0, ro: 0 } });
+      continue;
+    }
+    if (/<sp\b/.test(a) && !/<grpSp\b/.test(a) && !/<graphicFrame\b/.test(a)) {
+      // hình dạng / hộp văn bản
+      const sp = between(a, 'spPr') ?? '';
+      const prst = /<prstGeom\b[^>]*\bprst="([^"]+)"/.exec(sp)?.[1] ?? 'rect';
+      const MAP: Record<string, ShapeKind> = { rect: 'rect', roundRect: 'roundRect', ellipse: 'ellipse', triangle: 'triangle', rightArrow: 'rightArrow', line: 'line', straightConnector1: 'line', star5: 'star5', diamond: 'diamond' };
+      const tb = between(a, 'txBody');
+      const text = tb ? [...tb.matchAll(/<p>([\s\S]*?)<\/p>|<p\/>/g)].map((pm) => [...(pm[1] ?? '').matchAll(/<t>([\s\S]*?)<\/t>/g)].map((t) => unesc(t[1])).join('')).join('\n').replace(/\n+$/, '') : '';
+      const isTxt = /\btxBox="1"/.test(a);
+      if (!MAP[prst] && !isTxt) { shapes++; continue; }
+      const sz = tb ? /<rPr\b[^>]*\bsz="(\d+)"/.exec(tb)?.[1] : undefined;
+      const fg = tb ? hex(/<rPr\b[^>]*>([\s\S]*?)<\/rPr>/.exec(tb)?.[1]) : undefined;
+      const fill = /<noFill\/>/.test(sp.replace(/<ln\b[\s\S]*?<\/ln>/, '')) ? 'none' : hex(sp.replace(/<ln\b[\s\S]*?<\/ln>/, ''));
+      const ln = between(sp, 'ln');
+      place({ obj: { type: isTxt ? 'text' : 'shape', shape: isTxt ? undefined : MAP[prst], text: text || undefined, fs: sz ? +sz / 100 : undefined, fg, fill, border: ln && /<noFill\/>/.test(ln) ? 'none' : hex(ln) }, type: isTxt ? 'text' : 'shape', legend: 'none', labels: false, series: [], from: { c: 0, co: 0, r: 0, ro: 0 } });
+      continue;
+    }
     const rid = /<chart\b[^>]*\bid="([^"]+)"/.exec(a)?.[1];
     if (!rid) { shapes++; continue; }
     const cpath = rels.get(rid);
@@ -1005,32 +1144,51 @@ async function readDrawing(zip: JSZip, dpath: string): Promise<{ charts: RawChar
 
 function parseChartXml(xml: string): RawChart {
   const plot = between(xml, 'plotArea') ?? '';
-  let type: ChartType | null = null;
-  let body = '';
+  const txt = (x?: string) => (x ? [...x.matchAll(/<t>([\s\S]*?)<\/t>/g)].map((m) => unesc(m[1])).join('') || undefined : undefined);
+  // các nhóm biểu đồ trong vùng vẽ (Kết hợp = nhiều nhóm)
+  const groups: { kind: ChartType; body: string; axIds: string[]; at: number }[] = [];
   const kinds: [RegExp, (b: string) => ChartType][] = [
-    [/<(bar|bar3D)Chart>([\s\S]*?)<\/\1Chart>/, (b) => (tagVal(b, 'barDir') === 'bar' ? 'bar' : /stacked/i.test(tagVal(b, 'grouping') ?? '') ? 'colStack' : 'col')],
-    [/<(line|line3D)Chart>([\s\S]*?)<\/\1Chart>/, () => 'line'],
-    [/<(area|area3D)Chart>([\s\S]*?)<\/\1Chart>/, () => 'area'],
-    [/<(pie|pie3D|ofPie)Chart>([\s\S]*?)<\/\1Chart>/, () => 'pie'],
-    [/<(doughnut)Chart>([\s\S]*?)<\/\1Chart>/, () => 'doughnut'],
+    [/<(bar|bar3D)Chart>([\s\S]*?)<\/\1Chart>/g, (b) => (tagVal(b, 'barDir') === 'bar' ? 'bar' : /stacked/i.test(tagVal(b, 'grouping') ?? '') ? 'colStack' : 'col')],
+    [/<(line|line3D)Chart>([\s\S]*?)<\/\1Chart>/g, () => 'line'],
+    [/<(area|area3D)Chart>([\s\S]*?)<\/\1Chart>/g, () => 'area'],
+    [/<(pie|pie3D|ofPie)Chart>([\s\S]*?)<\/\1Chart>/g, () => 'pie'],
+    [/<(doughnut)Chart>([\s\S]*?)<\/\1Chart>/g, () => 'doughnut'],
+    [/<(scatter)Chart>([\s\S]*?)<\/\1Chart>/g, () => 'scatter'],
   ];
-  for (const [re, f] of kinds) { const m = re.exec(plot); if (m) { body = m[2]; type = f(m[2]); break; } }
+  for (const [re, f] of kinds) for (const m of plot.matchAll(re)) groups.push({ kind: f(m[2]), body: m[2], axIds: [...m[2].matchAll(/<axId val="(\d+)"\/>/g)].map((x) => x[1]), at: m.index ?? 0 });
+  groups.sort((a, b) => a.at - b.at); // theo thứ tự trong tệp: nhóm đầu là trục chính
+  let type: ChartType | null = groups[0]?.kind ?? null;
+  const combo = groups.length > 1 && groups.every((g) => g.kind === 'col' || g.kind === 'line' || g.kind === 'colStack' || g.kind === 'area');
+  if (combo) type = 'combo';
+  // trục phụ: nhóm dùng trục giá trị khác nhóm đầu
+  const mainAx = groups[0]?.axIds.join(',');
   const series: RawChart['series'] = [];
-  for (const m of body.matchAll(/<ser>([\s\S]*?)<\/ser>/g)) {
-    const sx = m[1];
-    const fOf = (part?: string) => { const f = part ? /<f>([\s\S]*?)<\/f>/.exec(part)?.[1] : undefined; return f ? unesc(f) : undefined; };
-    const vals = fOf(between(sx, 'val'));
-    if (!vals) continue;
-    series.push({ name: fOf(between(sx, 'tx')), cats: fOf(between(sx, 'cat')), vals });
+  for (const g of combo ? groups : groups.slice(0, 1)) {
+    for (const m of g.body.matchAll(/<ser>([\s\S]*?)<\/ser>/g)) {
+      const sx = m[1];
+      const fOf = (part?: string) => { const f = part ? /<f>([\s\S]*?)<\/f>/.exec(part)?.[1] : undefined; return f ? unesc(f) : undefined; };
+      const vals = fOf(between(sx, 'val') ?? between(sx, 'yVal'));
+      if (!vals) continue;
+      series.push({ order: +(tagVal(sx, 'order') ?? series.length), name: fOf(between(sx, 'tx')), cats: fOf(between(sx, 'cat') ?? between(sx, 'xVal')), vals, ...(combo ? { kind: g.kind === 'line' ? 'line' as const : 'col' as const, y2: g.axIds.join(',') !== mainAx } : {}) } as any);
+    }
   }
+  series.sort((x: any, y: any) => x.order - y.order);
   const chartPart = between(xml, 'chart') ?? '';
   const titleXml = /<title>([\s\S]*?)<\/title>/.exec(chartPart.replace(/<plotArea>[\s\S]*<\/plotArea>/, ''))?.[1];
-  const title = titleXml ? [...titleXml.matchAll(/<t>([\s\S]*?)<\/t>/g)].map((x) => unesc(x[1])).join('') || undefined : undefined;
+  const title = txt(titleXml);
+  // tiêu đề trục: trục danh mục/X (axPos b) và trục giá trị (axPos l)
+  let xTitle: string | undefined, yTitle: string | undefined;
+  for (const m of plot.matchAll(/<(catAx|valAx|dateAx)>([\s\S]*?)<\/\1>/g)) {
+    const t = txt(/<title>([\s\S]*?)<\/title>/.exec(m[2])?.[1]);
+    if (!t) continue;
+    const pos = tagVal(m[2], 'axPos');
+    if (pos === 'b' || pos === 't') xTitle ??= t; else if (pos === 'l') yTitle ??= t;
+  }
   const legXml = /<legend>([\s\S]*?)<\/legend>/.exec(chartPart)?.[1];
   const lp = legXml !== undefined ? tagVal(legXml, 'legendPos') ?? 'r' : null;
   const legend: Chart['legend'] = lp === null ? 'none' : lp === 'b' ? 'b' : lp === 't' ? 't' : 'r';
-  const labels = /<showVal val="1"\/>|<showPercent val="1"\/>/.test(body);
-  return { type: series.length ? type : null, title, legend, labels, series, from: { c: 0, co: 0, r: 0, ro: 0 } };
+  const labels = /<showVal val="1"\/>|<showPercent val="1"\/>/.test(groups.map((g) => g.body).join(''));
+  return { type: series.length ? type : null, title, xTitle, yTitle, legend, labels, series, from: { c: 0, co: 0, r: 0, ro: 0 } };
 }
 
 function refIn(wb: Workbook, sheet: number, f?: string): Ref | undefined {
@@ -1042,14 +1200,14 @@ function refIn(wb: Workbook, sheet: number, f?: string): Ref | undefined {
   return g ? { sheet: id, range: g } : undefined;
 }
 function chartIn(wb: Workbook, sheet: number, rc: RawChart, i: number): Chart | null {
-  const series = rc.series.map((x) => ({ name: refIn(wb, sheet, x.name), cats: refIn(wb, sheet, x.cats), vals: refIn(wb, sheet, x.vals)! })).filter((x) => x.vals);
-  if (!series.length || !rc.type) return null;
+  const series = rc.series.map((x) => ({ name: refIn(wb, sheet, x.name), cats: refIn(wb, sheet, x.cats), vals: refIn(wb, sheet, x.vals)!, ...(x.kind ? { kind: x.kind } : {}), ...(x.y2 ? { y2: true } : {}) })).filter((x) => x.vals);
+  if ((!series.length && !rc.obj) || !rc.type) return null;
   const m = wb.meta(sheet);
   const x1 = m.colW.offset(rc.from.c) + rc.from.co / EMU, y1 = m.rowH.offset(rc.from.r) + rc.from.ro / EMU;
   let w = 480, h = 288;
   if (rc.to) { w = m.colW.offset(rc.to.c) + rc.to.co / EMU - x1; h = m.rowH.offset(rc.to.r) + rc.to.ro / EMU - y1; }
   else if (rc.ext) { w = rc.ext.cx / EMU; h = rc.ext.cy / EMU; }
-  return { id: 'x' + i + Math.random().toString(36).slice(2, 8), type: rc.type, title: rc.title, series, legend: rc.legend, labels: rc.labels, anchor: { r: rc.from.r, c: rc.from.c, dx: Math.round(rc.from.co / EMU), dy: Math.round(rc.from.ro / EMU) }, w: Math.max(80, Math.round(w)), h: Math.max(60, Math.round(h)) };
+  return { ...(rc.obj ?? {}), id: 'x' + i + Math.random().toString(36).slice(2, 8), type: rc.type, title: rc.title, xTitle: rc.xTitle, yTitle: rc.yTitle, series, legend: rc.legend, labels: rc.labels, anchor: { r: rc.from.r, c: rc.from.c, dx: Math.round(rc.from.co / EMU), dy: Math.round(rc.from.ro / EMU) }, w: Math.max(80, Math.round(w)), h: Math.max(60, Math.round(h)) };
 }
 
 const xesc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!));
@@ -1060,49 +1218,68 @@ function chartXml(wb: Workbook, ch0: Chart): string {
   // bỏ tham chiếu tới sheet không còn
   const live = new Set(wb.sheetIds());
   const ok = (r?: Ref) => (r && live.has(r.sheet) ? r : undefined);
-  const ch: Chart = { ...ch0, series: ch0.series.filter((x) => ok(x.vals)).map((x) => ({ vals: x.vals, name: ok(x.name), cats: ok(x.cats) })) };
+  const ch: Chart = { ...ch0, series: ch0.series.filter((x) => ok(x.vals)).map((x) => ({ ...x, vals: x.vals, name: ok(x.name), cats: ok(x.cats) })) };
   // bộ đệm ghi đủ mọi ô (kể cả hàng ẩn) để chỉ số khớp với vùng <c:f>
   const d = {
     cats: ch.series[0]?.cats ? (cellsOf(wb, ch.series[0].cats, 'text', true) as string[]) : [],
     series: ch.series.map((x, i) => ({ name: (x.name ? String(cellsOf(wb, x.name, 'text', true)[0] ?? '') : '') || `Chuỗi ${i + 1}`, values: cellsOf(wb, x.vals, 'num', true) as (number | null)[], cats: x.cats ? (cellsOf(wb, x.cats, 'text', true) as string[]) : [] })),
   };
   const pie = ch.type === 'pie' || ch.type === 'doughnut';
-  const colorOfI = (i: number) => ['4472C4', 'ED7D31', 'A5A5A5', 'FFC000', '5B9BD5', '70AD47', '264478', '9E480E', '636363', '997300'][i % 10];
+  const pal = paletteOf(ch).map((c) => c.replace('#', '').toUpperCase());
+  const colorOfI = (i: number) => pal[i % pal.length];
   const strCache = (vals: string[]) => `<c:strCache><c:ptCount val="${vals.length}"/>${vals.map((v, i) => `<c:pt idx="${i}"><c:v>${xesc(v)}</c:v></c:pt>`).join('')}</c:strCache>`;
   const numCache = (vals: (number | null)[]) => `<c:numCache><c:formatCode>General</c:formatCode><c:ptCount val="${vals.length}"/>${vals.map((v, i) => (v === null ? '' : `<c:pt idx="${i}"><c:v>${v}</c:v></c:pt>`)).join('')}</c:numCache>`;
   const dl = ch.labels ? `<c:dLbls><c:showLegendKey val="0"/><c:showVal val="${pie ? 0 : 1}"/><c:showCatName val="0"/><c:showSerName val="0"/><c:showPercent val="${pie ? 1 : 0}"/><c:showBubbleSize val="0"/></c:dLbls>` : '';
-  const ser = ch.series.map((s, i) => {
+  const scatter = ch.type === 'scatter';
+  const isLine = (i: number) => ch.type === 'line' || (ch.type === 'combo' && (ch.series[i].kind ?? (i === 0 ? 'col' : 'line')) === 'line');
+  const serXml = (s: Chart['series'][number], i: number) => {
     const sd = d.series[i];
     const fill = (c: string) => `<a:solidFill><a:srgbClr val="${c}"/></a:solidFill>`;
-    const line = ch.type === 'line';
-    const sp = line ? `<c:spPr><a:ln w="28575" cap="rnd">${fill(colorOfI(i))}<a:round/></a:ln></c:spPr><c:marker><c:symbol val="circle"/><c:size val="5"/></c:marker>` : pie ? '' : `<c:spPr>${fill(colorOfI(i))}</c:spPr>`;
+    const line = isLine(i);
+    const sp = scatter ? `<c:spPr><a:ln w="19050"><a:noFill/></a:ln></c:spPr><c:marker><c:symbol val="circle"/><c:size val="6"/><c:spPr>${fill(colorOfI(i))}</c:spPr></c:marker>`
+      : line ? `<c:spPr><a:ln w="28575" cap="rnd">${fill(colorOfI(i))}<a:round/></a:ln></c:spPr><c:marker><c:symbol val="circle"/><c:size val="5"/></c:marker>` : pie ? '' : `<c:spPr>${fill(colorOfI(i))}</c:spPr>`;
     const dpt = pie ? d.cats.map((_, j) => `<c:dPt><c:idx val="${j}"/><c:bubble3D val="0"/><c:spPr>${fill(colorOfI(j))}<a:ln w="12700"><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:ln></c:spPr></c:dPt>`).join('') : '';
-    const inv = !line && !pie && ch.type !== 'area' ? '<c:invertIfNegative val="0"/>' : '';
+    const inv = !line && !pie && !scatter && ch.type !== 'area' ? '<c:invertIfNegative val="0"/>' : '';
+    const cat = s.cats ? (scatter ? `<c:xVal><c:numRef><c:f>${xesc(fRef(wb, s.cats))}</c:f>${numCache(cellsOf(wb, s.cats, 'num', true) as (number | null)[])}</c:numRef></c:xVal>` : `<c:cat><c:strRef><c:f>${xesc(fRef(wb, s.cats))}</c:f>${strCache(sd.cats)}</c:strRef></c:cat>`) : '';
+    const val = `<c:${scatter ? 'yVal' : 'val'}><c:numRef><c:f>${xesc(fRef(wb, s.vals))}</c:f>${numCache(sd.values)}</c:numRef></c:${scatter ? 'yVal' : 'val'}>`;
     return `<c:ser><c:idx val="${i}"/><c:order val="${i}"/>` +
       (s.name ? `<c:tx><c:strRef><c:f>${xesc(fRef(wb, s.name))}</c:f>${strCache([sd.name])}</c:strRef></c:tx>` : '') +
-      sp + inv + dpt + dl +
-      (s.cats ? `<c:cat><c:strRef><c:f>${xesc(fRef(wb, s.cats))}</c:f>${strCache(sd.cats)}</c:strRef></c:cat>` : '') +
-      `<c:val><c:numRef><c:f>${xesc(fRef(wb, s.vals))}</c:f>${numCache(sd.values)}</c:numRef></c:val>` +
-      (line ? '<c:smooth val="0"/>' : '') + '</c:ser>';
-  }).join('');
-  const ax = (horiz: boolean) => `<c:catAx><c:axId val="500000001"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="${horiz ? 'l' : 'b'}"/><c:numFmt formatCode="General" sourceLinked="1"/><c:majorTickMark val="none"/><c:minorTickMark val="none"/><c:tickLblPos val="nextTo"/><c:crossAx val="500000002"/><c:crosses val="autoZero"/><c:auto val="1"/><c:lblAlgn val="ctr"/><c:lblOffset val="100"/><c:noMultiLvlLbl val="0"/></c:catAx>` +
-    `<c:valAx><c:axId val="500000002"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="${horiz ? 'b' : 'l'}"/><c:majorGridlines/><c:numFmt formatCode="General" sourceLinked="1"/><c:majorTickMark val="none"/><c:minorTickMark val="none"/><c:tickLblPos val="nextTo"/><c:crossAx val="500000001"/><c:crosses val="autoZero"/><c:crossBetween val="between"/></c:valAx>`;
-  const ids = '<c:axId val="500000001"/><c:axId val="500000002"/>';
+      sp + inv + dpt + dl + cat + val + (line || scatter ? '<c:smooth val="0"/>' : '') + '</c:ser>';
+  };
+  const atitle = (t?: string) => (t ? `<c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr lang="vi-VN" sz="1000" b="1"/><a:t>${xesc(t)}</a:t></a:r></a:p></c:rich></c:tx><c:overlay val="0"/></c:title>` : '');
+  const grid = ch.grid === false ? '' : '<c:majorGridlines/>';
+  const axes = (horiz: boolean, a1 = '500000001', a2 = '500000002', second = false, xNum = false) =>
+    `<c:${xNum ? 'valAx' : 'catAx'}><c:axId val="${a1}"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="${second ? 1 : 0}"/><c:axPos val="${horiz ? 'l' : 'b'}"/>${second ? '' : atitle(ch.xTitle)}<c:numFmt formatCode="General" sourceLinked="1"/><c:majorTickMark val="none"/><c:minorTickMark val="none"/><c:tickLblPos val="nextTo"/><c:crossAx val="${a2}"/><c:crosses val="autoZero"/>${xNum ? '<c:crossBetween val="midCat"/>' : '<c:auto val="1"/><c:lblAlgn val="ctr"/><c:lblOffset val="100"/><c:noMultiLvlLbl val="0"/>'}</c:${xNum ? 'valAx' : 'catAx'}>` +
+    `<c:valAx><c:axId val="${a2}"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="${second ? 'r' : horiz ? 'b' : 'l'}"/>${second ? '' : grid}${atitle(second ? ch.y2Title : ch.yTitle)}<c:numFmt formatCode="General" sourceLinked="1"/><c:majorTickMark val="none"/><c:minorTickMark val="none"/><c:tickLblPos val="nextTo"/><c:crossAx val="${a1}"/><c:crosses val="${second ? 'max' : 'autoZero'}"/><c:crossBetween val="${xNum ? 'midCat' : 'between'}"/></c:valAx>`;
+  const ids = (a = '500000001', b = '500000002') => `<c:axId val="${a}"/><c:axId val="${b}"/>`;
+  const sers = (f: (i: number) => boolean) => ch.series.map((x, i) => (f(i) ? serXml(x, i) : '')).join('');
   let plot = '';
   switch (ch.type) {
     case 'col': case 'colStack': case 'bar': {
       const stacked = ch.type === 'colStack';
-      plot = `<c:barChart><c:barDir val="${ch.type === 'bar' ? 'bar' : 'col'}"/><c:grouping val="${stacked ? 'stacked' : 'clustered'}"/><c:varyColors val="0"/>${ser}<c:gapWidth val="150"/>${stacked ? '<c:overlap val="100"/>' : ''}${ids}</c:barChart>${ax(ch.type === 'bar')}`;
+      plot = `<c:barChart><c:barDir val="${ch.type === 'bar' ? 'bar' : 'col'}"/><c:grouping val="${stacked ? 'stacked' : 'clustered'}"/><c:varyColors val="0"/>${sers(() => true)}<c:gapWidth val="150"/>${stacked ? '<c:overlap val="100"/>' : ''}${ids()}</c:barChart>${axes(ch.type === 'bar')}`;
       break;
     }
-    case 'line': plot = `<c:lineChart><c:grouping val="standard"/><c:varyColors val="0"/>${ser}<c:marker val="1"/>${ids}</c:lineChart>${ax(false)}`; break;
-    case 'area': plot = `<c:areaChart><c:grouping val="standard"/><c:varyColors val="0"/>${ser}${ids}</c:areaChart>${ax(false)}`; break;
-    case 'pie': plot = `<c:pieChart><c:varyColors val="1"/>${ser}<c:firstSliceAng val="0"/></c:pieChart>`; break;
-    case 'doughnut': plot = `<c:doughnutChart><c:varyColors val="1"/>${ser}<c:firstSliceAng val="0"/><c:holeSize val="50"/></c:doughnutChart>`; break;
+    case 'line': plot = `<c:lineChart><c:grouping val="standard"/><c:varyColors val="0"/>${sers(() => true)}<c:marker val="1"/>${ids()}</c:lineChart>${axes(false)}`; break;
+    case 'area': plot = `<c:areaChart><c:grouping val="standard"/><c:varyColors val="0"/>${sers(() => true)}${ids()}</c:areaChart>${axes(false)}`; break;
+    case 'pie': plot = `<c:pieChart><c:varyColors val="1"/>${sers(() => true)}<c:firstSliceAng val="0"/></c:pieChart>`; break;
+    case 'doughnut': plot = `<c:doughnutChart><c:varyColors val="1"/>${sers(() => true)}<c:firstSliceAng val="0"/><c:holeSize val="50"/></c:doughnutChart>`; break;
+    case 'scatter': plot = `<c:scatterChart><c:scatterStyle val="lineMarker"/><c:varyColors val="0"/>${sers(() => true)}${ids()}</c:scatterChart>${axes(false, '500000001', '500000002', false, true)}`; break;
+    case 'combo': {
+      const allY2 = ch.series.every((x) => x.y2);
+      const y2 = (i: number) => !allY2 && !!ch.series[i].y2; // tất cả ở trục phụ = coi như trục chính
+      const bar = (sec: boolean) => { const x = sers((i) => !isLine(i) && y2(i) === sec); return x ? `<c:barChart><c:barDir val="col"/><c:grouping val="clustered"/><c:varyColors val="0"/>${x}<c:gapWidth val="150"/>${sec ? ids('500000003', '500000004') : ids()}</c:barChart>` : ''; };
+      const ln = (sec: boolean) => { const x = sers((i) => isLine(i) && y2(i) === sec); return x ? `<c:lineChart><c:grouping val="standard"/><c:varyColors val="0"/>${x}<c:marker val="1"/>${sec ? ids('500000003', '500000004') : ids()}</c:lineChart>` : ''; };
+      const anyY2 = ch.series.some((_, i) => y2(i));
+      plot = bar(false) + ln(false) + (anyY2 ? bar(true) + ln(true) : '') + axes(false) + (anyY2 ? axes(false, '500000003', '500000004', true) : '');
+      break;
+    }
   }
   const title = ch.title ? `<c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:pPr><a:defRPr sz="1400" b="1"/></a:pPr><a:r><a:rPr lang="vi-VN" sz="1400" b="1"/><a:t>${xesc(ch.title)}</a:t></a:r></a:p></c:rich></c:tx><c:overlay val="0"/></c:title><c:autoTitleDeleted val="0"/>` : '<c:autoTitleDeleted val="1"/>';
   const legend = ch.legend === 'none' ? '' : `<c:legend><c:legendPos val="${ch.legend ?? 'b'}"/><c:overlay val="0"/></c:legend>`;
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><c:roundedCorners val="0"/><c:chart>${title}<c:plotArea><c:layout/>${plot}</c:plotArea>${legend}<c:plotVisOnly val="1"/><c:dispBlanksAs val="gap"/></c:chart><c:spPr><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill><a:ln><a:noFill/></a:ln></c:spPr></c:chartSpace>`;
+  const hex = (c?: string) => (c && /^#[0-9a-f]{6}$/i.test(c) ? c.slice(1).toUpperCase() : null);
+  const bg = `<a:solidFill><a:srgbClr val="${hex(ch.fill) ?? 'FFFFFF'}"/></a:solidFill>`, bd = hex(ch.border) ? `<a:ln w="9525"><a:solidFill><a:srgbClr val="${hex(ch.border)}"/></a:solidFill></a:ln>` : '<a:ln><a:noFill/></a:ln>';
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><c:roundedCorners val="0"/><c:chart>${title}<c:plotArea><c:layout/>${plot}</c:plotArea>${legend}<c:plotVisOnly val="1"/><c:dispBlanksAs val="gap"/></c:chart><c:spPr>${bg}${bd}</c:spPr></c:chartSpace>`;
 }
 
 /** Tìm ô + lệch (EMU) tại khoảng cách px tính từ đầu trục */
@@ -1117,12 +1294,12 @@ async function addChartsToZip(buf: Uint8Array, wb: Workbook): Promise<Uint8Array
   const wbXml = (await zip.file('xl/workbook.xml')!.async('string'));
   const rels = await relsOf(zip, 'xl/workbook.xml');
   let ct = await zip.file('[Content_Types].xml')!.async('string');
-  let chartNo = 0, drawNo = 0;
+  let chartNo = 0, drawNo = 0, mediaNo = 0;
   for (const m of wbXml.matchAll(/<sheet\b([^>]*)\/?>/g)) {
     const a = attrs(m[1]);
     const id = wb.hf.getSheetId(a.name);
     if (id === undefined) continue;
-    const charts = wb.meta(id).charts.filter((ch) => ch.series.some((x) => wb.sheetIds().includes(x.vals.sheet)));
+    const charts = wb.meta(id).charts.filter((ch) => isObj(ch.type) || ch.series.some((x) => wb.sheetIds().includes(x.vals.sheet)));
     if (!charts.length) continue;
     const spath = rels.get(a.id);
     if (!spath) continue;
@@ -1132,6 +1309,31 @@ async function addChartsToZip(buf: Uint8Array, wb: Workbook): Promise<Uint8Array
     let anchors = '';
     const drels: string[] = [];
     charts.forEach((ch, i) => {
+      const x1o = meta.colW.offset(ch.anchor.c) + ch.anchor.dx, y1o = meta.rowH.offset(ch.anchor.r) + ch.anchor.dy;
+      const too = { c: locate((k) => meta.colW.offset(k), x1o + ch.w, 16383), r: locate((k) => meta.rowH.offset(k), y1o + ch.h, 1048575) };
+      const fromTo = `<xdr:from><xdr:col>${ch.anchor.c}</xdr:col><xdr:colOff>${Math.round(ch.anchor.dx * EMU)}</xdr:colOff><xdr:row>${ch.anchor.r}</xdr:row><xdr:rowOff>${Math.round(ch.anchor.dy * EMU)}</xdr:rowOff></xdr:from><xdr:to><xdr:col>${too.c.i}</xdr:col><xdr:colOff>${too.c.off}</xdr:colOff><xdr:row>${too.r.i}</xdr:row><xdr:rowOff>${too.r.off}</xdr:rowOff></xdr:to>`;
+      const xfrm = `<a:xfrm><a:off x="0" y="0"/><a:ext cx="${Math.round(ch.w * EMU)}" cy="${Math.round(ch.h * EMU)}"/></a:xfrm>`;
+      const col = (c?: string) => (c && /^#[0-9a-f]{6}$/i.test(c) ? `<a:solidFill><a:srgbClr val="${c.slice(1).toUpperCase()}"/></a:solidFill>` : '');
+      if (ch.type === 'pic') {
+        const m2 = /^data:image\/(png|jpeg|gif|bmp|webp);base64,(.*)$/.exec(ch.img ?? '');
+        if (!m2) return;
+        mediaNo++;
+        const ext = m2[1] === 'jpeg' ? 'jpeg' : m2[1];
+        zip.file(`xl/media/xlimg${mediaNo}.${ext}`, m2[2], { base64: true });
+        if (!new RegExp(`Extension="${ext}"`, 'i').test(ct)) ct = ct.replace('<Default ', `<Default Extension="${ext}" ContentType="image/${m2[1]}"/><Default `);
+        drels.push(`<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/xlimg${mediaNo}.${ext}"/>`);
+        anchors += `<xdr:twoCellAnchor editAs="oneCell">${fromTo}<xdr:pic><xdr:nvPicPr><xdr:cNvPr id="${i + 2}" name="Ảnh ${i + 1}"${ch.alt ? ` descr="${xesc(ch.alt)}"` : ''}/><xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr></xdr:nvPicPr><xdr:blipFill><a:blip xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:embed="rId${i + 1}"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill><xdr:spPr>${xfrm}<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>${ch.border ? `<a:ln w="12700">${col(ch.border)}</a:ln>` : ''}</xdr:spPr></xdr:pic><xdr:clientData/></xdr:twoCellAnchor>`;
+        return;
+      }
+      if (ch.type === 'shape' || ch.type === 'text') {
+        const txt = ch.type === 'text';
+        const prst = txt ? 'rect' : ch.shape ?? 'rect';
+        const fill = ch.fill === 'none' ? '<a:noFill/>' : col(ch.fill ?? (txt ? '#ffffff' : '#4472c4'));
+        const ln = ch.border === 'none' ? '<a:ln><a:noFill/></a:ln>' : `<a:ln w="12700">${col(ch.border ?? (txt ? '#a6a6a6' : '#2f528f'))}</a:ln>`;
+        const paras = (ch.text ?? '').split('\n').map((t) => `<a:p><a:pPr algn="${txt ? 'l' : 'ctr'}"/>${t ? `<a:r><a:rPr lang="vi-VN" sz="${Math.round((ch.fs ?? 11) * 100)}">${col(ch.fg ?? (txt ? '#000000' : '#ffffff'))}</a:rPr><a:t>${xesc(t)}</a:t></a:r>` : ''}</a:p>`).join('');
+        anchors += `<xdr:twoCellAnchor editAs="oneCell">${fromTo}<xdr:sp macro="" textlink=""><xdr:nvSpPr><xdr:cNvPr id="${i + 2}" name="${txt ? 'Hộp Văn bản' : 'Hình'} ${i + 1}"/><xdr:cNvSpPr${txt ? ' txBox="1"' : ''}/></xdr:nvSpPr><xdr:spPr>${xfrm}<a:prstGeom prst="${prst}"><a:avLst/></a:prstGeom>${fill}${ln}</xdr:spPr><xdr:txBody><a:bodyPr vertOverflow="clip" horzOverflow="clip" wrap="square" rtlCol="0" anchor="${txt ? 't' : 'ctr'}"/><a:lstStyle/>${paras || '<a:p/>'}</xdr:txBody></xdr:sp><xdr:clientData/></xdr:twoCellAnchor>`;
+        return;
+      }
       chartNo++;
       const cpath = `xl/charts/chart${chartNo}.xml`;
       zip.file(cpath, chartXml(wb, ch));
@@ -1189,6 +1391,8 @@ function printIn(ws: ExcelJS.Worksheet): PrintSetup | null {
     order: pgs.pageOrder === 'overThenDown' ? 'over' : 'down',
     header: hf.oddHeader ?? '',
     footer: hf.oddFooter ?? '',
+    hfFirst: hf.differentFirst ? { header: hf.firstHeader ?? '', footer: hf.firstFooter ?? '' } : null,
+    hfEven: hf.differentOddEven ? { header: hf.evenHeader ?? '', footer: hf.evenFooter ?? '' } : null,
     area: pgs.printArea ? parseRef(String(pgs.printArea).split(/[,&]/)[0]) : null,
   };
   const def = normPrint(null);
@@ -1209,7 +1413,11 @@ function printOut(ws: ExcelJS.Worksheet, ps0: PrintSetup) {
     ...(ps.titleColRange ? { printTitlesColumn: `${colName(ps.titleColRange[0])}:${colName(ps.titleColRange[1])}` } : {}),
     ...(ps.area ? { printArea: rangeToA1(ps.area) } : {}),
   } as any;
-  if (ps.header || ps.footer) (ws as any).headerFooter = { ...(ws as any).headerFooter, oddHeader: ps.header || undefined, oddFooter: ps.footer || undefined };
+  if (ps.header || ps.footer || ps.hfFirst || ps.hfEven) (ws as any).headerFooter = {
+    ...(ws as any).headerFooter, oddHeader: ps.header || undefined, oddFooter: ps.footer || undefined,
+    ...(ps.hfFirst ? { differentFirst: true, firstHeader: ps.hfFirst.header || undefined, firstFooter: ps.hfFirst.footer || undefined } : {}),
+    ...(ps.hfEven ? { differentOddEven: true, evenHeader: ps.hfEven.header || undefined, evenFooter: ps.hfEven.footer || undefined } : {}),
+  };
 }
 function colIdx(s: string) { let c = 0; for (const ch of s.toUpperCase()) c = c * 26 + ch.charCodeAt(0) - 64; return c - 1; }
 /** Ngắt trang theo cột (ExcelJS chỉ ghi được ngắt theo hàng) */

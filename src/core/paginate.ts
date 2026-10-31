@@ -38,6 +38,9 @@ export interface NPrint extends PrintSetup {
   header: string;
   footer: string;
   area: Range | null;
+  hfFirst: { header: string; footer: string } | null;
+  hfEven: { header: string; footer: string } | null;
+  hfImg: Record<string, string>;
 }
 
 export function normPrint(ps: PrintSetup | null | undefined): NPrint {
@@ -63,7 +66,16 @@ export function normPrint(ps: PrintSetup | null | undefined): NPrint {
     order: p.order === 'over' ? 'over' : 'down',
     header: p.header ?? '',
     footer: p.footer ?? '',
+    hfFirst: p.hfFirst ?? null,
+    hfEven: p.hfEven ?? null,
+    hfImg: p.hfImg ?? {},
   };
+}
+/** đầu/chân trang áp cho trang thứ `idx` (0 = trang đầu của trang tính) có số trang `num` */
+export function hfFor(p: NPrint, idx: number, num: number): { header: string; footer: string } {
+  if (idx === 0 && p.hfFirst) return p.hfFirst;
+  if (num % 2 === 0 && p.hfEven) return p.hfEven;
+  return { header: p.header, footer: p.footer };
 }
 /** Bản gọn để lưu (bỏ trường cũ fitWidth/titleRows) */
 export function storePrint(p: NPrint): PrintSetup {

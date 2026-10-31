@@ -1,9 +1,9 @@
 // Lớp biểu đồ nổi trên lưới: vẽ, chọn, kéo, đổi cỡ, sửa, xóa + hộp thoại biểu đồ
 import { parseRef, rangeToA1, type Range } from '../core/address';
 import { quoteSheet } from '../core/formula';
-import { CHART_NAMES, chartData, chartSourceRange, seriesFromRange, type Chart, type ChartType, type Ref } from '../core/chart';
+import { CHART_NAMES, isObj, chartData, chartSourceRange, seriesFromRange, scatterFromRange, type Chart, type ChartType, type Ref } from '../core/chart';
 import type { Workbook } from '../core/workbook';
-import { drawChart, type ChartTheme } from './chartdraw';
+import { drawChart, setImgLoad, type ChartTheme } from './chartdraw';
 import { field, h, input, openDialog, select } from './dialogs';
 import type { Grid } from './grid';
 import { ic } from './icons';
@@ -61,6 +61,7 @@ export class ChartLayer {
         if (b) this.commitMove(this.sel, parseFloat(b.el.style.left) + dx, parseFloat(b.el.style.top) + dy);
       }
     }, true);
+    setImgLoad(() => { for (const b of this.boxes.values()) b.key = ''; this.sync(); });
     new MutationObserver(() => { this.theme = themeNow(); for (const b of this.boxes.values()) b.key = ''; this.sync(); })
       .observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
     matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { this.theme = themeNow(); for (const b of this.boxes.values()) b.key = ''; this.sync(); });
@@ -80,14 +81,18 @@ export class ChartLayer {
   /** Ctrl+6: 0 hiện, 1 chỗ giữ, 2 ẩn */
   setMode(m: number) { this.el.classList.toggle('obj-ph', m === 1); this.el.classList.toggle('obj-hide', m === 2); if (m === 2) this.select(null); }
   remove(id: string) {
+    const o = this.charts().find((c) => c.id === id);
     this.wb.removeChart(this.grid.sheet, id);
-    if (this.sel === id) this.sel = null;
+    if (this.sel === id) this.select(null);
     this.grid.focusKeys();
-    this.onMsg('Đã xóa biểu đồ (Ctrl+Z để hoàn tác).');
+    this.onMsg(o && isObj(o.type) ? `Đã xóa ${CHART_NAMES[o.type].toLowerCase()} (Ctrl+Z để hoàn tác).` : 'Đã xóa biểu đồ (Ctrl+Z để hoàn tác).');
   }
+  /** báo cho app khi chọn/bỏ chọn biểu đồ (hiện tab Thiết kế/Định dạng Biểu đồ) */
+  onSel: (id: string | null) => void = () => {};
   select(id: string | null) {
     if (this.sel === id) return;
     this.sel = id;
+    queueMicrotask(() => this.onSel(id));
     for (const [k, b] of this.boxes) b.el.classList.toggle('on', k === id);
     if (id) (document.activeElement as HTMLElement | null)?.blur?.();
   }
@@ -118,7 +123,8 @@ export class ChartLayer {
         const ctx = b.cv.getContext('2d')!;
         ctx.setTransform(dpr * z, 0, 0, dpr * z, 0, 0);
         drawChart(ctx, ch.w, ch.h, ch, chartData(this.wb, ch), this.theme);
-        b.el.setAttribute('aria-label', `Biểu đồ ${CHART_NAMES[ch.type]}${ch.title ? ': ' + ch.title : ''}`);
+        b.el.setAttribute('aria-label', isObj(ch.type) ? `${CHART_NAMES[ch.type]}${ch.alt || ch.text ? ': ' + (ch.alt || ch.text) : ''}` : `Biểu đồ ${CHART_NAMES[ch.type]}${ch.title ? ': ' + ch.title : ''}`);
+        b.el.classList.toggle('obj', isObj(ch.type));
       }
     }
     for (const [id, b] of this.boxes) if (!seen.has(id)) { b.el.remove(); this.boxes.delete(id); if (this.sel === id) this.sel = null; }
@@ -202,8 +208,8 @@ export class ChartLayer {
 }
 
 // ------------------------- Hộp thoại biểu đồ -------------------------
-const TYPES: ChartType[] = ['col', 'colStack', 'bar', 'line', 'area', 'pie', 'doughnut'];
-const TYPE_IC: Record<ChartType, string> = { col: 'chart', colStack: 'chartStack', bar: 'chartBar', line: 'chartLine', area: 'chartArea', pie: 'chartPie', doughnut: 'chartDonut' };
+const TYPES: ChartType[] = ['col', 'colStack', 'bar', 'line', 'area', 'pie', 'doughnut', 'scatter', 'combo'];
+const TYPE_IC: Record<ChartType, string> = { col: 'chart', colStack: 'chartStack', bar: 'chartBar', line: 'chartLine', area: 'chartArea', pie: 'chartPie', doughnut: 'chartDonut', scatter: 'chartXY', combo: 'chartCombo', pic: 'picture', shape: 'shapes', text: 'textbox' };
 
 export interface ChartDlgOpts { wb: Workbook; sheet: number; range?: Range; chart?: Chart; type?: ChartType; onDone: (ch: Chart | null, err?: string) => void }
 
@@ -229,11 +235,16 @@ export function chartDialog(o: ChartDlgOpts) {
   const legend = select([['b', 'Dưới'], ['r', 'Phải'], ['t', 'Trên'], ['none', 'Ẩn']], edit?.legend ?? 'b');
   const labels = h('input', { type: 'checkbox' }) as HTMLInputElement;
   labels.checked = edit ? !!edit.labels : false;
+  const xT = input(edit?.xTitle ?? '', 'Tiêu đề trục ngang'), yT = input(edit?.yTitle ?? '', 'Tiêu đề trục dọc');
+  const y2 = h('input', { type: 'checkbox' }) as HTMLInputElement;
+  y2.checked = !!edit?.series.some((x) => x.y2);
+  const y2Row = h('label', { class: 'chk' }, y2, ' Kết hợp: chuỗi cuối vẽ đường trên trục phụ (bên phải)');
   const err = h('p', { class: 'err-text', role: 'alert' });
   const cv = h('canvas', { class: 'chart-prev', width: '720', height: '400', 'aria-label': 'Xem trước biểu đồ' }) as HTMLCanvasElement;
   body.append(field('Loại biểu đồ', types), h('div', { class: 'row2' }, field('Tiêu đề', title), field('Vùng dữ liệu', src)),
     h('div', { class: 'row2' }, field('Chuỗi dữ liệu', orient), field('Chú giải', legend)),
-    h('label', { class: 'chk' }, labels, ' Hiện nhãn giá trị'), err, cv);
+    h('div', { class: 'row2' }, field('Trục ngang', xT), field('Trục dọc', yT)),
+    h('label', { class: 'chk' }, labels, ' Hiện nhãn giá trị'), y2Row, err, cv);
   mark();
 
   const build = (): Chart | null => {
@@ -244,11 +255,14 @@ export function chartDialog(o: ChartDlgOpts) {
       const ref = parseSheetRef(wb, src.value, sheet);
       if (!ref) { err.textContent = 'Vùng dữ liệu không hợp lệ. Ví dụ đúng: A1:D8 hoặc Sheet2!B2:C10'; return null; }
       const ov = (orient as HTMLSelectElement).value;
-      series = seriesFromRange(wb, ref.sheet, ref.range, ov === 'auto' ? undefined : ov === 'row');
+      series = type === 'scatter' ? scatterFromRange(wb, ref.sheet, ref.range) : seriesFromRange(wb, ref.sheet, ref.range, ov === 'auto' ? undefined : ov === 'row');
       if (!series.length) { err.textContent = 'Vùng đã chọn không có dữ liệu để vẽ.'; return null; }
     }
+    if (type === 'combo') series = series.map((x, i) => ({ ...x, kind: i === 0 || (series.length > 2 && i < series.length - 1 && !y2.checked) ? 'col' : 'line', y2: y2.checked && i === series.length - 1 && series.length > 1 }));
+    else series = series.map(({ kind: _k, y2: _y, ...x }) => x);
     return {
       ...(edit ?? { anchor: { r: 0, c: 0, dx: 0, dy: 0 }, w: 480, h: 288 }),
+      xTitle: xT.value.trim() || undefined, yTitle: yT.value.trim() || undefined,
       type, title: title.value.trim() || undefined, series,
       legend: (legend as HTMLSelectElement).value as Chart['legend'], labels: labels.checked,
     };
@@ -262,8 +276,11 @@ export function chartDialog(o: ChartDlgOpts) {
     ctx.setTransform(2, 0, 0, 2, 0, 0);
     drawChart(ctx, 360, 200, ch, chartData(wb, ch), themeNow());
   };
-  for (const el of [title, src]) el.addEventListener('input', preview);
-  for (const el of [orient, legend, labels]) el.addEventListener('change', preview);
+  for (const el of [title, src, xT, yT]) el.addEventListener('input', preview);
+  for (const el of [orient, legend, labels, y2]) el.addEventListener('change', preview);
+  const syncY2 = () => { y2Row.hidden = type !== 'combo'; };
+  syncY2();
+  typeBtns.forEach((b) => b.addEventListener('click', syncY2));
   const btns = [{ label: 'Hủy', act: () => { o.onDone(null); } }];
   openDialog(edit ? 'Sửa biểu đồ' : 'Chèn biểu đồ', body, [
     ...btns,

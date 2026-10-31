@@ -11,7 +11,7 @@ import { desk } from './files';
 import { ic } from './icons';
 
 export function chartImgs(wb: Workbook, s: number): ChartImg[] {
-  return wb.meta(s).charts.map((ch) => ({ src: chartPng(ch, chartData(wb, ch)), w: ch.w, h: ch.h, anchor: ch.anchor }));
+  return wb.meta(s).charts.map((ch) => ({ src: ch.type === 'pic' && ch.img ? ch.img : chartPng(ch, chartData(wb, ch)), w: ch.w, h: ch.h, anchor: ch.anchor }));
 }
 
 /** In qua khung ẩn (bản web): trình duyệt mở hộp thoại in, có “Lưu dưới dạng PDF” */

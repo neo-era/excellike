@@ -2,7 +2,7 @@
 // Bản xem trước trong Backstage và bản in/PDF dùng cùng một HTML nên luôn khớp nhau.
 import type { Range } from './address';
 import type { PrintSetup, Workbook } from './workbook';
-import { hfParse, hfRender, normPrint, paginate, PX_IN, type Layout, type NPrint, type PageSpec } from './paginate';
+import { hfFor, hfParse, hfRender, normPrint, paginate, PX_IN, type Layout, type NPrint, type PageSpec } from './paginate';
 
 /** Giữ để tương thích: thiết lập mặc định (Excel: Không co giãn) */
 export const DEFAULT_PRINT: PrintSetup = normPrint(null);
@@ -42,7 +42,7 @@ export function buildJob(wb: Workbook, items: JobItem[], opts: { file?: string; 
       const sz = `${fmt(L.paper.wmm)}mm ${fmt(L.paper.hmm)}mm`;
       if (!out.length) size = sz;
       if (!sizes.has(sz)) sizes.set(sz, 'pg' + sizes.size);
- out.push(pageHtml(sizes.get(sz)!, wb, s, L, p, { page: nums[i][j], pages: last, sheet: wb.sheetName(s), file: opts.file ?? wb.name, date }, items[i].charts ?? []));
+ out.push(pageHtml(sizes.get(sz)!, wb, s, L, p, { page: nums[i][j], pages: last, sheet: wb.sheetName(s), file: opts.file ?? wb.name, date, idx: j }, items[i].charts ?? []));
     });
   });
   const title = items.length === 1 ? wb.sheetName(items[0].sheet) : wb.name;
@@ -56,6 +56,7 @@ body { font: 11pt ${FONT}; }
 .page { position: relative; overflow: hidden; background: #fff; break-after: page; page-break-after: always; }
 .page:last-child { break-after: auto; page-break-after: auto; }
 .hf { position: absolute; display: grid; grid-template-columns: 1fr 1fr 1fr; font: 11pt ${FONT}; white-space: pre; line-height: 1.2; }
+.hfi { max-height: 0.6in; max-width: 2.5in; vertical-align: bottom; }
 .hf .l { text-align: left; } .hf .c { text-align: center; } .hf .r { text-align: right; }
 .bd { position: absolute; overflow: hidden; display: flex; }
 .sc { position: relative; flex: none; }
@@ -114,7 +115,7 @@ function cellCss(st: ReturnType<Workbook['style']>, cf: ReturnType<Workbook['cfS
   return o.join(';');
 }
 
-function pageHtml(named: string, wb: Workbook, s: number, L: Layout, p: PageSpec, ctx: { page: number; pages: number; sheet: string; file: string; date: Date }, charts: ChartImg[]) {
+function pageHtml(named: string, wb: Workbook, s: number, L: Layout, p: PageSpec, ctx: { page: number; pages: number; sheet: string; file: string; date: Date; idx?: number }, charts: ChartImg[]) {
   const ps: NPrint = L.setup, m = wb.meta(s);
   const rows = [...p.titleRows, ...p.rows], cols = [...p.titleCols, ...p.cols];
   const rowSet = new Set(rows), colSet = new Set(cols);
@@ -152,7 +153,7 @@ function pageHtml(named: string, wb: Workbook, s: number, L: Layout, p: PageSpec
     if (st.rot && st.rot !== 255) inner = `<span style="display:inline-block;transform:rotate(${-st.rot}deg);white-space:nowrap">${inner}</span>`;
     if (st.shk && text) inner = `<span style="display:inline-block;max-width:100%;font-size:${Math.max(0.3, Math.min(1, (m.colW.get(c) - 6) / Math.max(1, [...text].length * 7 * ((st.fs ?? 11) / 11))))}em">${inner}</span>`;
     if (st.hx === 'fill' && text && typeof d.value !== 'number') inner = esc(text.repeat(Math.max(1, Math.floor((m.colW.get(c) - 6) / Math.max(1, [...text].length * 7)))));
-    return `<td${attr} style="${esc(cellCss(st, cf, d.align))}">${inner}</td>`;
+    return `<td${attr} data-rc="${ar},${ac}" style="${esc(cellCss(st, cf, d.align))}">${inner}</td>`;
   };
   let t = `<table class="${ps.gridlines ? 'grid' : ''}" style="width:${cols.reduce((a, c) => a + m.colW.get(c), 0) + hdW}px"><colgroup>${ps.headings ? `<col style="width:${hdW}px">` : ''}${cols.map((c) => `<col style="width:${m.colW.get(c)}px">`).join('')}</colgroup>`;
   if (ps.headings) t += `<tr style="height:20px"><th class="hd"></th>${cols.map((c) => `<th class="hd">${colName(c)}</th>`).join('')}</tr>`;
@@ -167,18 +168,24 @@ function pageHtml(named: string, wb: Workbook, s: number, L: Layout, p: PageSpec
     t += `<div class="chart" style="left:${x + ch.anchor.dx}px;top:${y + ch.anchor.dy}px;width:${ch.w}px;height:${ch.h}px"><img src="${ch.src}" alt="Biểu đồ"></div>`;
   }
   const mg = ps.mg, inch = (v: number) => `${fmt(v)}in`;
-  const hf = (code: string, pos: string) => {
+  const hf = (code: string, pos: string, kind: 'h' | 'f') => {
     const parts = hfParse(code);
     if (!parts.l && !parts.c && !parts.r) return '';
-    const sec = (k: 'l' | 'c' | 'r') => `<span class="${k}">${esc(hfRender(parts[k] ?? '', ctx))}</span>`;
-    return `<div class="hf" style="${pos};left:${inch(mg.l)};right:${inch(mg.r)}">${sec('l')}${sec('c')}${sec('r')}</div>`;
+    // &G: ảnh (logo) đặt trong đầu/chân trang
+    const sec = (k: 'l' | 'c' | 'r') => {
+      const img = ps.hfImg[kind + k];
+      const html = (parts[k] ?? '').split('&G').map((x) => esc(hfRender(x, ctx))).join(img && /^data:image\/(png|jpe?g|gif|svg\+xml|webp);/.test(img) ? `<img class="hfi" src="${esc(img)}" alt="">` : '');
+      return `<span class="${k}">${html}</span>`;
+    };
+    return `<div class="hf ${kind}" style="${pos};left:${inch(mg.l)};right:${inch(mg.r)}">${sec('l')}${sec('c')}${sec('r')}</div>`;
   };
+  const hfx = hfFor(ps, ctx.idx ?? 1, ctx.page);
   const just = ps.center.h ? 'center' : 'flex-start', items = ps.center.v ? 'center' : 'flex-start';
   const guides = `<div class="mg"><i style="left:${inch(mg.l)};top:0;bottom:0;border-left-width:1px"></i><i style="right:${inch(mg.r)};top:0;bottom:0;border-right-width:1px"></i><i style="top:${inch(mg.t)};left:0;right:0;border-top-width:1px"></i><i style="bottom:${inch(mg.b)};left:0;right:0;border-bottom-width:1px"></i><i style="top:${inch(mg.h)};left:0;right:0;border-top-width:1px;border-color:#b0b0b0"></i><i style="bottom:${inch(mg.f)};left:0;right:0;border-bottom-width:1px;border-color:#b0b0b0"></i></div>`;
-  return `<section class="page" data-n="${ctx.page}" style="width:${fmt(L.paper.wmm)}mm;height:${fmt(L.paper.hmm)}mm;page:${named}">`
-    + hf(ps.header, `top:${inch(mg.h)}`)
+  return `<section class="page" data-n="${ctx.page}" data-i="${ctx.idx ?? 0}" style="width:${fmt(L.paper.wmm)}mm;height:${fmt(L.paper.hmm)}mm;page:${named}">`
+    + hf(hfx.header, `top:${inch(mg.h)}`, 'h')
     + `<div class="bd" style="top:${inch(mg.t)};left:${inch(mg.l)};width:${fmt(L.avail.w)}px;height:${fmt(L.avail.h)}px;justify-content:${just};align-items:${items}"><div class="sc" style="zoom:${L.scale}">${t}</div></div>`
-    + hf(ps.footer, `bottom:${inch(mg.f)}`)
+    + hf(hfx.footer, `bottom:${inch(mg.f)}`, 'f')
     + guides + '</section>';
 }
 export { PX_IN };

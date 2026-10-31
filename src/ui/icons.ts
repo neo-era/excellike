@@ -1,10 +1,12 @@
-const P: Record<string, string> = {
+export const P: Record<string, string> = {
   chevUp: 'M6 15l6-6 6 6',
   chevDown: 'M6 9l6 6 6-6',
   pencil: 'M17 3a2.8 2.8 0 0 1 4 4L7.5 20.5 2 22l1.5-5.5z',
   chartStack: 'M3 3v18h18M7 17v-4h3v4M7 13V9h3v4M14 17v-6h3v6M14 11V6h3v5',
   chartBar: 'M3 3v18h18M7 7h8M7 12h12M7 17h5',
   chartLine: 'M3 3v18h18M7 15l4-5 3 3 5-7',
+  chartXY: '<path d="M4 4v16h16"/><circle cx="8" cy="14" r="1.4"/><circle cx="11" cy="10" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="18" cy="7" r="1.4"/>',
+  chartCombo: '<path d="M4 4v16h16"/><rect x="7" y="12" width="3" height="6"/><rect x="12" y="9" width="3" height="9"/><path d="M6 10l5-4 4 2 5-4"/>',
   chartArea: 'M3 3v18h18M7 17V12l4-4 3 3 5-5v11z',
   chartPie: 'M12 3v9l7.8 4.5A9 9 0 1 1 12 3zM15 3.5A9 9 0 0 1 21 12h-6z',
   chartDonut: 'M12 3a9 9 0 1 0 9 9h-5a4 4 0 1 1-4-4zM15 3.5A9 9 0 0 1 20.5 9H15z',

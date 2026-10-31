@@ -9,7 +9,7 @@ import { sortDialog, cfRuleDialog, cfManageDialog, dvDialog, h, openDialog, clos
 import { pickFile, saveBytes, baseName, desk, deskToPicked } from './files';
 import type { BorderKind, BorderStyle } from '../core/workbook';
 import { ChartLayer, chartDialog } from './charts';
-import type { ChartType } from '../core/chart';
+import { isObj, seriesFromRange, type ChartType } from '../core/chart';
 import { PivotPanel, pivotCreateDialog } from './pivotui';
 import { Ribbon, KeyTips, bindRibbonKeys, allItems, fold, type Tab, type Btn, type KtTarget, type Item, type Group } from './ribbon';
 import { closeMenu, openPopover, showMenu, menuOpen, type MenuItem } from './menu';
@@ -17,6 +17,13 @@ import { Backstage } from './backstage';
 import { groupSel, ungroupSel, clearOutline, showDetail, subtotalDialog, outlineClick } from './outline-ui';
 import { removeDupDialog, textToColumnsDialog } from './datatools-ui';
 import { createTableDialog, tableStylePicker, tableDesignTab, totalFnMenu } from './table-ui';
+import { PageLayoutView } from './pagelayout';
+import { evaluateDialog, errorCheckDialog, errorMenu, WatchWindow } from './audit-ui';
+import { goalSeekDialog, dataTableDialog, scenarioManager, forecastDialog, advancedFilterDialog, consolidateDialog } from './analysis-ui';
+import { chartTabs, sparkDialog, sparkTab } from './chart-ui';
+import { insertPicture, shapeMenu, iconsDialog, insertTextbox, editObject, objectTab, arrange, arrangeMenu, selectionPane, symbolDialog, insertCheckbox, toggleCheckbox } from './objects-ui';
+import { spellCheck } from './spell-ui';
+import { toggleSheetProtect, toggleBookProtect, allowRangesDialog } from './protect-ui';
 import { NoteLayer } from './notes-ui';
 import { nameManager, nameDialog, createFromSelection, pasteNameDialog, selRef } from './names-ui';
 import { pageSetupDialog } from './pagesetup';
@@ -160,18 +167,28 @@ export class App {
     if (isTouch()) this.grid.setZoom(1.25);
     this.ed = new CellEditor(this);
     this.grid.edit = this.ed;
-    this.grid.onSelect = () => this.syncSelection();
+    this.grid.onSelect = () => { if (this.charts?.sel) this.charts.select(null); this.syncSelection(); };
     this.grid.onOutline = (k, L, at) => outlineClick(this, k, L, at);
     this.grid.onContext = (x, y, zone) => this.contextMenu(x, y, zone);
     this.notes = new NoteLayer(this);
     this.charts = new ChartLayer($('#gridwrap'), this.wb, this.grid, (id) => this.editChart(id), (m) => this.toast(m));
+    // chọn biểu đồ → hiện Thiết kế Biểu đồ/Định dạng (tab ngữ cảnh), bỏ chọn → ẩn
+    this.charts.onSel = (id) => { if (id) { if (!['oformat', 'cdesign', 'cformat'].includes(this.tab)) this.tabBack = this.tab; this.tab = this.selObj() ? 'oformat' : 'cdesign'; } this.ctxKey = ''; this.syncTableTab(); };
     this.grid.onDraw = () => this.charts.sync();
     this.pivot = new PivotPanel($('#gridwrap'), this.wb, (m, k) => this.toast(m, k), () => this.grid.invalidate());
     $('#gridwrap').addEventListener('grid-error', (e) => this.toast((e as CustomEvent).detail, 'err'));
     $('#gridwrap').addEventListener('filter-btn', (e) => { const d = (e as CustomEvent).detail; this.filterPopover(d.col, d.x, d.y); });
+    $('#gridwrap').addEventListener('err-btn', (e) => { const d = (e as CustomEvent).detail; errorMenu(this, d.x, d.y); });
     $('#gridwrap').addEventListener('dv-btn', (e) => { const d = (e as CustomEvent).detail; if (!totalFnMenu(this, d.x, d.y)) this.dvPick(d.x, d.y); });
     // 0.6: chổi định dạng áp khi nhả chuột; nhấp nhanh vào ô có liên kết thì mở liên kết (như Excel)
     let down = { t: 0, r: -1, c: -1 };
+    $('#gridwrap').addEventListener('cell-down', (e) => {
+      const d0 = (e as CustomEvent).detail;
+      if (this.wb.style(this.grid.sheet, d0.r, d0.c).cb && typeof this.wb.value(this.grid.sheet, d0.r, d0.c) === 'boolean' && d0.x !== undefined) {
+        const b = this.grid.checkRect(d0.r, d0.c), rc = this.grid.canvas.getBoundingClientRect(), px = d0.x - rc.left, py = d0.y - rc.top;
+        if (px >= b.x - 2 && px <= b.x + b.s + 2 && py >= b.y - 2 && py <= b.y + b.s + 2) toggleCheckbox(this, d0.r, d0.c);
+      }
+    });
     $('#gridwrap').addEventListener('cell-down', (e) => { const d = (e as CustomEvent).detail; down = { t: performance.now(), r: d.r, c: d.c }; this.tabStart = null; if (d.ctrl) down.t = 0; });
     $('#gridwrap').addEventListener('sel-end', () => {
       if (this.painter) { this.painterApply(); return; }
@@ -572,7 +589,7 @@ export class App {
         ]) }),
         col(
           B('sm', 'cut', 'cut', 'Cắt', { kt: 'X', kbd: 'Ctrl+X', act: () => this.copySel(true) }),
-          B('sm', 'copy', 'copy', 'Sao chép', { kt: 'C', kbd: 'Ctrl+C', split: true, act: () => this.copySel(false), drop: this.menuAt(() => [{ label: 'Sao chép', icon: 'copy', act: () => this.copySel(false) }, { label: 'Sao chép dưới dạng Ảnh…', icon: 'copyPic', act: () => this.later('Sao chép dưới dạng Ảnh', '0.9') }]) }),
+          B('sm', 'copy', 'copy', 'Sao chép', { kt: 'C', kbd: 'Ctrl+C', split: true, act: () => this.copySel(false), drop: this.menuAt(() => [{ label: 'Sao chép', icon: 'copy', act: () => this.copySel(false) }, { label: 'Sao chép dưới dạng Ảnh…', icon: 'copyPic', act: () => this.later('Sao chép dưới dạng Ảnh', '1.x') }]) }),
           B('sm', 'painter', 'brush', 'Chổi định dạng', { kt: 'FP', act: () => this.painterToggle(), dbl: () => this.painterOn(true), on: () => !!this.painter }),
         ),
       ], { id: 'clipboard', tip: 'Bảng tạm Office', act: () => toggleClipboardPane(this), kt: 'FO' }),
@@ -692,17 +709,17 @@ export class App {
     const insert: Tab = { id: 'insert', label: 'Chèn', kt: 'N', groups: [
       G('tables', 'Bảng', 'pivot', [
         B('big', 'pivot', 'pivot', 'PivotTable', { kt: 'V', act: () => this.insertPivot() }),
-        B('big', 'recPivot', 'recommended', 'PivotTable Đề xuất', { kt: 'SP', ...later('0.9') }),
+        B('big', 'recPivot', 'recommended', 'PivotTable Đề xuất', { kt: 'SP', ...later('1.x') }),
         B('big', 'table', 'fmtTable', 'Bảng', { kt: 'T', kbd: 'Ctrl+T', act: () => createTableDialog(this) }),
         B('big', 'forms', 'forms', 'Biểu mẫu', { kt: 'FO', ...later('ngoài phạm vi (Microsoft Forms)') }),
       ]),
       G('illus', 'Hình minh họa', 'picture', [
-        B('big', 'pic', 'picture', 'Ảnh', { kt: 'P', ...later('0.9') }),
-        B('big', 'shapes', 'shapes', 'Hình dạng', { kt: 'SH', ...later('0.9') }),
-        B('big', 'icons', 'effects', 'Biểu tượng', { kt: 'Y1', ...later('0.9') }),
-        col(B('sm', 'model3d', 'model3d', 'Mô hình 3D', { kt: 'S3', ...later('ngoài phạm vi') }), B('sm', 'smartart', 'smartart', 'SmartArt', { kt: 'S1', ...later('0.9') }), B('sm', 'screenshot', 'screenshot', 'Ảnh chụp màn hình', { kt: 'SC', ...later('0.9') })),
+        B('big', 'pic', 'picture', 'Ảnh', { kt: 'P', act: () => insertPicture(this) }),
+        B('big', 'shapes', 'shapes', 'Hình dạng', { kt: 'SH', drop: (r) => shapeMenu(this, r) }),
+        B('big', 'icons', 'effects', 'Biểu tượng', { kt: 'Y1', act: () => iconsDialog(this) }),
+        col(B('sm', 'model3d', 'model3d', 'Mô hình 3D', { kt: 'S3', ...later('ngoài phạm vi') }), B('sm', 'smartart', 'smartart', 'SmartArt', { kt: 'S1', ...later('ngoài phạm vi') }), B('sm', 'screenshot', 'screenshot', 'Ảnh chụp màn hình', { kt: 'SC', ...later('ngoài phạm vi') })),
       ]),
-      G('controls', 'Điều khiển', 'checkbox', [B('big', 'i-check', 'checkbox', 'Hộp kiểm', { kt: 'Z1', ...later('0.9') })]),
+      G('controls', 'Điều khiển', 'checkbox', [B('big', 'i-check', 'checkbox', 'Hộp kiểm', { kt: 'Z1', act: () => insertCheckbox(this) })]),
       G('charts', 'Biểu đồ', 'chart', [
         B('big', 'chart', 'recommended', 'Biểu đồ Đề xuất', { kt: 'R', act: () => this.insertChart() }),
         col(
@@ -714,32 +731,33 @@ export class App {
           row(
             B('ic', 'i-bar', 'chartBar', 'Chèn Biểu đồ Thanh', { kt: 'B', act: () => this.insertChart('bar') }),
             B('ic', 'i-area', 'chartArea', 'Chèn Biểu đồ Vùng', { kt: 'A', act: () => this.insertChart('area') }),
-            B('ic', 'i-xy', 'shapes', 'Chèn Biểu đồ Phân tán (X, Y)', { kt: 'D', ...later('0.9') }),
+            B('ic', 'i-xy', 'chartXY', 'Chèn Biểu đồ Phân tán (X, Y)', { kt: 'D', act: () => this.insertChart('scatter') }),
+            B('ic', 'i-combo', 'chartCombo', 'Chèn Biểu đồ Kết hợp', { kt: 'O', act: () => this.insertChart('combo') }),
           ),
         ),
         B('big', 'maps', 'maps', 'Bản đồ', { kt: 'L1', ...later('ngoài phạm vi (Bing)') }),
-        B('big', 'pchart', 'chartStack', 'PivotChart', { kt: 'ZC', ...later('0.9') }),
+        B('big', 'pchart', 'chartStack', 'PivotChart', { kt: 'ZC', act: () => this.pivotChart() }),
       ], { id: 'charts', tip: 'Xem Tất cả Biểu đồ', act: () => this.insertChart(), kt: 'K' }),
       G('spark', 'Biểu đồ thu nhỏ', 'sparkLine', [
-        col(B('sm', 'sp-line', 'sparkLine', 'Đường', { kt: 'SL', ...later('0.9') }), B('sm', 'sp-col', 'sparkCol', 'Cột', { kt: 'SO', ...later('0.9') }), B('sm', 'sp-wl', 'winLoss', 'Thắng/Thua', { kt: 'SW', ...later('0.9') })),
+        col(B('sm', 'sp-line', 'sparkLine', 'Đường', { kt: 'SL', act: () => sparkDialog(this, 'line') }), B('sm', 'sp-col', 'sparkCol', 'Cột', { kt: 'SO', act: () => sparkDialog(this, 'column') }), B('sm', 'sp-wl', 'winLoss', 'Thắng/Thua', { kt: 'SW', act: () => sparkDialog(this, 'stacked') })),
       ]),
-      G('filters', 'Bộ lọc', 'slicer', [B('big', 'slicer', 'slicer', 'Slicer', { kt: 'SF', ...later('0.9') }), B('big', 'tl', 'timeline', 'Dòng thời gian', { kt: 'LT', ...later('0.9') })]),
+      G('filters', 'Bộ lọc', 'slicer', [B('big', 'slicer', 'slicer', 'Slicer', { kt: 'SF', ...later('1.x') }), B('big', 'tl', 'timeline', 'Dòng thời gian', { kt: 'LT', ...later('1.x') })]),
       G('links', 'Nối kết', 'link', [B('big', 'link', 'link', 'Liên kết', { kt: 'I', kbd: 'Ctrl+K', act: () => hyperlinkDialog(this) })]),
       G('comments', 'Chú thích', 'comment', [B('big', 'i-comment', 'comment', 'Chú thích', { kt: 'M', kbd: 'Ctrl+Shift+F2', act: () => this.notes.openCard() })]),
       G('text', 'Văn bản', 'textbox', [
-        B('big', 'textbox', 'textbox', 'Hộp Văn bản', { kt: 'X', ...later('0.9') }),
+        B('big', 'textbox', 'textbox', 'Hộp Văn bản', { kt: 'X', act: () => insertTextbox(this) }),
         B('big', 'hf', 'hf', 'Đầu & Chân trang', { kt: 'H', act: () => this.pageSetup('hf') }),
-        col(B('sm', 'wordart', 'wordart', 'WordArt', { kt: 'W', ...later('0.9') }), B('sm', 'sigline', 'signature', 'Dòng Chữ ký', { kt: 'G', ...later('0.9') }), B('sm', 'object', 'object', 'Đối tượng', { kt: 'J', ...later('0.9') })),
+        col(B('sm', 'wordart', 'wordart', 'WordArt', { kt: 'W', ...later('ngoài phạm vi') }), B('sm', 'sigline', 'signature', 'Dòng Chữ ký', { kt: 'G', ...later('ngoài phạm vi') }), B('sm', 'object', 'object', 'Đối tượng', { kt: 'J', ...later('ngoài phạm vi') })),
       ]),
-      G('symbols', 'Ký hiệu', 'symbol', [B('big', 'equation', 'equation', 'Phương trình', { kt: 'E', ...later('0.9') }), B('big', 'symbol', 'symbol', 'Ký hiệu', { kt: 'U', ...later('0.9') })]),
+      G('symbols', 'Ký hiệu', 'symbol', [B('big', 'equation', 'equation', 'Phương trình', { kt: 'E', ...later('ngoài phạm vi') }), B('big', 'symbol', 'symbol', 'Ký hiệu', { kt: 'U', act: () => symbolDialog(this) })]),
     ] };
     const margins = (): MenuItem[] => ([['normal', 'Thường', 'Trên: 1,91 cm  Dưới: 1,91 cm  Trái: 1,78 cm  Phải: 1,78 cm'], ['wide', 'Rộng', 'Trên: 2,54 cm  Dưới: 2,54 cm  Trái: 2,54 cm  Phải: 2,54 cm'], ['narrow', 'Hẹp', 'Trên: 1,91 cm  Dưới: 1,91 cm  Trái: 0,64 cm  Phải: 0,64 cm']] as const)
       .map(([k, l, d]) => ({ label: `${l} — ${d}`, check: ps().margins === k, act: () => setPs({ margins: k, mg: normPrint({ ...ps(), margins: k, mg: undefined } as any).mg }) }) as MenuItem)
       .concat(['sep', { label: 'Lề Tùy chỉnh…', act: () => this.pageSetup('margins') }]);
     const layout: Tab = { id: 'layout', label: 'Bố trí Trang', kt: 'P', groups: [
       G('themes', 'Chủ đề', 'themes', [
-        B('big', 'themes', 'themes', 'Chủ đề', { kt: 'TH', ...later('0.9') }),
-        col(B('sm', 'th-colors', 'palette', 'Màu', { kt: 'TC', ...later('0.9') }), B('sm', 'th-fonts', 'aa', 'Phông', { kt: 'TF', ...later('0.9') }), B('sm', 'th-eff', 'effects', 'Hiệu ứng', { kt: 'TE', ...later('0.9') })),
+        B('big', 'themes', 'themes', 'Chủ đề', { kt: 'TH', ...later('1.x') }),
+        col(B('sm', 'th-colors', 'palette', 'Màu', { kt: 'TC', ...later('1.x') }), B('sm', 'th-fonts', 'aa', 'Phông', { kt: 'TF', ...later('1.x') }), B('sm', 'th-eff', 'effects', 'Hiệu ứng', { kt: 'TE', ...later('1.x') })),
       ]),
       G('setup', 'Thiết lập Trang', 'margins', [
         B('big', 'pl-margins', 'margins', 'Lề', { kt: 'M', drop: this.menuAt(margins) }),
@@ -754,7 +772,7 @@ export class App {
           { label: 'Loại bỏ Ngắt Trang', act: () => this.safe(() => this.wb.removePageBreak(s(), this.grid.sel.ar, this.grid.sel.ac)) },
           { label: 'Đặt lại Tất cả Ngắt Trang', act: () => this.safe(() => this.wb.resetPageBreaks(s())) },
         ]) }),
-        B('big', 'pl-bg', 'background', 'Nền', { kt: 'G', ...later('0.9') }),
+        B('big', 'pl-bg', 'background', 'Nền', { kt: 'G', ...later('1.x') }),
         B('big', 'pl-titles', 'printTitles', 'In Tiêu đề', { kt: 'I', act: () => this.pageSetup('sheet') }),
       ], { id: 'pagesetup', tip: 'Thiết lập Trang', act: () => this.pageSetup('page'), kt: 'SP' }),
       G('fit', 'Co giãn cho Vừa', 'fitPage', [
@@ -769,10 +787,10 @@ export class App {
         col({ t: 'chk', id: 'hd-view', label: 'Xem đầu đề', kt: 'VH', get: () => this.grid.headings, set: (v) => { this.grid.headings = v; this.grid.layout(); } }, { t: 'chk', id: 'hd-print', label: 'In đầu đề', kt: 'PH', get: () => ps().headings, set: (v) => setPs({ headings: v }) }),
       ], { id: 'sheetopts', tip: 'Thiết lập Trang: Trang tính', act: () => this.pageSetup('sheet'), kt: 'SO' }),
       G('arrange', 'Sắp xếp', 'arrange', [
-        B('big', 'ar-fwd', 'arrange', 'Đưa Lên trên', { kt: 'AF', ...later('0.9') }),
-        B('big', 'ar-back', 'arrange', 'Đưa Xuống dưới', { kt: 'AE', ...later('0.9') }),
-        B('big', 'ar-pane', 'slicer', 'Ngăn Chọn', { kt: 'AP', ...later('0.9') }),
-        col(B('sm', 'ar-align', 'align', 'Căn', { kt: 'AA', ...later('0.9') }), B('sm', 'ar-group', 'groupObj', 'Nhóm', { kt: 'AG', ...later('0.9') }), B('sm', 'ar-rotate', 'rotate', 'Xoay', { kt: 'AY', ...later('0.9') })),
+        B('big', 'ar-fwd', 'arrange', 'Đưa Lên trên', { kt: 'AF', split: true, act: () => arrange(this, 'fwd'), drop: arrangeMenu(this, true) }),
+        B('big', 'ar-back', 'arrange', 'Đưa Xuống dưới', { kt: 'AE', split: true, act: () => arrange(this, 'bwd'), drop: arrangeMenu(this, false) }),
+        B('big', 'ar-pane', 'slicer', 'Ngăn Chọn', { kt: 'AP', drop: (r) => selectionPane(this, r) }),
+        col(B('sm', 'ar-align', 'align', 'Căn', { kt: 'AA', ...later('1.x') }), B('sm', 'ar-group', 'groupObj', 'Nhóm', { kt: 'AG', ...later('1.x') }), B('sm', 'ar-rotate', 'rotate', 'Xoay', { kt: 'AY', ...later('1.x') })),
       ]),
     ] };
     const formulas: Tab = { id: 'formulas', label: 'Công thức', kt: 'M', groups: [
@@ -797,11 +815,11 @@ export class App {
       ]),
       G('audit', 'Kiểm nghiệm Công thức', 'trace', [
         col(B('sm', 'tr-pre', 'trace', 'Truy tìm Ô Tiền lệ', { kt: 'P', act: () => this.trace(true) }), B('sm', 'tr-dep', 'traceDep', 'Truy tìm Ô Phụ thuộc', { kt: 'D', act: () => this.trace(false) }), B('sm', 'tr-rm', 'arrowsX', 'Loại bỏ Mũi tên', { kt: 'AA', act: () => { this.grid.arrows = []; this.traced = null; this.grid.invalidate(); } })),
-        col(B('sm', 'show-f', 'showF', 'Hiện Công thức', { kt: 'H', kbd: 'Ctrl+`', on: () => this.grid.showFormulas, act: () => { this.grid.showFormulas = !this.grid.showFormulas; this.grid.invalidate(); } }), B('sm', 'err-chk', 'errorCheck', 'Kiểm tra Lỗi', { kt: 'K', ...later('0.9') }), B('sm', 'eval-f', 'evaluate', 'Đánh giá Công thức', { kt: 'V', ...later('0.9') })),
-        B('big', 'watch', 'watch', 'Cửa sổ Theo dõi', { kt: 'W', ...later('0.9') }),
+        col(B('sm', 'show-f', 'showF', 'Hiện Công thức', { kt: 'H', kbd: 'Ctrl+`', on: () => this.grid.showFormulas, act: () => { this.grid.showFormulas = !this.grid.showFormulas; this.grid.invalidate(); } }), B('sm', 'err-chk', 'errorCheck', 'Kiểm tra Lỗi', { kt: 'K', split: true, act: () => errorCheckDialog(this), drop: this.menuAt(() => [{ label: 'Kiểm tra Lỗi…', act: () => errorCheckDialog(this) }, { label: 'Truy tìm Lỗi', act: () => this.trace(true) }] as MenuItem[]) }), B('sm', 'eval-f', 'evaluate', 'Đánh giá Công thức', { kt: 'V', act: () => evaluateDialog(this) })),
+        B('big', 'watch', 'watch', 'Cửa sổ Theo dõi', { kt: 'W', act: () => (this.watch ??= new WatchWindow(this)).toggle(), on: () => !!this.watch?.open }),
       ]),
       G('calc', 'Tính toán', 'calcOpts', [
-        B('big', 'calc-opt', 'calcOpts', 'Tùy chọn Tính toán', { kt: 'X', drop: this.menuAt(() => [{ label: 'Tự động', check: true, act: () => {} }, { label: 'Thủ công', act: () => this.later('Tính toán Thủ công', '0.9') }]) }),
+        B('big', 'calc-opt', 'calcOpts', 'Tùy chọn Tính toán', { kt: 'X', drop: this.menuAt(() => [{ label: 'Tự động', check: true, act: () => {} }, { label: 'Thủ công', act: () => this.later('Tính toán Thủ công', '1.x') }]) }),
         col(
           B('sm', 'recalc', 'calc', 'Tính Ngay', { kt: 'B', kbd: 'F9', act: () => this.recalc() }),
           B('sm', 'recalc-s', 'calcSheet', 'Tính Trang tính', { kt: 'J', kbd: 'Shift+F9', act: () => this.recalc() }),
@@ -823,14 +841,14 @@ export class App {
         col(B('ic', 'd-az', 'sortAZ', 'Sắp xếp từ A đến Z', { kt: 'SA', act: () => this.quickSort(false) }), B('ic', 'd-za', 'sortZA', 'Sắp xếp từ Z đến A', { kt: 'SD', act: () => this.quickSort(true) })),
         B('big', 'd-sort', 'sortAZ', 'Sắp xếp', { kt: 'SS', act: () => this.sortDlg() }),
         B('big', 'd-f', 'filter', 'Lọc', { kt: 'T', kbd: 'Ctrl+Shift+L', act: () => this.toggleFilter(), on: () => !!this.wb.meta(s()).filter }),
-        col(B('sm', 'd-fx', 'filterX', 'Xóa', { kt: 'C', act: () => this.clearFilterConds() }), B('sm', 'd-fr', 'refresh', 'Áp dụng lại', { kt: 'Y', act: () => { this.wb.reapplyFilter(s()); this.grid.layout(); } }), B('sm', 'd-adv', 'filter', 'Nâng cao', { kt: 'Q', ...later('0.9') })),
+        col(B('sm', 'd-fx', 'filterX', 'Xóa', { kt: 'C', act: () => this.clearFilterConds() }), B('sm', 'd-fr', 'refresh', 'Áp dụng lại', { kt: 'Y', act: () => { this.wb.reapplyFilter(s()); this.grid.layout(); } }), B('sm', 'd-adv', 'filter', 'Nâng cao', { kt: 'Q', act: () => advancedFilterDialog(this) })),
       ]),
       G('tools', 'Công cụ Dữ liệu', 'textCols', [
         B('big', 'd-t2c', 'textCols', 'Văn bản thành Cột', { kt: 'E', act: () => textToColumnsDialog(this) }),
         col(B('ic', 'd-flash', 'flash', 'Điền Nhanh', { kt: 'FF', kbd: 'Ctrl+E', act: () => this.flashFill() }), B('ic', 'd-dup', 'removeDup', 'Loại bỏ Trùng lặp', { kt: 'M', act: () => removeDupDialog(this) }), B('ic', 'd-v', 'validate', 'Xác thực Dữ liệu', { kt: 'V', act: () => this.dvDlg() })),
-        col(B('sm', 'd-cons', 'subtotal', 'Hợp nhất', { kt: 'N', ...later('0.9') }), B('sm', 'd-model', 'dataModel', 'Mô hình Dữ liệu', { kt: 'DM', ...later('ngoài phạm vi (Power Pivot)') }), B('sm', 'd-analyze', 'analyze', 'Phân tích Dữ liệu', { kt: 'AD', ...later('ngoài phạm vi (dịch vụ AI trực tuyến)') })),
+        col(B('sm', 'd-cons', 'subtotal', 'Hợp nhất', { kt: 'N', act: () => consolidateDialog(this) }), B('sm', 'd-model', 'dataModel', 'Mô hình Dữ liệu', { kt: 'DM', ...later('ngoài phạm vi (Power Pivot)') }), B('sm', 'd-analyze', 'analyze', 'Phân tích Dữ liệu', { kt: 'AD', ...later('ngoài phạm vi (dịch vụ AI trực tuyến)') })),
       ]),
-      G('forecast', 'Dự báo', 'forecast', [B('big', 'd-whatif', 'whatIf', 'Phân tích Giả định', { kt: 'W', ...later('0.9') }), B('big', 'd-fc', 'forecast', 'Trang tính Dự báo', { kt: 'FC', ...later('0.9') })]),
+      G('forecast', 'Dự báo', 'forecast', [B('big', 'd-whatif', 'whatIf', 'Phân tích Giả định', { kt: 'W', drop: this.menuAt(() => [{ label: 'Trình quản lý Kịch bản…', act: () => scenarioManager(this) }, { label: 'Tìm Mục tiêu…', act: () => goalSeekDialog(this) }, { label: 'Bảng Dữ liệu…', act: () => dataTableDialog(this) }] as MenuItem[]) }), B('big', 'd-fc', 'forecast', 'Trang tính Dự báo', { kt: 'FC', act: () => forecastDialog(this) })]),
       G('outline', 'Đại cương', 'group', [
         B('big', 'd-group', 'group', 'Nhóm', { kt: 'G', kbd: 'Alt+Shift+→', split: true, act: () => groupSel(this), drop: this.menuAt(() => [{ label: 'Nhóm…', hint: 'Alt+Shift+→', act: () => groupSel(this) }] as MenuItem[]) }),
         B('big', 'd-ungroup', 'ungroup', 'Bỏ nhóm', { kt: 'U', kbd: 'Alt+Shift+←', split: true, act: () => ungroupSel(this), drop: this.menuAt(() => [{ label: 'Bỏ nhóm…', hint: 'Alt+Shift+←', act: () => ungroupSel(this) }, { label: 'Xóa Đại cương', act: () => clearOutline(this) }] as MenuItem[]) }),
@@ -839,7 +857,7 @@ export class App {
       ]),
     ] };
     const review: Tab = { id: 'review', label: 'Xem lại', kt: 'R', groups: [
-      G('proof', 'Soát lỗi', 'spell', [B('big', 'r-spell', 'spell', 'Chính tả', { kt: 'S', kbd: 'F7', ...later('0.9') }), col(B('sm', 'r-thes', 'thesaurus', 'Từ điển Đồng nghĩa', { kt: 'E', ...later('ngoài phạm vi') }), B('sm', 'r-stats', 'stats', 'Thống kê Sổ làm việc', { kt: 'W', act: () => this.bookStats() }))]),
+      G('proof', 'Soát lỗi', 'spell', [B('big', 'r-spell', 'spell', 'Chính tả', { kt: 'S', kbd: 'F7', act: () => void spellCheck(this) }), col(B('sm', 'r-thes', 'thesaurus', 'Từ điển Đồng nghĩa', { kt: 'E', ...later('ngoài phạm vi') }), B('sm', 'r-stats', 'stats', 'Thống kê Sổ làm việc', { kt: 'W', act: () => this.bookStats() }))]),
       G('perf', 'Hiệu suất', 'perf', [B('big', 'r-perf', 'perf', 'Kiểm tra Hiệu suất', { kt: 'PF', act: () => this.checkPerformance() })]),
       G('access', 'Trợ năng', 'access', [B('big', 'r-access', 'access', 'Kiểm tra Trợ năng', { kt: 'A1', act: () => this.checkAccessibility() })]),
       G('lang', 'Ngôn ngữ', 'translate', [B('big', 'r-translate', 'translate', 'Dịch', { kt: 'L', ...later('ngoài phạm vi (dịch vụ trực tuyến)') })]),
@@ -862,7 +880,7 @@ export class App {
           { label: 'Xóa Ghi chú', act: () => this.act(() => this.eachArea((a) => this.wb.clearNotes(this.grid.sheet, a, 'notes'))) },
         ] as MenuItem[];
       }) })]),
-      G('protect', 'Bảo vệ', 'protectSheet', [B('big', 'r-psheet', 'protectSheet', 'Bảo vệ Trang tính', { kt: 'PS', ...later('0.9') }), B('big', 'r-pbook', 'protectBook', 'Bảo vệ Sổ làm việc', { kt: 'PW', ...later('0.9') }), B('big', 'r-allow', 'allowEdit', 'Cho phép Sửa Vùng', { kt: 'U1', ...later('0.9') }), B('big', 'r-unshare', 'unshare', 'Hủy chia sẻ Sổ làm việc', { kt: 'UW', ...later('ngoài phạm vi') })]),
+      G('protect', 'Bảo vệ', 'protectSheet', [B('big', 'r-psheet', 'protectSheet', 'Bảo vệ Trang tính', { kt: 'PS', text: this.wb.meta(s()).protect ? 'Bỏ bảo vệ Trang tính' : undefined, act: () => toggleSheetProtect(this), on: () => !!this.wb.meta(s()).protect }), B('big', 'r-pbook', 'protectBook', 'Bảo vệ Sổ làm việc', { kt: 'PW', act: () => toggleBookProtect(this), on: () => !!this.wb.bookProtect }), B('big', 'r-allow', 'allowEdit', 'Cho phép Sửa Vùng', { kt: 'U1', act: () => allowRangesDialog(this) }), B('big', 'r-unshare', 'unshare', 'Hủy chia sẻ Sổ làm việc', { kt: 'UW', ...later('ngoài phạm vi') })]),
       G('ink', 'Mực', 'ink', [B('big', 'r-ink', 'ink', 'Ẩn Mực', { kt: 'K', ...later('ngoài phạm vi (bút cảm ứng)') })]),
     ] };
     const view: Tab = { id: 'view', label: 'Xem', kt: 'W', groups: [
@@ -871,10 +889,10 @@ export class App {
           row(B('sm', 'sv-keep', 'keep', 'Giữ', { kt: 'KK', ...later('ngoài phạm vi') }), B('sm', 'sv-exit', 'exitView', 'Thoát', { kt: 'KX', ...later('ngoài phạm vi') }), B('sm', 'sv-new', 'plus', 'Mới', { kt: 'KN', ...later('ngoài phạm vi') }), B('sm', 'sv-opt', 'gear', 'Tùy chọn', { kt: 'KO', ...later('ngoài phạm vi') }))),
       ]),
       G('views', 'Dạng xem Sổ làm việc', 'normalView', [
-        B('big', 'v-normal', 'normalView', 'Thường', { kt: 'L', act: () => this.setView('normal'), on: () => this.grid.view === 'normal' }),
-        B('big', 'v-break', 'breakView', 'Xem trước Ngắt Trang', { kt: 'I', act: () => this.setView('break'), on: () => this.grid.view === 'break' }),
-        B('big', 'v-layout', 'pageView', 'Bố trí Trang', { kt: 'P', ...later('0.8') }),
-        B('big', 'v-custom', 'customViews', 'Dạng xem Tùy chỉnh', { kt: 'C', ...later('0.9') }),
+        B('big', 'v-normal', 'normalView', 'Thường', { kt: 'L', act: () => this.setView('normal'), on: () => this.grid.view === 'normal' && !this.pl?.on }),
+        B('big', 'v-break', 'breakView', 'Xem trước Ngắt Trang', { kt: 'I', act: () => this.setView('break'), on: () => this.grid.view === 'break' && !this.pl?.on }),
+        B('big', 'v-layout', 'pageView', 'Bố trí Trang', { kt: 'P', act: () => this.setView('layout'), on: () => !!this.pl?.on }),
+        B('big', 'v-custom', 'customViews', 'Dạng xem Tùy chỉnh', { kt: 'C', ...later('1.x') }),
       ]),
       G('show', 'Hiện', 'eye', [
         B('big', 'v-nav', 'navPane', 'Dẫn hướng', { kt: 'VN', act: () => this.navPane(), on: () => !!document.getElementById('nav-pane') }),
@@ -895,15 +913,15 @@ export class App {
         B('big', 'zsel', 'zoomSel', 'Thu phóng tới Vùng chọn', { kt: 'G', act: () => this.zoomToSel() }),
       ]),
       G('window', 'Cửa sổ', 'newWin', [
-        B('big', 'w-new', 'newWin', 'Cửa sổ Mới', { kt: 'N', ...later('0.9') }),
-        B('big', 'w-arr', 'arrange', 'Sắp xếp Tất cả', { kt: 'A', ...later('0.9') }),
+        B('big', 'w-new', 'newWin', 'Cửa sổ Mới', { kt: 'N', ...later('1.x') }),
+        B('big', 'w-arr', 'arrange', 'Sắp xếp Tất cả', { kt: 'A', ...later('1.x') }),
         B('big', 'fz', 'freeze', 'Cố định Ngăn', { kt: 'F', drop: this.menuAt(() => [
           { label: this.wb.meta(s()).freeze.rows || this.wb.meta(s()).freeze.cols ? 'Bỏ Cố định Ngăn' : 'Cố định Ngăn', icon: 'freeze', act: () => (this.wb.meta(s()).freeze.rows || this.wb.meta(s()).freeze.cols ? this.freeze(0, 0) : this.freeze(this.grid.sel.ar, this.grid.sel.ac)) },
           { label: 'Cố định Hàng Trên cùng', icon: 'rowIns', act: () => this.freeze(1, 0) },
           { label: 'Cố định Cột Đầu tiên', icon: 'colIns', act: () => this.freeze(0, 1) },
         ]) }),
-        col(B('sm', 'w-split', 'splitWin', 'Tách', { kt: 'S', ...later('0.9') }), B('sm', 'w-hide', 'hideWin', 'Ẩn', { kt: 'H', ...later('0.9') }), B('sm', 'w-unhide', 'eye', 'Bỏ ẩn', { kt: 'U', ...later('0.9') })),
-        col(B('sm', 'w-side', 'sideBySide', 'Xem Cạnh nhau', { kt: 'B', ...later('0.9') }), B('sm', 'w-sync', 'syncScroll', 'Cuộn Đồng bộ', { kt: 'YS', ...later('0.9') }), B('sm', 'w-reset', 'resetWin', 'Đặt lại Vị trí Cửa sổ', { kt: 'T', ...later('0.9') })),
+        col(B('sm', 'w-split', 'splitWin', 'Tách', { kt: 'S', ...later('1.x') }), B('sm', 'w-hide', 'hideWin', 'Ẩn', { kt: 'H', ...later('1.x') }), B('sm', 'w-unhide', 'eye', 'Bỏ ẩn', { kt: 'U', ...later('1.x') })),
+        col(B('sm', 'w-side', 'sideBySide', 'Xem Cạnh nhau', { kt: 'B', ...later('1.x') }), B('sm', 'w-sync', 'syncScroll', 'Cuộn Đồng bộ', { kt: 'YS', ...later('1.x') }), B('sm', 'w-reset', 'resetWin', 'Đặt lại Vị trí Cửa sổ', { kt: 'T', ...later('1.x') })),
         B('big', 'w-switch', 'switchWin', 'Chuyển Cửa sổ', { kt: 'W', drop: this.menuAt(() => [{ label: this.wb.name, check: true, act: () => {} }]) }),
       ]),
       G('macros', 'Macro', 'macro', [B('big', 'macros', 'macro', 'Macro', { kt: 'M', ...later('ngoài phạm vi (không chạy VBA)') })]),
@@ -916,12 +934,12 @@ export class App {
       G('help', 'Trợ giúp', 'help', [
         B('big', 'h-help', 'help', 'Trợ giúp', { kt: 'H', act: () => this.helpDlg() }),
         B('big', 'h-keys', 'kbd', 'Phím tắt', { kt: 'K', act: () => this.helpDlg(true) }),
-        B('big', 'h-new', 'news', 'Có gì Mới', { kt: 'W', act: () => this.toast(`ExcelLike ${VERSION}: Tên vùng, Ghi chú & Chú thích, Nhóm hàng/cột & Tổng phụ, Văn bản thành Cột, Loại bỏ Trùng lặp, Bảng (Ctrl+T) với tham chiếu có cấu trúc, mảng động FILTER/SORT/UNIQUE, Truy tìm Ô Tiền lệ/Phụ thuộc.`) }),
+        B('big', 'h-new', 'news', 'Có gì Mới', { kt: 'W', act: () => this.toast(`ExcelLike ${VERSION}: Bố trí Trang có thước & sửa đầu/chân trang trên trang, kéo ngắt trang, Đánh giá Công thức, Kiểm tra Lỗi, Cửa sổ Theo dõi, Tìm Mục tiêu, Bảng Dữ liệu, Kịch bản, Dự báo, Lọc Nâng cao, Hợp nhất, biểu đồ Phân tán/Kết hợp, Biểu đồ thu nhỏ, Ảnh/Hình/Hộp Văn bản, Hộp kiểm, Bảo vệ Trang tính/Sổ làm việc, Chính tả (F7), Shift+kéo để chèn ô.`) }),
         B('big', 'about', 'info', 'Giới thiệu', { kt: 'A', act: () => this.backstage.open('account') }),
       ]),
     ] };
     const tcur = this.wb.tableAt(this.grid.sheet, this.grid.sel.ar, this.grid.sel.ac);
-    return [{ id: 'file', label: 'Tệp', kt: 'F', groups: [] }, home, insert, layout, formulas, data, review, view, automate, help, ...(tcur ? [tableDesignTab(this, tcur)] : [])];
+    return [{ id: 'file', label: 'Tệp', kt: 'F', groups: [] }, home, insert, layout, formulas, data, review, view, automate, help, ...(tcur ? [tableDesignTab(this, tcur)] : []), ...(this.selObj() ? [objectTab(this, this.selObj()!)] : this.charts?.sel ? chartTabs(this) : []), ...(this.wb.sparkAt(this.grid.sheet, this.grid.sel.ar, this.grid.sel.ac) ? [sparkTab(this)] : [])];
   }
 
   // ---------- lệnh định dạng ----------
@@ -1081,7 +1099,8 @@ export class App {
   }
   private clearFilterConds() {
     const s = this.grid.sheet, f = this.wb.meta(s).filter;
-    if (!f) return;
+    // không có Bộ lọc tự động: Xóa bỏ Lọc Nâng cao (hiện lại hàng đã ẩn trong vùng dữ liệu)
+    if (!f) { const u = this.wb.used(s); if (u.rows) { this.safe(() => this.wb.showAllRows(s, { r1: 0, c1: 0, r2: u.rows - 1, c2: Math.max(0, u.cols - 1) })); this.grid.layout(); } return; }
     for (const c of Object.keys(f.conds)) this.wb.filterColumn(s, +c, null);
     this.grid.layout();
   }
@@ -1358,6 +1377,7 @@ export class App {
     });
   }
   renderSheets() {
+    if (this.pl?.on) this.pl.render();
     const box = $('#sheets');
     box.innerHTML = '';
     for (const id of this.wb.visibleSheetIds()) {
@@ -1400,13 +1420,13 @@ export class App {
       { label: 'Đổi tên', act: () => this.renameSheet(id) },
       { label: 'Di chuyển hoặc Sao chép…', icon: 'move', act: () => this.moveCopyDlg(id) },
       { label: 'Xem Mã', act: () => this.later('Xem Mã (VBA)', 'ngoài phạm vi') },
-      { label: 'Bảo vệ Trang tính…', icon: 'protectSheet', act: () => this.later('Bảo vệ Trang tính', '0.9') },
+      { label: this.wb.meta(this.grid.sheet).protect ? 'Bỏ bảo vệ Trang tính…' : 'Bảo vệ Trang tính…', icon: 'protectSheet', act: () => toggleSheetProtect(this) },
       { label: 'Màu Tab', icon: 'tabColor', sub: () => colorPalette((c) => { this.wb.setTabColor(id, c); this.renderSheets(); }, 'Không Màu') },
       'sep',
       { label: 'Ẩn', act: () => this.hideSheet(id) },
       { label: 'Bỏ ẩn…', disabled: !hidden.length, act: () => this.unhideSheetDlg() },
       'sep',
-      { label: 'Chọn Tất cả Trang tính', act: () => this.later('Nhóm trang tính', '0.9') },
+      { label: 'Chọn Tất cả Trang tính', act: () => this.later('Nhóm trang tính', '1.x') },
     ], x, y);
   }
   hideSheet(id: number) {
@@ -1587,6 +1607,8 @@ export class App {
     if (!this.ed.isEditing()) {
       const fx = $<HTMLTextAreaElement>('#fx-input');
       let t = this.wb.rawText(s, ar, ac), ghost = false;
+      // Ẩn công thức khi trang được bảo vệ (Định dạng Ô ▸ Bảo vệ ▸ Ẩn)
+      if (this.wb.meta(s).protect && this.wb.style(s, ar, ac).hid && t.startsWith('=')) t = '';
       // ô nằm trong vùng tràn của mảng động: hiện công thức ô gốc màu xám như Excel
       if (t === '') { const sp = this.wb.spillRange(s, ar, ac); if (sp && (sp.r !== ar || sp.c !== ac)) { t = this.wb.rawText(s, sp.r, sp.c); ghost = true; } }
       fx.value = t; fx.classList.toggle('ghost', ghost);
@@ -1675,7 +1697,23 @@ export class App {
       });
     } });
   }
+  /** PivotChart: biểu đồ cột vẽ từ vùng kết quả của PivotTable chứa ô hiện hành (bỏ hàng Tổng Cộng) */
+  pivotChart() {
+    const s = this.grid.sheet, p = this.wb.pivotAt(s, this.grid.sel.ar, this.grid.sel.ac);
+    if (!p?.area) { this.toast('Hãy đặt con trỏ trong một PivotTable rồi chọn PivotChart (hoặc tạo PivotTable trước).', 'err'); this.insertPivot(); return; }
+    const a = p.area;
+    let r2 = a.r2;
+    if (/tổng/i.test(this.wb.display(s, r2, a.c1).text)) r2--;
+    let c2 = a.c2;
+    if (a.c2 > a.c1 + 1 && /tổng/i.test(this.wb.display(s, a.r1, a.c2).text)) c2--;
+    const series = seriesFromRange(this.wb, s, { r1: a.r1, c1: a.c1, r2, c2 });
+    if (!series.length) { this.toast('PivotTable chưa có giá trị số để vẽ.', 'err'); return; }
+    this.safe(() => { const id = this.wb.addChart(s, { type: 'col', title: 'PivotChart', series, anchor: { r: a.r1, c: Math.min(a.c2 + 2, MAX_COLS - 8), dx: 0, dy: 0 }, w: 480, h: 288 }); this.grid.invalidate(); requestAnimationFrame(() => this.charts.select(id)); });
+  }
+  /** đối tượng nổi (ảnh/hình/hộp văn bản) đang chọn */
+  selObj() { const id = this.charts?.sel; const o = id ? this.wb.meta(this.grid.sheet).charts.find((c) => c.id === id) : undefined; return o && isObj(o.type) ? o : null; }
   editChart(id: string) {
+    { const o = this.wb.meta(this.grid.sheet).charts.find((x) => x.id === id); if (o && isObj(o.type)) { editObject(this, id); return; } }
     const s = this.grid.sheet, ch = this.wb.meta(s).charts.find((x) => x.id === id);
     if (!ch) return;
     chartDialog({ wb: this.wb, sheet: s, chart: ch, onDone: (nc) => { if (nc) this.safe(() => this.wb.updateChart(s, id, nc)); } });
@@ -2131,8 +2169,8 @@ export class App {
       { label: 'Di chuyển hoặc Sao chép Trang tính…', icon: 'move', act: () => this.moveCopyDlg(s) },
       { label: 'Màu Tab', icon: 'tabColor', sub: () => colorPalette((c) => { this.wb.setTabColor(s, c); this.renderSheets(); }, 'Không Màu') },
       'sep',
-      { label: 'Bảo vệ Trang tính…', icon: 'protectSheet', act: () => this.later('Bảo vệ Trang tính', '0.9') },
-      { label: 'Khóa Ô', icon: 'lock', act: () => this.later('Khóa Ô', '0.9') },
+      { label: this.wb.meta(this.grid.sheet).protect ? 'Bỏ bảo vệ Trang tính…' : 'Bảo vệ Trang tính…', icon: 'protectSheet', act: () => toggleSheetProtect(this) },
+      { label: 'Khóa Ô', icon: 'lock', check: this.wb.style(this.grid.sheet, this.grid.sel.ar, this.grid.sel.ac).lk !== false, act: () => this.safe(() => { const g = this.grid.range; this.wb.setStyle(this.grid.sheet, g, { lk: this.wb.style(this.grid.sheet, g.r1, g.c1).lk === false ? undefined : false }); }) },
       { label: 'Định dạng Ô…', icon: 'cellFmt', hint: 'Ctrl+1', act: () => formatCellsDialog(this, 'num') },
     ];
   }
@@ -2210,11 +2248,16 @@ export class App {
   clearAll() { const s = this.grid.sheet, g = this.grid.range; this.safe(() => { this.wb.clear(s, g); this.wb.clearNotes(s, g); this.wb.setStyle(s, g, { b: undefined, i: undefined, u: undefined, s: undefined, fg: undefined, bg: undefined, al: undefined, fmt: undefined, fn: undefined, fs: undefined, wr: undefined, va: undefined, bd: undefined, ind: undefined }); }); }
   clearFormats() { const s = this.grid.sheet, g = this.grid.range; this.safe(() => this.wb.setStyle(s, g, { b: undefined, i: undefined, u: undefined, s: undefined, fg: undefined, bg: undefined, al: undefined, fmt: undefined, fn: undefined, fs: undefined, wr: undefined, va: undefined, bd: undefined, ind: undefined })); }
   pageSetup(tab: 'page' | 'margins' | 'hf' | 'sheet') { pageSetupDialog(this, tab, () => { this.backstage.refreshPrint(); this.grid.invalidate(); this.ribbon.refresh(); }); }
+  pl: PageLayoutView | null = null;
+  watch: WatchWindow | null = null;
   setView(v: 'normal' | 'break' | 'layout') {
-    if (v === 'layout') { this.later('Dạng xem Bố trí Trang', '0.8'); return; }
-    this.grid.view = v;
+    if (this.ed.isEditing()) this.ed.commit(0, 0);
+    if (v === 'layout') { (this.pl ??= new PageLayoutView(this)).show(); }
+    else this.pl?.hide();
+    if (v !== 'layout') this.grid.view = v;
     this.grid.invalidate();
     document.querySelectorAll<HTMLElement>('#views [data-view]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.view === v)));
+    if (v === 'layout') { this.ribbon.refresh(); return; }
     this.ribbon.refresh();
     if (v === 'break' && !this.wb.used(this.grid.sheet).rows) this.toast('Trang tính trống — chưa có trang in nào.');
   }
@@ -2469,6 +2512,8 @@ export class App {
       case 'note': this.notes.editNote(); return true;
       case 'comment': this.notes.openCard(); return true;
       case 'nameMgr': nameManager(this); return true;
+      case 'spell': void spellCheck(this); return true;
+      case 'errMenu': { const b = this.grid.scroller.getBoundingClientRect(), a = this.grid.cellRectM(this.grid.sel.ar, this.grid.sel.ac); errorMenu(this, b.left + a.x, b.top + a.y + a.h); return true; }
       case 'table': createTableDialog(this); return true;
       case 'outline': this.grid.showOutline = !this.grid.showOutline; this.grid.layout(); return true;
       case 'groupSel': groupSel(this); return true;
@@ -2635,12 +2680,19 @@ export class App {
     this.grid.invalidate();
   }
   /** hiện/ẩn tab ngữ cảnh Thiết kế Bảng theo ô hiện hành */
-  private tblTabOn = false;
+  private ctxKey = '';
+  /** tab đang xem trước khi tab ngữ cảnh tự mở (quay lại khi bỏ chọn đối tượng, như Excel) */
+  private tabBack = 'home';
+  /** tab ngữ cảnh (Thiết kế Bảng / Biểu đồ / Biểu đồ thu nhỏ) theo ô hoặc đối tượng đang chọn */
   syncTableTab() {
-    const on = !!this.wb.tableAt(this.grid.sheet, this.grid.sel.ar, this.grid.sel.ac);
-    if (on === this.tblTabOn) { if (on) this.ribbon?.refresh(); return; }
-    this.tblTabOn = on;
-    if (!on && this.tab === 'tdesign') this.tab = 'home';
+    const at = [this.grid.sheet, this.grid.sel.ar, this.grid.sel.ac] as const;
+    const key = [!!this.wb.tableAt(...at), !!this.charts?.sel, !!this.wb.sparkAt(...at)].map(Number).join('');
+    if (key === this.ctxKey) { if (key !== '000') this.ribbon?.refresh(); return; }
+    const was = this.ctxKey;
+    this.ctxKey = key;
+    // vừa vào bảng/sparkline: mở luôn tab ngữ cảnh như Excel khi mới tạo; còn lại giữ tab đang xem nếu vẫn có
+    void was;
+    if (!this.tabs().some((t) => t.id === this.tab)) this.tab = this.tabs().some((t) => t.id === this.tabBack) ? this.tabBack : 'home';
     this.renderTabs(); this.ribbon?.render(); this.applyRibbon();
   }
   /** Ctrl+Enter: điền nội dung vào mọi ô đang chọn (công thức dời tham chiếu như Excel) */
@@ -2912,6 +2964,12 @@ class CellEditor implements EditHost {
   begin(initial: string | null, mode: 'enter' | 'edit', keepValue = false, origin: 'cell' | 'bar' = isTouch() ? 'bar' : 'cell') {
     if (this.editing) return;
     const { ar, ac } = this.grid.sel;
+    // trang bị bảo vệ: ô khóa không cho vào chế độ sửa (như Excel)
+    if (this.wb.meta(this.grid.sheet).protect && !this.wb.cellEditable(this.grid.sheet, ar, ac)) {
+      this.app.toast(this.wb.protectBlock(this.grid.sheet, 'edit', { r1: ar, c1: ac, r2: ar, c2: ac }) ?? 'Ô đang được bảo vệ.', 'err');
+      (this.fx as HTMLElement).blur?.(); this.grid.focusKeys();
+      return;
+    }
     this.at = { s: this.grid.sheet, r: ar, c: ac };
     this.orig = this.wb.rawText(this.at.s, ar, ac);
     this.editing = true;
@@ -3108,6 +3166,13 @@ class CellEditor implements EditHost {
     const ctrl = e.ctrlKey || e.metaKey;
     const k = e.key;
     if (!this.editing) {
+      // Space trên ô có hộp kiểm: đổi đúng/sai như Excel
+      if (k === ' ' && !ctrl && !e.altKey && !e.shiftKey && from === 'cell' && this.wb.style(this.grid.sheet, this.grid.sel.ar, this.grid.sel.ac).cb) {
+        e.preventDefault();
+        const g = this.grid.range;
+        for (let r = g.r1; r <= Math.min(g.r2, g.r1 + 999); r++) for (let c = g.c1; c <= Math.min(g.c2, g.c1 + 99); c++) toggleCheckbox(this.app, r, c);
+        return;
+      }
       if (from === 'bar') return;
       this.navKey(e, ctrl);
       return;

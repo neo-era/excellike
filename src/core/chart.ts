@@ -2,9 +2,14 @@
 import type { Range } from './address';
 import type { Workbook } from './workbook';
 
-export type ChartType = 'col' | 'colStack' | 'bar' | 'line' | 'area' | 'pie' | 'doughnut';
+export type ChartType = 'col' | 'colStack' | 'bar' | 'line' | 'area' | 'pie' | 'doughnut' | 'scatter' | 'combo' | 'pic' | 'shape' | 'text';
+/** đối tượng nổi không phải biểu đồ (dùng chung lớp kéo/thả, in, lưu với biểu đồ) */
+export const isObj = (t: ChartType) => t === 'pic' || t === 'shape' || t === 'text';
+export type ShapeKind = 'rect' | 'roundRect' | 'ellipse' | 'triangle' | 'rightArrow' | 'line' | 'star5' | 'diamond';
+export const SHAPE_NAMES: Record<ShapeKind, string> = { rect: 'Hình chữ nhật', roundRect: 'Hình chữ nhật Góc tròn', ellipse: 'Hình bầu dục', triangle: 'Tam giác', rightArrow: 'Mũi tên Phải', line: 'Đường thẳng', star5: 'Ngôi sao 5 cánh', diamond: 'Hình thoi' };
 export interface Ref { sheet: number; range: Range }
-export interface Series { name?: Ref; cats?: Ref; vals: Ref }
+/** kind/y2: dùng cho biểu đồ Kết hợp (cột + đường, trục phụ bên phải) */
+export interface Series { name?: Ref; cats?: Ref; vals: Ref; kind?: 'col' | 'line'; y2?: boolean }
 export interface Chart {
   id?: string;
   type: ChartType;
@@ -14,9 +19,25 @@ export interface Chart {
   w: number; h: number;                                     // kích thước px ở 100%
   legend?: 'b' | 'r' | 't' | 'none';
   labels?: boolean;
+  /** 0.9: tiêu đề trục, đường lưới, bộ màu, nền vùng biểu đồ, viền */
+  xTitle?: string; yTitle?: string; y2Title?: string;
+  grid?: boolean;
+  colors?: number;
+  fill?: string; border?: string;
+  /** đối tượng: ảnh (data URL), hình, chữ, cỡ chữ, màu chữ, văn bản thay thế */
+  img?: string; shape?: ShapeKind; text?: string; fs?: number; fg?: string; alt?: string;
 }
-export const CHART_NAMES: Record<ChartType, string> = { col: 'Cột', colStack: 'Cột chồng', bar: 'Thanh ngang', line: 'Đường', area: 'Vùng', pie: 'Tròn', doughnut: 'Vành khuyên' };
+export const CHART_NAMES: Record<ChartType, string> = { col: 'Cột', colStack: 'Cột chồng', bar: 'Thanh ngang', line: 'Đường', area: 'Vùng', pie: 'Tròn', doughnut: 'Vành khuyên', scatter: 'Phân tán XY', combo: 'Kết hợp', pic: 'Ảnh', shape: 'Hình dạng', text: 'Hộp Văn bản' };
 export const PALETTE = ['#4472c4', '#ed7d31', '#a5a5a5', '#ffc000', '#5b9bd5', '#70ad47', '#264478', '#9e480e', '#636363', '#997300'];
+/** Đổi Màu (Thiết kế Biểu đồ): bộ nhiều màu + các bộ đơn sắc như Excel */
+export const PALETTES: { name: string; colors: string[] }[] = [
+  { name: 'Nhiều màu', colors: PALETTE },
+  { name: 'Xanh dương', colors: ['#264478', '#4472c4', '#7f9fd9', '#a9c0e8', '#1f3864', '#8eaadb'] },
+  { name: 'Cam', colors: ['#9e480e', '#ed7d31', '#f4b183', '#f8cbad', '#843c0c', '#f6a26b'] },
+  { name: 'Xanh lá', colors: ['#43682b', '#70ad47', '#a9d18e', '#c5e0b4', '#385723', '#8fbc6f'] },
+  { name: 'Xám', colors: ['#3a3a3a', '#7f7f7f', '#a5a5a5', '#c9c9c9', '#595959', '#bfbfbf'] },
+];
+export const paletteOf = (ch: { colors?: number }) => PALETTES[ch.colors ?? 0]?.colors ?? PALETTE;
 
 /** Thang trục "đẹp": bước 1/2/5 × 10^n */
 export function niceScale(min: number, max: number, ticks = 5): { lo: number; hi: number; step: number } {
@@ -115,14 +136,29 @@ export function cellsOf(wb: Workbook, ref: Ref | undefined, kind: 'text' | 'num'
   return out;
 }
 
-export interface ChartData { cats: string[]; series: { name: string; values: (number | null)[] }[] }
+export interface ChartData { cats: string[]; series: { name: string; values: (number | null)[]; xs?: (number | null)[] }[] }
 export function chartData(wb: Workbook, ch: Pick<Chart, 'type' | 'series'>): ChartData {
   const series = ch.series.map((s, i) => ({
     name: (s.name ? (cellsOf(wb, s.name, 'text')[0] as string) : '') || `Chuỗi ${i + 1}`,
     values: cellsOf(wb, s.vals, 'num') as (number | null)[],
+    // phân tán XY: giá trị X là số của vùng danh mục (không có thì 1, 2, 3…)
+    ...(ch.type === 'scatter' ? { xs: s.cats ? (cellsOf(wb, s.cats, 'num') as (number | null)[]) : undefined } : {}),
   }));
   const n = Math.max(0, ...series.map((s) => s.values.length));
   let cats = ch.series[0]?.cats ? (cellsOf(wb, ch.series[0].cats, 'text') as string[]) : [];
   if (cats.length < n) cats = [...cats, ...Array.from({ length: n - cats.length }, (_, i) => String(cats.length + i + 1))];
   return { cats: cats.slice(0, n), series };
+}
+
+/** Phân tán XY: cột số đầu tiên là X, các cột còn lại là Y (như Excel) */
+export function scatterFromRange(wb: Workbook, sheet: number, g: Range): Series[] {
+  const u = wb.used(sheet);
+  g = { ...g, r2: Math.min(g.r2, Math.max(g.r1, u.rows - 1)), c2: Math.min(g.c2, Math.max(g.c1, u.cols - 1)) };
+  const hdr = typeof wb.value(sheet, g.r1, g.c2) === 'string' && g.r2 > g.r1;
+  const r1 = g.r1 + (hdr ? 1 : 0);
+  const R = (range: Range): Ref => ({ sheet, range });
+  if (g.c2 === g.c1) return [{ vals: R({ r1, c1: g.c1, r2: g.r2, c2: g.c1 }), name: hdr ? R({ r1: g.r1, c1: g.c1, r2: g.r1, c2: g.c1 }) : undefined }];
+  const out: Series[] = [];
+  for (let c = g.c1 + 1; c <= g.c2; c++) out.push({ name: hdr ? R({ r1: g.r1, c1: c, r2: g.r1, c2: c }) : undefined, cats: R({ r1, c1: g.c1, r2: g.r2, c2: g.c1 }), vals: R({ r1, c1: c, r2: g.r2, c2: c }) });
+  return out;
 }

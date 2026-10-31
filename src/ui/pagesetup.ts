@@ -6,7 +6,7 @@ import { parseSheetRef } from './charts';
 import type { App } from './app';
 
 // mã hiển thị trong ô soạn đầu/chân trang (như Excel: &[Trang], &[Trang tính]…)
-const CODES: [string, string, string][] = [['P', '&[Trang]', 'Số trang'], ['N', '&[Số trang]', 'Tổng số trang'], ['D', '&[Ngày]', 'Ngày'], ['T', '&[Giờ]', 'Giờ'], ['F', '&[Tệp]', 'Tên tệp'], ['A', '&[Trang tính]', 'Tên trang tính']];
+const CODES: [string, string, string][] = [['P', '&[Trang]', 'Số trang'], ['N', '&[Số trang]', 'Tổng số trang'], ['D', '&[Ngày]', 'Ngày'], ['T', '&[Giờ]', 'Giờ'], ['F', '&[Tệp]', 'Tên tệp'], ['A', '&[Trang tính]', 'Tên trang tính'], ['G', '&[Ảnh]', 'Ảnh']];
 // Chỉ đổi các mã nội dung (&P &N &D &T &F &A) sang dạng dễ đọc; mọi mã khác (&& , &"phông", &14, &B, &K…) giữ nguyên
 // như ô soạn đầu/chân trang của Excel (muốn gõ ký tự & thì gõ &&).
 export function rawToFriendly(t: string) {
@@ -90,17 +90,17 @@ export function pageSetupDialog(app: App, tab: 'page' | 'margins' | 'hf' | 'shee
   );
   // ---- Đầu trang/Chân trang ----
   const ctx = { page: 1, pages: 1, sheet: sheetName, file, date: new Date() };
-  const hfBlock = (kind: 'header' | 'footer') => {
-    const raw = kind === 'header' ? p.header : p.footer;
+  const imgs: Record<string, string> = { ...(p.hfImg ?? {}) };
+  const hfBlock = (kind: 'header' | 'footer', raw: string, idp = '', title?: string) => {
     const parts = hfParse(raw);
     const pre = h('div', { class: 'ps-prev', 'aria-label': 'Xem trước' }, h('span'), h('span'), h('span'));
-    const sel = h('select', { id: kind === 'header' ? 'ps-header' : 'ps-footer' }) as HTMLSelectElement;
+    const sel = h('select', { id: (kind === 'header' ? 'ps-header' : 'ps-footer') + idp }) as HTMLSelectElement;
     const presets = PRESETS(sheetName, file);
     for (const [v, l] of presets) sel.append(h('option', { value: v }, l));
     sel.append(h('option', { value: '__custom' }, '(tùy chỉnh)'));
     sel.value = presets.some(([v]) => v === raw) ? raw : '__custom';
     const k = kind === 'header' ? 'h' : 'f';
-    const ta = (x: 'l' | 'c' | 'r', label: string) => { const t = h('textarea', { id: `ps-${k}${x}`, 'aria-label': label }) as HTMLTextAreaElement; t.value = rawToFriendly(parts[x] ?? ''); return t; };
+    const ta = (x: 'l' | 'c' | 'r', label: string) => { const t = h('textarea', { id: `ps-${k}${x}${idp}`, 'aria-label': label }) as HTMLTextAreaElement; t.dataset.sec = x; t.value = rawToFriendly(parts[x] ?? ''); return t; };
     const tl = ta('l', 'Phần trái'), tc = ta('c', 'Phần giữa'), tr = ta('r', 'Phần phải');
     let dirty = false;
     // chưa sửa gì thì giữ nguyên chuỗi gốc (kể cả mã phông/cỡ chữ/màu)
@@ -110,12 +110,30 @@ export function pageSetupDialog(app: App, tab: 'page' | 'margins' | 'hf' | 'shee
     let last: HTMLTextAreaElement = tc;
     for (const t of [tl, tc, tr]) { t.oninput = () => { dirty = true; sel.value = presets.some(([v]) => v === value()) ? value() : '__custom'; paint(); }; t.onfocus = () => (last = t); }
     const codes = h('div', { class: 'ps-codes' });
-    for (const [, f, l] of CODES) { const b = h('button', { type: 'button', title: 'Chèn ' + l }, l); b.onmousedown = (e) => e.preventDefault(); b.onclick = () => { const a = last.selectionStart ?? last.value.length; last.value = last.value.slice(0, a) + f + last.value.slice(last.selectionEnd ?? a); last.dispatchEvent(new Event('input')); last.focus(); }; codes.append(b); }
+    const put = (f: string) => { const a = last.selectionStart ?? last.value.length; last.value = last.value.slice(0, a) + f + last.value.slice(last.selectionEnd ?? a); last.dispatchEvent(new Event('input')); last.focus(); };
+    for (const [code, f, l] of CODES) {
+      const b = h('button', { type: 'button', title: 'Chèn ' + l }, l); b.onmousedown = (e) => e.preventDefault();
+      b.onclick = code !== 'G' ? () => put(f) : () => {
+        // ảnh (logo) cho phần đang chọn: lưu dạng data URL, tối đa 1 MB
+        const fi = h('input', { type: 'file', accept: 'image/png,image/jpeg,image/gif' }) as HTMLInputElement;
+        const sec = last.dataset.sec ?? 'c';
+        fi.onchange = () => { const fl = fi.files?.[0]; if (!fl) return; if (fl.size > 1_000_000) { err.textContent = 'Ảnh quá lớn (tối đa 1 MB).'; return; } const rd = new FileReader(); rd.onload = () => { imgs[k + sec] = String(rd.result); if (!last.value.includes('&[Ảnh]')) put(f); else last.dispatchEvent(new Event('input')); }; rd.readAsDataURL(fl); };
+        fi.click();
+      };
+      codes.append(b);
+    }
     paint();
-    return { el: h('div', { class: 'stack' }, pre, h('label', { class: 'fld' }, h('span', {}, kind === 'header' ? 'Đầu trang' : 'Chân trang'), sel), h('div', { class: 'ps-hf' }, tl, tc, tr), codes), value };
+    return { el: h('div', { class: 'stack' }, title ? h('b', {}, title) : '', pre, h('label', { class: 'fld' }, h('span', {}, kind === 'header' ? 'Đầu trang' : 'Chân trang'), sel), h('div', { class: 'ps-hf' }, tl, tc, tr), codes), value };
   };
-  const hd = hfBlock('header'), ft = hfBlock('footer');
-  panes.hf.append(hd.el, h('hr'), ft.el);
+  const hd = hfBlock('header', p.header), ft = hfBlock('footer', p.footer);
+  const h1 = hfBlock('header', p.hfFirst?.header ?? '', '-1', 'Trang đầu'), f1 = hfBlock('footer', p.hfFirst?.footer ?? '', '-1');
+  const eh = hfBlock('header', p.hfEven?.header ?? '', '-2', 'Trang chẵn'), ef = hfBlock('footer', p.hfEven?.footer ?? '', '-2');
+  const firstBox = h('div', { class: 'stack ps-alt' }, h1.el, f1.el), evenBox = h('div', { class: 'stack ps-alt' }, eh.el, ef.el);
+  const cFirst = chk('ps-difffirst', 'Trang đầu khác', !!p.hfFirst), cEven = chk('ps-diffodd', 'Trang chẵn và lẻ khác', !!p.hfEven);
+  const syncAlt = () => { firstBox.hidden = !(box.querySelector('#ps-difffirst') as HTMLInputElement).checked; evenBox.hidden = !(box.querySelector('#ps-diffodd') as HTMLInputElement).checked; };
+  panes.hf.append(hd.el, h('hr'), ft.el, h('div', { class: 'row-end', style: 'justify-content:flex-start;gap:24px;flex-wrap:wrap' }, cFirst, cEven), firstBox, evenBox);
+  panes.hf.addEventListener('change', (e) => { if ((e.target as HTMLElement).id?.startsWith('ps-diff')) syncAlt(); });
+  queueMicrotask(syncAlt);
   // ---- Trang tính ----
   const areaIn = h('input', { type: 'text', id: 'ps-area', placeholder: 'ví dụ: A1:H40', style: 'height:32px' }) as HTMLInputElement;
   if (p.area) areaIn.value = `${colName(p.area.c1)}${p.area.r1 + 1}:${colName(p.area.c2)}${p.area.r2 + 1}`;
@@ -165,6 +183,9 @@ export function pageSetupDialog(app: App, tab: 'page' | 'margins' | 'hf' | 'shee
     n.margins = (Object.entries(MARGIN_PRESETS).find(([, v]) => JSON.stringify(v) === JSON.stringify(n.mg))?.[0] ?? 'custom') as NPrint['margins'];
     n.center = { h: q('#ps-ch').checked, v: q('#ps-cv').checked };
     n.header = hd.value(); n.footer = ft.value();
+    n.hfFirst = q('#ps-difffirst').checked ? { header: h1.value(), footer: f1.value() } : null;
+    n.hfEven = q('#ps-diffodd').checked ? { header: eh.value(), footer: ef.value() } : null;
+    { const all = [n.header, n.footer, n.hfFirst?.header, n.hfFirst?.footer, n.hfEven?.header, n.hfEven?.footer].join(''); const keep: Record<string, string> = {}; for (const [kk, v] of Object.entries(imgs)) if (all.includes('&G')) keep[kk] = v; n.hfImg = keep; }
     n.gridlines = q('#ps-grid').checked; n.headings = q('#ps-heads').checked;
     n.order = q('input[name=ps-ord]:checked').value as NPrint['order'];
     if (areaIn.value.trim()) {

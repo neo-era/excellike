@@ -1,6 +1,6 @@
 {
   "name": "excellike",
-  "version": "0.7.0",
+  "version": "0.9.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -64,5 +64,8 @@
         "to": "lic.exe"
       }
     ]
+  },
+  "dependencies": {
+    "nspell": "^2.1.5"
   }
 }
