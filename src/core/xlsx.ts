@@ -125,7 +125,8 @@ const unesc = (s: string) => s.replace(/&(lt|gt|amp|quot|apos|#\d+|#x[0-9a-f]+);
 });
 function attrs(tag: string): Record<string, string> {
   const o: Record<string, string> = {};
-  for (const m of tag.matchAll(/([\w:]+)="([^"]*)"/g)) o[m[1].replace(/^\w+:/, '')] = unesc(m[2]);
+  // chấp nhận khoảng trắng quanh dấu = và nháy đơn (tệp xuất từ một số phần mềm: r:id ="rId1")
+  for (const m of tag.matchAll(/([\w:.-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) o[m[1].replace(/^\w+:/, '')] = unesc(m[2] ?? m[3]);
   return o;
 }
 /** xl/commentsN.xml → [{r, c, text}] (ghi chú kiểu cũ) */
@@ -392,7 +393,7 @@ export async function readXlsxBook(buf: ArrayBuffer | Uint8Array): Promise<{ boo
         if (ry !== rx) { zip.file(rp, ry); zip.file(path, xml); rezip = true; }
       }
     }
-    const dm = /<drawing\b[^>]*r:id="([^"]+)"[^>]*\/>/.exec(xml);
+    const dm = /<drawing\b[^>]*r:id\s*=\s*"([^"]+)"[^>]*\/>/.exec(xml);
     if (dm) {
       const srels = await relsOf(zip, path);
       const dpath = srels.get(dm[1]);

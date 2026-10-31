@@ -13,9 +13,9 @@ export const unescXml = (s: string) => (s.indexOf('&') < 0 ? s : s.replace(/&(lt
 const unescOoxml = (s: string) => (s.indexOf('_x') < 0 ? s : s.replace(/_x([0-9A-Fa-f]{4})_/g, (_m, h: string) => String.fromCharCode(parseInt(h, 16))));
 function attrsOf(tag: string): Record<string, string> {
   const o: Record<string, string> = {};
-  const re = /([\w:]+)="([^"]*)"/g;
+  const re = /([\w:.-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(tag))) o[m[1].replace(/^\w+:/, '')] = unescXml(m[2]);
+  while ((m = re.exec(tag))) o[m[1].replace(/^\w+:/, '')] = unescXml(m[2] ?? m[3]);
   return o;
 }
 const stripNs = (xml: string) => xml.replace(/<(\/?)[A-Za-z_][\w.-]*:/g, '<$1');
@@ -147,7 +147,8 @@ function a1(ref: string): { r: number; c: number } | null {
   for (let i = 0; i < m[1].length; i++) c = c * 26 + m[1].charCodeAt(i) - 64;
   return { r: +m[2] - 1, c: c - 1 };
 }
-const attr1 = (tag: string, name: string) => { const i = tag.indexOf(' ' + name + '="'); if (i < 0) return undefined; const j = i + name.length + 3; return tag.slice(j, tag.indexOf('"', j)); };
+const attrRe = new Map<string, RegExp>();
+const attr1 = (tag: string, name: string) => { const i = tag.indexOf(' ' + name + '="'); if (i < 0) { if (tag.indexOf(name) < 0) return undefined; let re = attrRe.get(name); if (!re) attrRe.set(name, (re = new RegExp('\\s' + name + '\\s*=\\s*["\']([^"\']*)'))); const m = re.exec(tag); return m ? m[1] : undefined; } const j = i + name.length + 3; return tag.slice(j, tag.indexOf('"', j)); };
 
 /** Tách và đọc <sheetData>; trả về xml đã bỏ dữ liệu ô (để ExcelJS chỉ đọc phần còn lại) */
 export function takeSheetData(xml: string): { xml: string; cells: FastCell[]; rows: FastRow[] } {
