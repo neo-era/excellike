@@ -14,6 +14,11 @@ import { PivotPanel, pivotCreateDialog } from './pivotui';
 import { Ribbon, KeyTips, bindRibbonKeys, allItems, fold, type Tab, type Btn, type KtTarget, type Item, type Group } from './ribbon';
 import { closeMenu, openPopover, showMenu, menuOpen, type MenuItem } from './menu';
 import { Backstage } from './backstage';
+import { groupSel, ungroupSel, clearOutline, showDetail, subtotalDialog, outlineClick } from './outline-ui';
+import { removeDupDialog, textToColumnsDialog } from './datatools-ui';
+import { createTableDialog, tableStylePicker, tableDesignTab, totalFnMenu } from './table-ui';
+import { NoteLayer } from './notes-ui';
+import { nameManager, nameDialog, createFromSelection, pasteNameDialog, selRef } from './names-ui';
 import { pageSetupDialog } from './pagesetup';
 import { normPrint, storePrint } from '../core/paginate';
 
@@ -131,6 +136,7 @@ export class App {
   grid!: Grid;
   ed!: CellEditor;
   charts!: ChartLayer;
+  notes!: NoteLayer;
   pivot!: PivotPanel;
   bookId: string;
   private saveTimer = 0;
@@ -155,13 +161,15 @@ export class App {
     this.ed = new CellEditor(this);
     this.grid.edit = this.ed;
     this.grid.onSelect = () => this.syncSelection();
+    this.grid.onOutline = (k, L, at) => outlineClick(this, k, L, at);
     this.grid.onContext = (x, y, zone) => this.contextMenu(x, y, zone);
+    this.notes = new NoteLayer(this);
     this.charts = new ChartLayer($('#gridwrap'), this.wb, this.grid, (id) => this.editChart(id), (m) => this.toast(m));
     this.grid.onDraw = () => this.charts.sync();
     this.pivot = new PivotPanel($('#gridwrap'), this.wb, (m, k) => this.toast(m, k), () => this.grid.invalidate());
     $('#gridwrap').addEventListener('grid-error', (e) => this.toast((e as CustomEvent).detail, 'err'));
     $('#gridwrap').addEventListener('filter-btn', (e) => { const d = (e as CustomEvent).detail; this.filterPopover(d.col, d.x, d.y); });
-    $('#gridwrap').addEventListener('dv-btn', (e) => { const d = (e as CustomEvent).detail; this.dvPick(d.x, d.y); });
+    $('#gridwrap').addEventListener('dv-btn', (e) => { const d = (e as CustomEvent).detail; if (!totalFnMenu(this, d.x, d.y)) this.dvPick(d.x, d.y); });
     // 0.6: chổi định dạng áp khi nhả chuột; nhấp nhanh vào ô có liên kết thì mở liên kết (như Excel)
     let down = { t: 0, r: -1, c: -1 };
     $('#gridwrap').addEventListener('cell-down', (e) => { const d = (e as CustomEvent).detail; down = { t: performance.now(), r: d.r, c: d.c }; this.tabStart = null; if (d.ctrl) down.t = 0; });
@@ -474,7 +482,7 @@ export class App {
     cm.id = 'btn-comments';
     cm.innerHTML = ic('comment', 15) + '<span>Chú thích</span>';
     cm.title = 'Chú thích — có ở bản 0.7';
-    cm.onclick = () => this.later('Chú thích', '0.7');
+    cm.onclick = () => this.notes.togglePane();
     nav.appendChild(cm);
     const sh = document.createElement('button');
     sh.className = 'pill share';
@@ -632,7 +640,7 @@ export class App {
       ], { id: 'number', tip: 'Định dạng Ô: Số', act: () => formatCellsDialog(this, 'num'), kt: 'FM' }),
       G('styles', 'Kiểu', 'styles', [
         B('big', 'cf', 'cf', 'Định dạng có Điều kiện', { kt: 'L', drop: this.dd(() => this.cfMenu()) }),
-        B('big', 'fmtTable', 'fmtTable', 'Định dạng như Bảng', { kt: 'T', ...later('0.7') }),
+        B('big', 'fmtTable', 'fmtTable', 'Định dạng như Bảng', { kt: 'T', drop: (r) => tableStylePicker(this, r, (st) => createTableDialog(this, st)) }),
         { t: 'gal', id: 'cstyle', label: 'Kiểu Ô', icon: 'styles', kt: 'J', items: CELL_STYLES.slice(0, 6).map(([n, sty, bk, bs, bc]) => ({ label: n, css: styleCss(sty, bk, bc), act: () => this.applyCellStyle(n, sty, bk, bs, bc) })), act: () => this.cellStyleMenu(), more: (r) => this.cellStyleMenu(r) },
       ]),
       G('cells', 'Ô', 'cellIns', [
@@ -659,7 +667,7 @@ export class App {
             { label: 'Xóa Tất cả', icon: 'eraser', act: () => this.clearAll() },
             { label: 'Xóa Định dạng', act: () => this.clearFormats() },
             { label: 'Xóa Nội dung', hint: 'Delete', act: () => this.clearSel() },
-            { label: 'Xóa Ghi chú và Chú thích', act: () => this.later('Ghi chú', '0.7') },
+            { label: 'Xóa Ghi chú và Chú thích', act: () => this.act(() => this.eachArea((a) => this.wb.clearNotes(this.grid.sheet, a))) },
             { label: 'Xóa Siêu kết nối', act: () => this.clearLinks() },
           ]) }),
         ),
@@ -685,7 +693,7 @@ export class App {
       G('tables', 'Bảng', 'pivot', [
         B('big', 'pivot', 'pivot', 'PivotTable', { kt: 'V', act: () => this.insertPivot() }),
         B('big', 'recPivot', 'recommended', 'PivotTable Đề xuất', { kt: 'SP', ...later('0.9') }),
-        B('big', 'table', 'fmtTable', 'Bảng', { kt: 'T', kbd: 'Ctrl+T', ...later('0.7') }),
+        B('big', 'table', 'fmtTable', 'Bảng', { kt: 'T', kbd: 'Ctrl+T', act: () => createTableDialog(this) }),
         B('big', 'forms', 'forms', 'Biểu mẫu', { kt: 'FO', ...later('ngoài phạm vi (Microsoft Forms)') }),
       ]),
       G('illus', 'Hình minh họa', 'picture', [
@@ -717,7 +725,7 @@ export class App {
       ]),
       G('filters', 'Bộ lọc', 'slicer', [B('big', 'slicer', 'slicer', 'Slicer', { kt: 'SF', ...later('0.9') }), B('big', 'tl', 'timeline', 'Dòng thời gian', { kt: 'LT', ...later('0.9') })]),
       G('links', 'Nối kết', 'link', [B('big', 'link', 'link', 'Liên kết', { kt: 'I', kbd: 'Ctrl+K', act: () => hyperlinkDialog(this) })]),
-      G('comments', 'Chú thích', 'comment', [B('big', 'i-comment', 'comment', 'Chú thích', { kt: 'M', ...later('0.7') })]),
+      G('comments', 'Chú thích', 'comment', [B('big', 'i-comment', 'comment', 'Chú thích', { kt: 'M', kbd: 'Ctrl+Shift+F2', act: () => this.notes.openCard() })]),
       G('text', 'Văn bản', 'textbox', [
         B('big', 'textbox', 'textbox', 'Hộp Văn bản', { kt: 'X', ...later('0.9') }),
         B('big', 'hf', 'hf', 'Đầu & Chân trang', { kt: 'H', act: () => this.pageSetup('hf') }),
@@ -777,11 +785,18 @@ export class App {
         B('big', 'f-more', 'moreFn', 'Hàm Khác', { kt: 'Q', drop: this.menuAt(() => ([['Thống kê', 'AVERAGE AVERAGEIF COUNT COUNTA COUNTBLANK COUNTIF COUNTIFS MAX MAXIFS MEDIAN MIN MINIFS MODE RANK STDEV.S VAR.S FORECAST'], ['Kỹ thuật', 'CONVERT DEC2BIN BIN2DEC DEC2HEX HEX2DEC DELTA'], ['Khối', 'CUBEVALUE CUBEMEMBER'], ['Thông tin', 'ISBLANK ISERROR ISNUMBER ISTEXT ISNA TYPE N NA CELL'], ['Tương thích', 'STDEV VAR RANK PERCENTILE QUARTILE'], ['Web', 'ENCODEURL']] as const).map(([cat, fns]) => ({ label: cat, sub: fns.split(' ').map((f) => ({ label: f, act: () => this.insertFn(f) })) }) as MenuItem)) }),
       ]),
       G('names', 'Tên đã Xác định', 'nameMgr', [
-        B('big', 'nm-mgr', 'nameMgr', 'Trình Quản lý Tên', { kt: 'N', kbd: 'Ctrl+F3', ...later('0.7') }),
-        col(B('sm', 'nm-def', 'tag', 'Xác định Tên', { kt: 'MD', ...later('0.7') }), B('sm', 'nm-use', 'fx', 'Dùng trong Công thức', { kt: 'S', ...later('0.7') }), B('sm', 'nm-create', 'table', 'Tạo từ Vùng chọn', { kt: 'C', kbd: 'Ctrl+Shift+F3', ...later('0.7') })),
+        B('big', 'nm-mgr', 'nameMgr', 'Trình Quản lý Tên', { kt: 'N', kbd: 'Ctrl+F3', act: () => nameManager(this) }),
+        col(
+          B('sm', 'nm-def', 'tag', 'Xác định Tên', { kt: 'MD', act: () => nameDialog(this) }),
+          B('sm', 'nm-use', 'fx', 'Dùng trong Công thức', { kt: 'S', drop: this.menuAt(() => {
+            const list = this.wb.listNames().filter((n) => !n.hidden && (n.scope === undefined || n.scope === this.grid.sheet));
+            return [...(list.length ? list.map((n) => ({ label: n.name, act: () => this.pasteName(n.name) })) : [{ label: '(Chưa có tên)', act: () => {} }]), 'sep', { label: 'Dán Tên…', kbd: 'F3', act: () => pasteNameDialog(this, this.ed.isEditing()) }] as MenuItem[];
+          }) }),
+          B('sm', 'nm-create', 'table', 'Tạo từ Vùng chọn', { kt: 'C', kbd: 'Ctrl+Shift+F3', act: () => createFromSelection(this) }),
+        ),
       ]),
       G('audit', 'Kiểm nghiệm Công thức', 'trace', [
-        col(B('sm', 'tr-pre', 'trace', 'Truy tìm Ô Tiền lệ', { kt: 'P', ...later('0.7') }), B('sm', 'tr-dep', 'traceDep', 'Truy tìm Ô Phụ thuộc', { kt: 'D', ...later('0.7') }), B('sm', 'tr-rm', 'arrowsX', 'Loại bỏ Mũi tên', { kt: 'AA', ...later('0.7') })),
+        col(B('sm', 'tr-pre', 'trace', 'Truy tìm Ô Tiền lệ', { kt: 'P', act: () => this.trace(true) }), B('sm', 'tr-dep', 'traceDep', 'Truy tìm Ô Phụ thuộc', { kt: 'D', act: () => this.trace(false) }), B('sm', 'tr-rm', 'arrowsX', 'Loại bỏ Mũi tên', { kt: 'AA', act: () => { this.grid.arrows = []; this.traced = null; this.grid.invalidate(); } })),
         col(B('sm', 'show-f', 'showF', 'Hiện Công thức', { kt: 'H', kbd: 'Ctrl+`', on: () => this.grid.showFormulas, act: () => { this.grid.showFormulas = !this.grid.showFormulas; this.grid.invalidate(); } }), B('sm', 'err-chk', 'errorCheck', 'Kiểm tra Lỗi', { kt: 'K', ...later('0.9') }), B('sm', 'eval-f', 'evaluate', 'Đánh giá Công thức', { kt: 'V', ...later('0.9') })),
         B('big', 'watch', 'watch', 'Cửa sổ Theo dõi', { kt: 'W', ...later('0.9') }),
       ]),
@@ -811,15 +826,16 @@ export class App {
         col(B('sm', 'd-fx', 'filterX', 'Xóa', { kt: 'C', act: () => this.clearFilterConds() }), B('sm', 'd-fr', 'refresh', 'Áp dụng lại', { kt: 'Y', act: () => { this.wb.reapplyFilter(s()); this.grid.layout(); } }), B('sm', 'd-adv', 'filter', 'Nâng cao', { kt: 'Q', ...later('0.9') })),
       ]),
       G('tools', 'Công cụ Dữ liệu', 'textCols', [
-        B('big', 'd-t2c', 'textCols', 'Văn bản thành Cột', { kt: 'E', ...later('0.7') }),
-        col(B('ic', 'd-flash', 'flash', 'Điền Nhanh', { kt: 'FF', kbd: 'Ctrl+E', act: () => this.flashFill() }), B('ic', 'd-dup', 'removeDup', 'Loại bỏ Trùng lặp', { kt: 'M', ...later('0.7') }), B('ic', 'd-v', 'validate', 'Xác thực Dữ liệu', { kt: 'V', act: () => this.dvDlg() })),
+        B('big', 'd-t2c', 'textCols', 'Văn bản thành Cột', { kt: 'E', act: () => textToColumnsDialog(this) }),
+        col(B('ic', 'd-flash', 'flash', 'Điền Nhanh', { kt: 'FF', kbd: 'Ctrl+E', act: () => this.flashFill() }), B('ic', 'd-dup', 'removeDup', 'Loại bỏ Trùng lặp', { kt: 'M', act: () => removeDupDialog(this) }), B('ic', 'd-v', 'validate', 'Xác thực Dữ liệu', { kt: 'V', act: () => this.dvDlg() })),
         col(B('sm', 'd-cons', 'subtotal', 'Hợp nhất', { kt: 'N', ...later('0.9') }), B('sm', 'd-model', 'dataModel', 'Mô hình Dữ liệu', { kt: 'DM', ...later('ngoài phạm vi (Power Pivot)') }), B('sm', 'd-analyze', 'analyze', 'Phân tích Dữ liệu', { kt: 'AD', ...later('ngoài phạm vi (dịch vụ AI trực tuyến)') })),
       ]),
       G('forecast', 'Dự báo', 'forecast', [B('big', 'd-whatif', 'whatIf', 'Phân tích Giả định', { kt: 'W', ...later('0.9') }), B('big', 'd-fc', 'forecast', 'Trang tính Dự báo', { kt: 'FC', ...later('0.9') })]),
       G('outline', 'Đại cương', 'group', [
-        B('big', 'd-group', 'group', 'Nhóm', { kt: 'G', kbd: 'Alt+Shift+→', ...later('0.7') }),
-        B('big', 'd-ungroup', 'ungroup', 'Bỏ nhóm', { kt: 'U', kbd: 'Alt+Shift+←', ...later('0.7') }),
-        B('big', 'd-sub', 'subtotal', 'Tổng phụ', { kt: 'B', ...later('0.7') }),
+        B('big', 'd-group', 'group', 'Nhóm', { kt: 'G', kbd: 'Alt+Shift+→', split: true, act: () => groupSel(this), drop: this.menuAt(() => [{ label: 'Nhóm…', hint: 'Alt+Shift+→', act: () => groupSel(this) }] as MenuItem[]) }),
+        B('big', 'd-ungroup', 'ungroup', 'Bỏ nhóm', { kt: 'U', kbd: 'Alt+Shift+←', split: true, act: () => ungroupSel(this), drop: this.menuAt(() => [{ label: 'Bỏ nhóm…', hint: 'Alt+Shift+←', act: () => ungroupSel(this) }, { label: 'Xóa Đại cương', act: () => clearOutline(this) }] as MenuItem[]) }),
+        B('big', 'd-sub', 'subtotal', 'Tổng phụ', { kt: 'B', act: () => subtotalDialog(this) }),
+        col(B('sm', 'd-showd', 'plus', 'Hiện Chi tiết', { kt: 'J', act: () => showDetail(this, true) }), B('sm', 'd-hided', 'minus', 'Ẩn Chi tiết', { kt: 'H', act: () => showDetail(this, false) })),
       ]),
     ] };
     const review: Tab = { id: 'review', label: 'Xem lại', kt: 'R', groups: [
@@ -828,8 +844,24 @@ export class App {
       G('access', 'Trợ năng', 'access', [B('big', 'r-access', 'access', 'Kiểm tra Trợ năng', { kt: 'A1', act: () => this.checkAccessibility() })]),
       G('lang', 'Ngôn ngữ', 'translate', [B('big', 'r-translate', 'translate', 'Dịch', { kt: 'L', ...later('ngoài phạm vi (dịch vụ trực tuyến)') })]),
       G('changes', 'Thay đổi', 'showChanges', [B('big', 'r-changes', 'showChanges', 'Hiện Thay đổi', { kt: 'H1', ...later('ngoài phạm vi (cộng tác trực tuyến)') })]),
-      G('comments2', 'Chú thích', 'comment', [B('big', 'r-comment', 'comment', 'Chú thích Mới', { kt: 'C', kbd: 'Ctrl+Shift+F2', ...later('0.7') }), B('big', 'r-cdel', 'commentDel', 'Xóa', { kt: 'D', ...later('0.7') }), B('big', 'r-cprev', 'commentPrev', 'Chú thích Trước', { kt: 'V', ...later('0.7') }), B('big', 'r-cnext', 'commentNext', 'Chú thích Tiếp theo', { kt: 'N', ...later('0.7') }), B('big', 'r-cshow', 'comments', 'Hiện Chú thích', { kt: 'H2', ...later('0.7') })]),
-      G('notes', 'Ghi chú', 'note', [B('big', 'r-note', 'note', 'Ghi chú', { kt: 'T', kbd: 'Shift+F2', ...later('0.7') })]),
+      G('comments2', 'Chú thích', 'comment', [
+        B('big', 'r-comment', 'comment', 'Chú thích Mới', { kt: 'C', kbd: 'Ctrl+Shift+F2', act: () => this.notes.openCard() }),
+        B('big', 'r-cdel', 'commentDel', 'Xóa', { kt: 'D', act: () => this.act(() => this.eachArea((a) => { if (!this.wb.clearNotes(this.grid.sheet, a, 'comments')) this.toast('Vùng chọn không có chú thích.'); })) }),
+        B('big', 'r-cprev', 'commentPrev', 'Chú thích Trước', { kt: 'V', act: () => this.notes.step('comment', -1) }),
+        B('big', 'r-cnext', 'commentNext', 'Chú thích Tiếp theo', { kt: 'N', act: () => this.notes.step('comment', 1) }),
+        B('big', 'r-cshow', 'comments', 'Hiện Chú thích', { kt: 'H2', act: () => this.notes.togglePane(), on: () => this.notes.paneOpen }),
+      ]),
+      G('notes', 'Ghi chú', 'note', [B('big', 'r-note', 'note', 'Ghi chú', { kt: 'T', drop: this.menuAt(() => {
+        const st = this.wb.style(this.grid.sheet, this.grid.sel.ar, this.grid.sel.ac);
+        return [
+          { label: st.nt ? 'Sửa Ghi chú' : 'Ghi chú Mới', icon: 'note', kbd: 'Shift+F2', act: () => this.notes.editNote() },
+          { label: 'Ghi chú Trước', act: () => this.notes.step('note', -1) },
+          { label: 'Ghi chú Tiếp theo', act: () => this.notes.step('note', 1) },
+          { label: 'Hiện Tất cả Ghi chú', check: this.notes.allShown, act: () => this.notes.toggleAll() },
+          'sep',
+          { label: 'Xóa Ghi chú', act: () => this.act(() => this.eachArea((a) => this.wb.clearNotes(this.grid.sheet, a, 'notes'))) },
+        ] as MenuItem[];
+      }) })]),
       G('protect', 'Bảo vệ', 'protectSheet', [B('big', 'r-psheet', 'protectSheet', 'Bảo vệ Trang tính', { kt: 'PS', ...later('0.9') }), B('big', 'r-pbook', 'protectBook', 'Bảo vệ Sổ làm việc', { kt: 'PW', ...later('0.9') }), B('big', 'r-allow', 'allowEdit', 'Cho phép Sửa Vùng', { kt: 'U1', ...later('0.9') }), B('big', 'r-unshare', 'unshare', 'Hủy chia sẻ Sổ làm việc', { kt: 'UW', ...later('ngoài phạm vi') })]),
       G('ink', 'Mực', 'ink', [B('big', 'r-ink', 'ink', 'Ẩn Mực', { kt: 'K', ...later('ngoài phạm vi (bút cảm ứng)') })]),
     ] };
@@ -884,15 +916,16 @@ export class App {
       G('help', 'Trợ giúp', 'help', [
         B('big', 'h-help', 'help', 'Trợ giúp', { kt: 'H', act: () => this.helpDlg() }),
         B('big', 'h-keys', 'kbd', 'Phím tắt', { kt: 'K', act: () => this.helpDlg(true) }),
-        B('big', 'h-new', 'news', 'Có gì Mới', { kt: 'W', act: () => this.toast(`ExcelLike ${VERSION}: phím tắt giống Excel 365 (F1 xem bảng), Tìm & Thay thế, Đi tới Đặc biệt, Dán Đặc biệt, Định dạng Ô (Ctrl+1), Chổi định dạng, Điền Nhanh, Liên kết, chọn nhiều vùng.`) }),
+        B('big', 'h-new', 'news', 'Có gì Mới', { kt: 'W', act: () => this.toast(`ExcelLike ${VERSION}: Tên vùng, Ghi chú & Chú thích, Nhóm hàng/cột & Tổng phụ, Văn bản thành Cột, Loại bỏ Trùng lặp, Bảng (Ctrl+T) với tham chiếu có cấu trúc, mảng động FILTER/SORT/UNIQUE, Truy tìm Ô Tiền lệ/Phụ thuộc.`) }),
         B('big', 'about', 'info', 'Giới thiệu', { kt: 'A', act: () => this.backstage.open('account') }),
       ]),
     ] };
-    return [{ id: 'file', label: 'Tệp', kt: 'F', groups: [] }, home, insert, layout, formulas, data, review, view, automate, help];
+    const tcur = this.wb.tableAt(this.grid.sheet, this.grid.sel.ar, this.grid.sel.ac);
+    return [{ id: 'file', label: 'Tệp', kt: 'F', groups: [] }, home, insert, layout, formulas, data, review, view, automate, help, ...(tcur ? [tableDesignTab(this, tcur)] : [])];
   }
 
   // ---------- lệnh định dạng ----------
-  private safe(f: () => void) { try { f(); } catch (e) { this.toast((e as Error).message, 'err'); } }
+  safe(f: () => void) { try { f(); } catch (e) { this.toast((e as Error).message, 'err'); } }
   applyStyle(p: Style) {
     const areas = this.grid.ranges(), sheets = this.sheetsTarget();
     this.safe(() => this.wb.group(() => { for (const sh of sheets) for (const a of areas) this.wb.setStyle(sh, a, p); }));
@@ -1253,7 +1286,7 @@ export class App {
   delRows() { const { at, n } = this.rows(); this.safe(() => this.wb.deleteRows(this.grid.sheet, at, n)); }
   insCols() { const { at, n } = this.cols(); this.safe(() => this.wb.insertCols(this.grid.sheet, at, n)); }
   delCols() { const { at, n } = this.cols(); this.safe(() => this.wb.deleteCols(this.grid.sheet, at, n)); }
-  clearSel() { const areas = this.grid.ranges(), sheets = this.sheetsTarget(); this.safe(() => this.wb.group(() => { for (const sh of sheets) for (const a of areas) this.wb.clear(sh, a); })); this.lastAct = () => this.clearSel(); }
+  clearSel() { const areas = this.grid.ranges(), sheets = this.sheetsTarget(); this.safe(() => this.wb.group(() => { for (const sh of sheets) this.wb.withHeaders(sh, () => { for (const a of areas) this.wb.clear(sh, a); }); })); this.lastAct = () => this.clearSel(); }
   autoSum(fn = 'SUM') {
     const { ar, ac } = this.grid.sel;
     const f = this.wb.autoSum(this.grid.sheet, ar, ac, fn);
@@ -1262,10 +1295,10 @@ export class App {
   }
   fillDir(dir: 'down' | 'right' | 'up' | 'left') {
     const g = this.grid.range;
-    if (dir === 'down' && g.r2 > g.r1) this.safe(() => this.wb.fill(this.grid.sheet, { ...g, r2: g.r1 }, g));
-    if (dir === 'right' && g.c2 > g.c1) this.safe(() => this.wb.fill(this.grid.sheet, { ...g, c2: g.c1 }, g));
-    if (dir === 'up' && g.r2 > g.r1) this.safe(() => this.wb.fill(this.grid.sheet, { ...g, r1: g.r2 }, g));
-    if (dir === 'left' && g.c2 > g.c1) this.safe(() => this.wb.fill(this.grid.sheet, { ...g, c1: g.c2 }, g));
+    if (dir === 'down' && g.r2 > g.r1) this.safe(() => this.wb.withHeaders(this.grid.sheet, () => this.wb.fill(this.grid.sheet, { ...g, r2: g.r1 }, g)));
+    if (dir === 'right' && g.c2 > g.c1) this.safe(() => this.wb.withHeaders(this.grid.sheet, () => this.wb.fill(this.grid.sheet, { ...g, c2: g.c1 }, g)));
+    if (dir === 'up' && g.r2 > g.r1) this.safe(() => this.wb.withHeaders(this.grid.sheet, () => this.wb.fill(this.grid.sheet, { ...g, r1: g.r2 }, g)));
+    if (dir === 'left' && g.c2 > g.c1) this.safe(() => this.wb.withHeaders(this.grid.sheet, () => this.wb.fill(this.grid.sheet, { ...g, c1: g.c2 }, g)));
   }
   private freeze(rows: number, cols: number) {
     if (rows === 0 && cols === 0 && !this.wb.meta(this.grid.sheet).freeze.rows && !this.wb.meta(this.grid.sheet).freeze.cols) return;
@@ -1296,8 +1329,8 @@ export class App {
     const { ar, ac } = this.grid.sel;
     this.safe(() => {
       let g: Range | null;
-      if (this.wb.clip && (text === null || normalizeNL(text) === normalizeNL(this.lastCopyText))) g = this.wb.paste(this.grid.sheet, ar, ac);
-      else if (text) g = this.wb.pasteText(this.grid.sheet, ar, ac, text);
+      if (this.wb.clip && (text === null || normalizeNL(text) === normalizeNL(this.lastCopyText))) g = this.wb.withHeaders(this.grid.sheet, () => this.wb.paste(this.grid.sheet, ar, ac));
+      else if (text) g = this.wb.withHeaders(this.grid.sheet, () => this.wb.pasteText(this.grid.sheet, ar, ac, text));
       else g = null;
       if (g) this.grid.selectRange(g);
     });
@@ -1496,14 +1529,53 @@ export class App {
       if (e.key === 'Escape') { e.preventDefault(); this.syncSelection(); this.grid.focusKeys(); }
       if (e.key !== 'Enter') return;
       e.preventDefault();
-      const g = parseRange(nb.value.replace(/\s/g, ''));
-      if (!g) { this.toast('Tham chiếu không hợp lệ. Ví dụ: B5 hoặc A1:C10', 'err'); return; }
-      this.grid.selectRange(g); this.grid.focusKeys();
+      const text = nb.value.trim();
+      const g = parseRange(text.replace(/\s/g, ''));
+      if (g) { this.grid.selectRange(g); this.grid.focusKeys(); return; }
+      // tên đã có → nhảy tới; tên mới hợp lệ → đặt tên cho vùng đang chọn (như Excel)
+      if (this.wb.tableByName(text)) { this.gotoName(text); return; }
+      const t = this.wb.nameTarget(text, this.grid.sheet);
+      if (t) { this.gotoName(text); return; }
+      if (this.wb.listNames().some((n) => n.name.toUpperCase() === text.toUpperCase())) { this.toast(`Tên “${text}” không trỏ tới một vùng ô.`, 'err'); return; }
+      try { this.wb.defineName(text, selRef(this)); this.afterNames(); this.toast(`Đã đặt tên “${text}” cho ${nb.dataset.ref ?? 'vùng chọn'}.`, 'ok'); this.grid.focusKeys(); }
+      catch (err) { this.toast((err as Error).message + ' Ví dụ địa chỉ: B5 hoặc A1:C10; ví dụ tên: DonGia.', 'err'); }
     };
-    $('#namebox-dd').onclick = () => this.later('Danh sách Tên', '0.7');
+    $('#namebox-dd').onclick = () => {
+      const list = this.wb.listNames().filter((n) => !n.hidden && (n.scope === undefined || n.scope === this.grid.sheet) && this.wb.nameTarget(n.name, this.grid.sheet));
+      const r = nb.getBoundingClientRect();
+      const all = [...this.wb.tableReg().map((t) => t.name), ...list.map((n) => n.name)].sort((a, b) => a.localeCompare(b, 'vi'));
+      showMenu(all.length ? all.map((n) => ({ label: n, act: () => this.gotoName(n) })) : [{ label: '(Chưa có tên vùng)', act: () => {} }], r.left, r.bottom + 2);
+    };
     $('#fx-fn').onclick = () => this.funcPicker();
     $('#fx-exp').onclick = () => { $('#app').classList.toggle('fx-tall'); this.grid.layout(); };
     bindRibbonKeys((el) => el.click(), () => this.grid.focusKeys());
+  }
+  /** sau khi thêm/sửa/xóa tên: vẽ lại, cập nhật thanh công thức */
+  afterNames() { this.grid.invalidate(); this.syncSelection(); this.ribbon.refresh(); }
+  /** nhảy tới vùng của tên (Hộp Tên, F5) */
+  gotoName(name: string) {
+    const tb = this.wb.tableByName(name);
+    if (tb) {
+      if (tb.sheet !== this.grid.sheet) { this.grid.setSheet(tb.sheet); this.renderSheets(); }
+      const d = { r1: tb.r1 + (tb.header ? 1 : 0), c1: tb.c1, r2: tb.r2 - (tb.totals ? 1 : 0), c2: tb.c2 };
+      this.grid.selectRange(d); this.syncSelection(); this.grid.focusKeys(); return;
+    }
+    const t = this.wb.nameTarget(name, this.grid.sheet);
+    if (!t) { this.toast(`Tên “${name}” không trỏ tới một vùng ô.`, 'err'); return; }
+    if (t.sheet !== this.grid.sheet) { this.grid.setSheet(t.sheet); this.renderSheets(); }
+    this.grid.selectRange(t.range); this.syncSelection(); this.grid.focusKeys();
+  }
+  /** Dán Tên: đang sửa ô → chèn vào công thức; không thì bắt đầu công thức =Tên */
+  pasteName(name: string) {
+    if (this.ed.isEditing()) { this.ed.refocus(); this.ed.insertText(name); return; }
+    this.ed.begin('=' + name, 'enter');
+  }
+  /** Dán Danh sách tên vào trang tính tại ô hiện hành (tên | tham chiếu) */
+  pasteNameList() {
+    const s = this.grid.sheet, { ar, ac } = this.grid.sel;
+    const list = this.wb.listNames().filter((n) => !n.hidden && (n.scope === undefined || n.scope === s));
+    this.safe(() => this.wb.writeCells(s, list.flatMap((n, i) => [[ar + i, ac, "'" + n.name], [ar + i, ac + 1, "'" + n.expr]] as [number, number, string][])));
+    this.grid.focusKeys();
   }
   syncSelection() {
     const g = this.grid.range, s = this.grid.sheet, { ar, ac } = this.grid.sel;
@@ -1512,8 +1584,15 @@ export class App {
       const fullC = g.r1 === 0 && g.r2 === MAX_ROWS - 1, fullR = g.c1 === 0 && g.c2 === MAX_COLS - 1;
       nb.value = fullC && fullR ? toA1(ar, ac) : g.r1 === g.r2 && g.c1 === g.c2 ? toA1(ar, ac) : this.wb.mergeAt(s, ar, ac) && this.grid.isSingle() ? toA1(ar, ac) : toA1(ar, ac);
     }
-    if (!this.ed.isEditing()) $<HTMLTextAreaElement>('#fx-input').value = this.wb.rawText(s, ar, ac);
+    if (!this.ed.isEditing()) {
+      const fx = $<HTMLTextAreaElement>('#fx-input');
+      let t = this.wb.rawText(s, ar, ac), ghost = false;
+      // ô nằm trong vùng tràn của mảng động: hiện công thức ô gốc màu xám như Excel
+      if (t === '') { const sp = this.wb.spillRange(s, ar, ac); if (sp && (sp.r !== ar || sp.c !== ac)) { t = this.wb.rawText(s, sp.r, sp.c); ghost = true; } }
+      fx.value = t; fx.classList.toggle('ghost', ghost);
+    }
     this.refreshToggles();
+    this.syncTableTab();
     if (!this.bookChanging) this.pivot?.follow(s, ar, ac);
     this.updateStatus();
     this.announce();
@@ -1632,7 +1711,7 @@ export class App {
     const sig = this.wb.sheetIds().map((i) => i + ':' + this.wb.sheetName(i)).join('|');
     if (sig !== this.sheetSig) { this.sheetSig = sig; if (!this.wb.sheetIds().includes(this.grid.sheet)) this.grid.setSheet(this.wb.sheetIds()[0]); this.renderSheets(); }
   }
-  private scheduleSave() {
+  scheduleSave() {
     clearTimeout(this.saveTimer);
     this.scheduleAuto();
     $('#save-state').textContent = '• Chưa lưu';
@@ -1794,12 +1873,13 @@ export class App {
           { label: 'Sắp xếp Tùy chỉnh…', act: () => this.sortDlg() },
         ] },
         'sep',
-        { label: 'Bình luận Mới', icon: 'comment', act: later('Bình luận', '0.7') },
-        { label: 'Ghi chú Mới', icon: 'note', act: later('Ghi chú', '0.7') },
+        { label: this.wb.style(this.grid.sheet, this.grid.sel.ar, this.grid.sel.ac).cm ? 'Trả lời Chú thích' : 'Chú thích Mới', icon: 'comment', act: () => this.notes.openCard() },
+        { label: this.wb.style(this.grid.sheet, this.grid.sel.ar, this.grid.sel.ac).nt ? 'Sửa Ghi chú' : 'Ghi chú Mới', icon: 'note', act: () => this.notes.editNote() },
+        ...(this.wb.style(this.grid.sheet, this.grid.sel.ar, this.grid.sel.ac).nt ? [{ label: 'Xóa Ghi chú', act: () => this.act(() => this.eachArea((a) => this.wb.clearNotes(this.grid.sheet, a, 'notes'))) }] : []),
         'sep',
         { label: 'Định dạng Ô…', icon: 'cellFmt', hint: 'Ctrl+1', act: () => formatCellsDialog(this, 'num') },
         { label: 'Chọn từ Danh sách Thả xuống…', act: () => this.pickFromList() },
-        { label: 'Xác định Tên…', icon: 'tag', act: later('Xác định Tên', '0.7') },
+        { label: 'Xác định Tên…', icon: 'tag', act: () => nameDialog(this) },
         { label: this.wb.style(this.grid.sheet, this.grid.sel.ar, this.grid.sel.ac).ln ? 'Sửa Liên kết…' : 'Liên kết', icon: 'link', hint: 'Ctrl+K', act: () => hyperlinkDialog(this) },
         ...(this.wb.style(this.grid.sheet, this.grid.sel.ar, this.grid.sel.ac).ln ? [{ label: 'Mở Liên kết', act: () => this.followLink(this.grid.sel.ar, this.grid.sel.ac) }, { label: 'Loại bỏ Liên kết', act: () => this.setLink(null, null) }] as MenuItem[] : []),
       ];
@@ -1941,7 +2021,7 @@ export class App {
     box.className = 'fn-picker';
     box.innerHTML = `<label class="fn-search">${ic('fx', 16)}<input id="fn-q" placeholder="Tìm hàm, ví dụ: tra cứu, SUMIF" aria-label="Tìm hàm"></label><div class="fn-list" role="listbox"></div>`;
     const list = box.querySelector('.fn-list') as HTMLElement;
-    const all = this.wb.hf.getRegisteredFunctionNames().sort();
+    const all = this.wb.hf.getRegisteredFunctionNames().filter((n) => !/^(XOFS\d|XTHISROW)$/.test(n)).sort();
     const render = (q: string) => {
       const qq = q.trim().toLowerCase();
       const names = all.filter((n) => !qq || n.toLowerCase().includes(qq) || (FUNC_INFO[n]?.join(' ').toLowerCase().includes(qq) ?? false));
@@ -2127,7 +2207,7 @@ export class App {
     this.wb.setIterate({ on }); this.grid.invalidate(); this.ribbon.refresh();
     this.toast(on ? `Đã bật tính lặp (tối đa ${this.wb.iterate.count} lần, sai số ${String(this.wb.iterate.delta).replace('.', ',')}) — tham chiếu vòng được tính như Excel.` : 'Đã tắt tính lặp — ô có tham chiếu vòng hiện #CYCLE!.');
   }
-  clearAll() { const s = this.grid.sheet, g = this.grid.range; this.safe(() => { this.wb.clear(s, g); this.wb.setStyle(s, g, { b: undefined, i: undefined, u: undefined, s: undefined, fg: undefined, bg: undefined, al: undefined, fmt: undefined, fn: undefined, fs: undefined, wr: undefined, va: undefined, bd: undefined, ind: undefined }); }); }
+  clearAll() { const s = this.grid.sheet, g = this.grid.range; this.safe(() => { this.wb.clear(s, g); this.wb.clearNotes(s, g); this.wb.setStyle(s, g, { b: undefined, i: undefined, u: undefined, s: undefined, fg: undefined, bg: undefined, al: undefined, fmt: undefined, fn: undefined, fs: undefined, wr: undefined, va: undefined, bd: undefined, ind: undefined }); }); }
   clearFormats() { const s = this.grid.sheet, g = this.grid.range; this.safe(() => this.wb.setStyle(s, g, { b: undefined, i: undefined, u: undefined, s: undefined, fg: undefined, bg: undefined, al: undefined, fmt: undefined, fn: undefined, fs: undefined, wr: undefined, va: undefined, bd: undefined, ind: undefined })); }
   pageSetup(tab: 'page' | 'margins' | 'hf' | 'sheet') { pageSetupDialog(this, tab, () => { this.backstage.refreshPrint(); this.grid.invalidate(); this.ribbon.refresh(); }); }
   setView(v: 'normal' | 'break' | 'layout') {
@@ -2385,6 +2465,15 @@ export class App {
         this.ed.begin(txt, 'edit'); return true;
       }
       case 'insFn': this.funcPicker(); return true;
+      case 'pasteName': pasteNameDialog(this, false); return true;
+      case 'note': this.notes.editNote(); return true;
+      case 'comment': this.notes.openCard(); return true;
+      case 'nameMgr': nameManager(this); return true;
+      case 'table': createTableDialog(this); return true;
+      case 'outline': this.grid.showOutline = !this.grid.showOutline; this.grid.layout(); return true;
+      case 'groupSel': groupSel(this); return true;
+      case 'ungroupSel': ungroupSel(this); return true;
+      case 'createNames': createFromSelection(this); return true;
       case 'calcAll': this.recalc(); return true;
       case 'editBar': this.ed.begin(null, 'edit', false, 'bar'); return true;
     }
@@ -2470,6 +2559,7 @@ export class App {
     const g = this.grid, s = g.sheet, { ar, ac } = g.sel;
     const b = g.scroller.getBoundingClientRect(), r = g.cellRectM(ar, ac);
     if (this.wb.dvAt(s, ar, ac)?.type === 'list') { this.dvPick(b.left + r.x, b.top + r.y + r.h); return; }
+    if (totalFnMenu(this, b.left + r.x + r.w, b.top + r.y + r.h)) return;
     const f = this.wb.meta(s).filter;
     if (f && ar === f.range.r1 && ac >= f.range.c1 && ac <= f.range.c2) { this.filterPopover(ac, b.left + r.x + r.w, b.top + r.y + r.h); return; }
     this.pickFromList();
@@ -2506,8 +2596,52 @@ export class App {
   /** Ô nhập: ghi vào mọi trang trong nhóm */
   writeInput(r: number, c: number, v: string) {
     const list = this.sheetsTarget();
-    if (list.length === 1) { this.wb.setInput(list[0], r, c, v); return; }
-    this.wb.group(() => { for (const sh of list) this.wb.setInput(sh, r, c, v); });
+    let grew = false;
+    this.wb.group(() => { for (const sh of list) { this.wb.setInput(sh, r, c, v); if (this.wb.afterEdit(sh, r, c)) grew = true; } });
+    if (grew) { this.grid.invalidate(); this.syncTableTab(); }
+  }
+  /** Truy tìm Ô Tiền lệ / Phụ thuộc: mỗi lần bấm thêm một cấp (như Excel) */
+  private traced: { pre: boolean; sheet: number; frontier: { r: number; c: number }[]; seen: Set<string> } | null = null;
+  trace(pre: boolean) {
+    const s = this.grid.sheet, { ar, ac } = this.grid.sel, wb = this.wb;
+    let st = this.traced;
+    if (!st || st.pre !== pre || st.sheet !== s || !st.seen.has(ar + ':' + ac)) {
+      if (st && (st.pre !== pre || st.sheet !== s)) { /* đổi kiểu truy tìm: giữ mũi tên cũ */ }
+      st = this.traced = { pre, sheet: s, frontier: [{ r: ar, c: ac }], seen: new Set([ar + ':' + ac]) };
+    }
+    const next: { r: number; c: number }[] = [];
+    let added = 0;
+    for (const p of st.frontier) {
+      if (pre) {
+        for (const x of wb.precedentsOf(s, p.r, p.c)) {
+          if (x.s !== s) { this.grid.arrows.push({ from: x.range, to: p, ext: 'from' }); added++; continue; }
+          this.grid.arrows.push({ from: x.range, to: p }); added++;
+          for (let r = x.range.r1; r <= Math.min(x.range.r2, x.range.r1 + 200); r++) for (let c = x.range.c1; c <= Math.min(x.range.c2, x.range.c1 + 50); c++) {
+            const k = r + ':' + c;
+            if (!st.seen.has(k) && wb.rawText(s, r, c).startsWith('=')) { st.seen.add(k); next.push({ r, c }); }
+          }
+        }
+      } else {
+        for (const d of wb.directDependents(s, p.r, p.c)) {
+          if (d.s !== s) { this.grid.arrows.push({ from: { r1: p.r, c1: p.c, r2: p.r, c2: p.c }, to: p, ext: 'to' }); added++; continue; }
+          this.grid.arrows.push({ from: { r1: p.r, c1: p.c, r2: p.r, c2: p.c }, to: { r: d.r, c: d.c } }); added++;
+          const k = d.r + ':' + d.c;
+          if (!st.seen.has(k)) { st.seen.add(k); next.push({ r: d.r, c: d.c }); }
+        }
+      }
+    }
+    st.frontier = next;
+    if (!added) this.toast(pre ? 'Ô hiện hành không có ô tiền lệ nào (hoặc đã truy tìm hết).' : 'Không có công thức nào tham chiếu tới ô hiện hành (hoặc đã truy tìm hết).');
+    this.grid.invalidate();
+  }
+  /** hiện/ẩn tab ngữ cảnh Thiết kế Bảng theo ô hiện hành */
+  private tblTabOn = false;
+  syncTableTab() {
+    const on = !!this.wb.tableAt(this.grid.sheet, this.grid.sel.ar, this.grid.sel.ac);
+    if (on === this.tblTabOn) { if (on) this.ribbon?.refresh(); return; }
+    this.tblTabOn = on;
+    if (!on && this.tab === 'tdesign') this.tab = 'home';
+    this.renderTabs(); this.ribbon?.render(); this.applyRibbon();
   }
   /** Ctrl+Enter: điền nội dung vào mọi ô đang chọn (công thức dời tham chiếu như Excel) */
   fillSelection(v: string) {
@@ -2914,7 +3048,7 @@ class CellEditor implements EditHost {
     const m = el.value.startsWith('=') ? /(?:^=|[=(;,+\-*/^&<>:\s])([A-Za-z][A-Za-z0-9.]*)$/.exec(before) : null;
     if (!m) return this.closeAc();
     const q = m[1].toUpperCase();
-    const names = this.wb.hf.getRegisteredFunctionNames();
+    const names = this.wb.hf.getRegisteredFunctionNames().filter((n) => !/^(XOFS\d|XTHISROW)$/.test(n));
     const hits = names.filter((n) => n.startsWith(q)).sort((a, b) => (FUNC_INFO[b] ? 1 : 0) - (FUNC_INFO[a] ? 1 : 0) || a.length - b.length || a.localeCompare(b)).slice(0, 8);
     if (!hits.length || (hits.length === 1 && hits[0] === q)) return this.closeAc();
     this.acItems = hits;
@@ -3019,7 +3153,7 @@ class CellEditor implements EditHost {
     this.commit(dr, dc);
   }
   /** Chèn chữ tại con trỏ của ô đang sửa */
-  private insertText(t: string) {
+  insertText(t: string) {
     const el = this.el, a = el.selectionStart ?? el.value.length, b = el.selectionEnd ?? a;
     el.value = el.value.slice(0, a) + t + el.value.slice(b);
     el.setSelectionRange(a + t.length, a + t.length);
@@ -3112,6 +3246,7 @@ class CellEditor implements EditHost {
         else { this.origin = 'cell'; this.ta.readOnly = false; this.ta.classList.remove('mirror'); this.ta.focus({ preventScroll: true }); this.ta.setSelectionRange(p, p); }
         return done();
       }
+      case 'F3': done(); pasteNameDialog(this.app, true); return true;
       case 'Shift+F3': {
         const f = this.fnAtCaret();
         if (f) { done(); funcArgsDialog(this.app, f.name, (t) => { el.value = el.value.slice(0, f.start) + t.slice(1); this.refocus(); this.mirror(el === this.ta ? 'cell' : 'bar'); }); return true; }

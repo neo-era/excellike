@@ -10,6 +10,7 @@ import type { App } from './app';
 import { VERSION } from './version';
 import { lang, setLang, tr, type Lang } from './i18n';
 import { TEMPLATES } from './templates';
+import { authorName, setAuthorName } from './notes-ui';
 import { licenseStatus, licenseText, changeKey } from './license';
 
 /** Ngày sửa đổi dạng tương đối như Excel 365 (Vừa xong, 5 phút trước, Hôm qua lúc 14:20…) */
@@ -238,7 +239,9 @@ export class Backstage {
       const f = document.createElement('div'); f.className = 'bs-form';
       const it = app.wb.iterate;
       const dir = lsGet('xl-enter') ?? 'down';
-      f.innerHTML = `<h2>Công thức</h2>
+      f.innerHTML = `<h2>Chung</h2>
+<label class="fld"><span>Tên người dùng (hiện trong ghi chú, chú thích)</span><input id="opt-author" type="text" maxlength="60"></label>
+<h2>Công thức</h2>
 <label class="chk"><input type="checkbox" id="opt-iter"${it.on ? ' checked' : ''}> Bật tính toán lặp</label>
 <div class="row2"><label class="fld"><span>Số lần lặp Tối đa</span><input id="opt-iter-n" type="text" inputmode="numeric" value="${it.count}"></label><label class="fld"><span>Thay đổi Tối đa</span><input id="opt-iter-d" type="text" inputmode="decimal" value="${String(it.delta).replace('.', ',')}"></label></div>
 <h2>Nâng cao</h2>
@@ -260,6 +263,9 @@ export class Backstage {
       const enter = () => lsSet('xl-enter', q<HTMLInputElement>('opt-enter-on').checked ? q<HTMLSelectElement>('opt-enter').value : 'none');
       q('opt-enter').onchange = enter; q('opt-enter-on').onchange = enter;
       q('opt-status').onchange = () => { if (q<HTMLInputElement>('opt-status').checked) localStorage.removeItem('xl-status'); };
+      q<HTMLInputElement>('opt-author').value = authorName() === 'Người dùng' ? '' : authorName();
+      q<HTMLInputElement>('opt-author').placeholder = 'Người dùng';
+      q('opt-author').onchange = () => setAuthorName(q<HTMLInputElement>('opt-author').value);
       q<HTMLSelectElement>('opt-lang').value = lang();
       q('opt-lang').onchange = async () => { setLang(q<HTMLSelectElement>('opt-lang').value as Lang); await app.saveNow(false); location.reload(); };
     }

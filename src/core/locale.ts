@@ -14,7 +14,15 @@ function convert(f: string, to: Mode): string {
     // hằng mảng {…}: cột luôn dùng ",", hàng là ";" trong tệp và "|" trong app
     if (ch === '{') { inArray++; out += ch; i++; continue; }
     if (ch === '}') { inArray = Math.max(0, inArray - 1); out += ch; i++; continue; }
-    if (inArray) { out += ch === (to === 'vi' ? ';' : '|') ? (to === 'vi' ? '|' : ';') : ch; i++; continue; }
+    if (inArray) {
+      // trong hằng mảng: tệp {1,2.5;3,4} ↔ app {1;2,5|3;4}
+      if (ch === '"') { let j = i + 1; while (j < f.length) { if (f[j] === '"' && f[j + 1] === '"') { j += 2; continue; } if (f[j] === '"') break; j++; } out += f.slice(i, j + 1); i = j + 1; continue; }
+      const dig = (k: number) => /[0-9]/.test(f[k] ?? '');
+      if (ch === decFrom && dig(i - 1) && dig(i + 1)) { out += decTo; i++; continue; }
+      if (to === 'vi') out += ch === ',' ? ';' : ch === ';' ? '|' : ch;
+      else out += ch === ';' ? ',' : ch === '|' ? ';' : ch;
+      i++; continue;
+    }
     if (ch === '"') { // chuỗi
       let j = i + 1;
       while (j < f.length) { if (f[j] === '"' && f[j + 1] === '"') { j += 2; continue; } if (f[j] === '"') break; j++; }
@@ -31,6 +39,19 @@ function convert(f: string, to: Mode): string {
     if (to === 'vi' && ch === '[') {
       const m = /^\[(\d+)\]([^'!\s()+\-*\/^&=<>,;:"{}[\]]+)!/.exec(f.slice(i));
       if (m && !/[\w.\u00C0-\uFFFF\]]/.test(i > 0 ? f[i - 1] : '')) { out += `'[${m[1]}]${m[2]}'!`; i += m[0].length; continue; }
+    }
+    // tham chiếu có cấu trúc Bảng1[[#This Row],[Giá, VNĐ]]: giữ nguyên nội dung ngoặc (dấu ' thoát ký tự),
+    // chỉ đổi dấu ngăn giữa các mục [..],[..]
+    if (ch === '[') {
+      let depth = 0, j = i, seg = '';
+      for (; j < f.length; j++) {
+        const cj = f[j];
+        if (cj === "'") { seg += cj + (f[j + 1] ?? ''); j++; continue; }
+        if (cj === '[') depth++;
+        else if (cj === ']') { depth--; if (!depth) { seg += cj; break; } }
+        seg += depth === 1 && cj === argFrom && seg.trimEnd().endsWith(']') ? argTo : cj;
+      }
+      if (j < f.length) { out += seg; i = j + 1; continue; }
     }
     if (to === 'vi' && ch === '!' && f.startsWith('!#REF!', i)) {
       out = out.replace(/(\[[^\]]*\])?[A-Za-z_À-￿][\w.À-￿]*$/, '') + '#REF!'; i += 6; continue;

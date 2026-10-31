@@ -1,4 +1,7 @@
 import { DynamicOffsetPlugin, offsetIn, offsetOut } from './offset';
+import { DynArrayPlugin, DYN_NAMES } from './dynarray';
+import { areaRange, type Area, encodeStructured, decodeStructured, tableCellStyle, tableNameError, dataRows, inTable, xtExpr, totalFormula, type TableDef, type TableReg, type TotalFn } from './tables';
+import { encFormulaNames, decFormulaNames, encName, nameError, renameInFormula } from './names';
 import { HyperFormula, FunctionPlugin, FunctionArgumentType, CellError, ErrorType } from 'hyperformula';
 import { shiftFormula, fixSheetQuotes, needsQuote, quoteSheet, transposeFormula } from './formula';
 import type { ConfigParams, RawCellContent, SimpleCellAddress } from 'hyperformula';
@@ -9,7 +12,7 @@ import { AxisSizes } from './sizes';
 import { fillPlan, seriesValues, type SrcCell, type SeriesOpts } from './series';
 import { toTSV, parseTSV } from './tsv';
 import { parseCSV, toCSV } from './csv';
-import { parseRef } from './address';
+import { parseRef, parseRange } from './address';
 import type { Chart, Ref } from './chart';
 import { computePivot, type PivotSpec } from './pivot';
 import { cfEval, cfStats, dvDescribe, inR, numOf, compare, type CFRule, type CFResult, type CFStats, type DVRule } from './rules';
@@ -28,6 +31,9 @@ export interface Style {
   rot?: number;                       // xoay chữ: -90…90 độ, 255 = chữ dọc
   shk?: boolean;                      // co chữ vừa ô
   hx?: 'fill' | 'just' | 'cas' | 'dist'; // căn ngang mở rộng: Điền, Căn đều, Giữa qua vùng chọn, Phân phối
+  nt?: string;                        // Ghi chú ô (Shift+F2) — đi theo ô khi chèn/xóa/sắp xếp/sao chép như liên kết
+  cm?: CommentItem[];                 // Chú thích dạng chuỗi (Ctrl+Shift+F2): bình luận đầu + các trả lời
+  cmDone?: boolean;                   // chuỗi chú thích đã giải quyết
   lk?: false;                         // bỏ khóa ô (mặc định ô bị khóa khi bảo vệ trang)
   hid?: boolean;                      // ẩn công thức khi bảo vệ trang
   ln?: string;                        // siêu kết nối (URL, mailto:, hoặc #Sheet!A1)
@@ -67,7 +73,14 @@ export interface SheetMeta {
   breaks: { rows: number[]; cols: number[] };   // ngắt trang thủ công (trước hàng/cột)
   tabColor?: string;
   hidden?: boolean;                              // trang tính ẩn
+  /** Nhóm hàng/cột (Dữ liệu ▸ Đại cương); bất biến: mỗi thay đổi tạo đối tượng mới (dễ hoàn tác) */
+  outline: Outline;
+  /** Bảng (Ctrl+T); bất biến như outline */
+  tables: TableDef[];
 }
+/** cấp nhóm (1–7) theo hàng/cột; x: các nhóm đang thu gọn, khóa "r|c:cấp:hàng/cột tổng" */
+export interface Outline { r: Record<number, number>; c: Record<number, number>; x: string[] }
+const NO_OUTLINE: Outline = { r: {}, c: {}, x: [] };
 export type BorderKind = 'all' | 'outer' | 'none' | 'top' | 'bottom' | 'left' | 'right' | 'inner';
 export interface SortKey { col: number; desc?: boolean }
 const COLLATOR = new Intl.Collator('vi', { sensitivity: 'accent' });
@@ -85,7 +98,7 @@ export const HF_CONFIG: Partial<ConfigParams> = {
   functionArgSeparator: ';',
   decimalSeparator: ',',
   thousandSeparator: '',
-  arrayColumnSeparator: ',',
+  arrayColumnSeparator: ';', // hằng mảng trong app: {1;2,5|3;4} — cột “;”, hàng “|”, thập phân “,” (tệp: {1,2.5;3,4})
   arrayRowSeparator: '|',
   dateFormats: ['DD/MM/YYYY', 'DD/MM/YY'],
   timeFormats: ['hh:mm', 'hh:mm:ss'],
@@ -111,6 +124,11 @@ class ExcelIntPlugin extends FunctionPlugin {
     return (this as any).runFunction(ast.args, state, (this as any).metadata('MOD'), (n: number, d: number) =>
       d === 0 ? new CellError(ErrorType.DIV_BY_ZERO) : n - d * Math.floor(n / d));
   }
+}
+/** XTHISROW(ô): giá trị ô cùng hàng của cột bảng — mã nội bộ của [@Cột] */
+class TableRowPlugin extends FunctionPlugin {
+  static implementedFunctions = { XTHISROW: { method: 'xthisrow', parameters: [{ argumentType: FunctionArgumentType.SCALAR }] } };
+  xthisrow(ast: any, state: any) { return (this as any).runFunction(ast.args, state, (this as any).metadata('XTHISROW'), (x: unknown) => x); }
 }
 // FORECAST / FORECAST.LINEAR / INTERCEPT (HyperFormula chưa có) — hồi quy tuyến tính như Excel
 const numOfCell = (v: any): number | null => (typeof v === 'number' ? v : v && typeof v === 'object' && typeof v.val === 'number' ? v.val : null);
@@ -159,15 +177,38 @@ function ensurePlugins() {
   HyperFormula.unregisterFunction('MOD');
   HyperFormula.registerFunctionPlugin(ExcelIntPlugin as any, { enGB: { INT: 'INT', MOD: 'MOD' } } as any);
   HyperFormula.registerFunctionPlugin(ExcelForecastPlugin as any, { enGB: { FORECAST: 'FORECAST', 'FORECAST.LINEAR': 'FORECAST.LINEAR', INTERCEPT: 'INTERCEPT' } } as any);
+  HyperFormula.unregisterFunction('FILTER');
+  HyperFormula.registerFunctionPlugin(DynArrayPlugin as any, { enGB: Object.fromEntries(DYN_NAMES.map((n) => [n, n])) } as any);
+  HyperFormula.registerFunctionPlugin(TableRowPlugin as any, { enGB: { XTHISROW: 'XTHISROW' } } as any);
   HyperFormula.registerFunctionPlugin(DynamicOffsetPlugin as any, { enGB: { XOFS3: 'XOFS3', XOFS4: 'XOFS4', XOFS5: 'XOFS5' } } as any);
   pluginsReady = true;
 }
 /** OFFSET động: đổi công thức khi vào bộ tính và đổi ngược khi đọc ra (xem offset.ts) */
-function mapRows(cells: RawCellContent[][], sheet: string, r0 = 0, c0 = 0): RawCellContent[][] {
+/** công thức vào bộ tính: OFFSET động + tên có dấu thanh */
+/** bối cảnh bảng cho lớp vá: danh sách bảng hiện hành + cách tạo tên ẩn XT_… */
+interface TblCtx { tables: () => TableReg[]; need: (name: string, expr: string) => void; inline?: boolean }
+const fin = (v: string, self: { r: number; c: number } | undefined, sheet: string, ctx?: TblCtx) => {
+  if (v[0] !== '=') return v;
+  let x = offsetIn(v, self, sheet);
+  if (ctx && x.includes('[')) x = encodeStructured(x, { tables: ctx.tables(), self: self && { sheet, r: self.r, c: self.c }, need: ctx.need, inline: ctx.inline });
+  return encFormulaNames(x);
+};
+const NEEDS_FIN = /OFFSET\s*\(|[^\u0000-\u02AF]|\[/i;
+function mapRows(cells: RawCellContent[][], sheet: string, r0 = 0, c0 = 0, ctx?: TblCtx): RawCellContent[][] {
   let hit = false;
-  for (const row of cells) { if (row) for (const v of row) if (typeof v === 'string' && v[0] === '=' && /OFFSET\s*\(/i.test(v)) { hit = true; break; } if (hit) break; }
+  for (const row of cells) { if (row) for (const v of row) if (typeof v === 'string' && v[0] === '=' && NEEDS_FIN.test(v)) { hit = true; break; } if (hit) break; }
   if (!hit) return cells;
-  return cells.map((row, i) => row && row.map((v, j) => (typeof v === 'string' ? (offsetIn(v, { r: r0 + i, c: c0 + j }, sheet) as RawCellContent) : v)));
+  return cells.map((row, i) => row && row.map((v, j) => (typeof v === 'string' ? (fin(v, { r: r0 + i, c: c0 + j }, sheet, ctx) as RawCellContent) : v)));
+}
+/** bảng tên hiển thị (tên gốc) theo tên mã hóa viết hoa, gắn vào từng bộ tính */
+export const nameDisplay = (hf: HyperFormula): Map<string, string> => ((hf as any).__nameDisp ??= new Map<string, string>());
+/** bảng hiện hành gắn với bộ tính (Workbook gán hàm lấy danh sách) */
+const hfTables = (hf: HyperFormula): TableReg[] => ((hf as any).__tables?.() ?? []);
+function tblCtx(hf: HyperFormula): TblCtx {
+  return {
+    tables: () => hfTables(hf),
+    need: (n, e) => { try { if (hf.getNamedExpression(n) === undefined) hf.addNamedExpression(n, e); } catch { /* tên đã có */ } },
+  };
 }
 function patchOffset(hf: HyperFormula): HyperFormula {
   const h: any = hf;
@@ -175,28 +216,38 @@ function patchOffset(hf: HyperFormula): HyperFormula {
   const gf = h.getCellFormula.bind(hf), gs = h.getCellSerialized.bind(hf), gss = h.getSheetSerialized.bind(hf);
   h.setCellContents = (a: any, c: any) => {
     const name = hf.getSheetName(a.sheet) ?? '';
-    if (Array.isArray(c)) return set(a, mapRows(c, name, a.row, a.col));
-    return set(a, typeof c === 'string' ? offsetIn(c, { r: a.row, c: a.col }, name) : c);
+    const ctx = tblCtx(hf);
+    if (Array.isArray(c)) return set(a, mapRows(c, name, a.row, a.col, ctx));
+    return set(a, typeof c === 'string' ? fin(c, { r: a.row, c: a.col }, name, ctx) : c);
   };
+  const out = (f: string, at?: { sheet: number; r: number; c: number }) => decodeStructured(decFormulaNames(offsetOut(f), nameDisplay(hf)), hfTables(hf), at);
   const calc = h.calculateFormula.bind(hf);
-  h.calculateFormula = (f: string, sheet: number) => calc(offsetIn(f, undefined, hf.getSheetName(sheet) ?? ''), sheet);
-  h.setSheetContent = (id: number, cells: RawCellContent[][]) => sheetSet(id, mapRows(cells, hf.getSheetName(id) ?? ''));
-  h.getCellFormula = (a: any) => { const f = gf(a); return f === undefined ? f : offsetOut(f); };
-  h.getCellSerialized = (a: any) => { const v = gs(a); return typeof v === 'string' ? offsetOut(v) : v; };
-  h.getSheetSerialized = (id: number) => gss(id).map((row: any[]) => row.map((v) => (typeof v === 'string' ? offsetOut(v) : v)));
+  h.calculateFormula = (f: string, sheet: number) => calc(fin(f, undefined, hf.getSheetName(sheet) ?? '', { ...tblCtx(hf), inline: true }), sheet);
+  const vf = h.validateFormula.bind(hf);
+  h.validateFormula = (f: string) => vf(f.includes('[') ? encodeStructured(f, { tables: hfTables(hf), need: () => {}, inline: true }).replace(/(?<![\w'!])\[(?:[^[\]]|\[[^\]]*\])*\]/g, '1') : f);
+  h.setSheetContent = (id: number, cells: RawCellContent[][]) => sheetSet(id, mapRows(cells, hf.getSheetName(id) ?? '', 0, 0, tblCtx(hf)));
+  h.__rawFormula = (a: any) => gf(a);
+  h.getCellFormula = (a: any) => { const f = gf(a); return f === undefined ? f : out(f, { sheet: a.sheet, r: a.row, c: a.col }); };
+  h.getCellSerialized = (a: any) => { const v = gs(a); return typeof v === 'string' && v[0] === '=' ? out(v, { sheet: a.sheet, r: a.row, c: a.col }) : v; };
+  h.getSheetSerialized = (id: number) => gss(id).map((row: any[], i: number) => row.map((v, j) => (typeof v === 'string' && v[0] === '=' ? out(v, { sheet: id, r: i, c: j }) : v)));
   return hf;
 }
 // Excel cho phép viết TRUE/FALSE không có ngoặc
 const NAMES = [{ name: 'TRUE', expression: '=TRUE()' }, { name: 'FALSE', expression: '=FALSE()' }];
-function buildHF(sheets?: { name: string; cells: RawCellContent[][] }[]) {
+function buildHF(sheets?: { name: string; cells: RawCellContent[][] }[], tables: TableReg[] = []) {
   ensurePlugins();
   // buildFromSheets nhanh hơn ~2,5 lần khi mở sổ lớn; thứ tự key của object phải giữ đúng thứ tự sheet
   if (sheets && sheets.length && !sheets.some((x) => /^\d+$/.test(x.name))) {
     const obj: Record<string, RawCellContent[][]> = Object.create(null);
-    for (const x of sheets) obj[x.name] = mapRows(x.cells, x.name);
-    return patchOffset(HyperFormula.buildFromSheets(obj, HF_CONFIG, NAMES));
+    const extra = new Map<string, string>();
+    const ctx: TblCtx = { tables: () => tables, need: (n, e) => { extra.set(n, e); } };
+    for (const x of sheets) obj[x.name] = mapRows(x.cells, x.name, 0, 0, ctx);
+    const hf = patchOffset(HyperFormula.buildFromSheets(obj, HF_CONFIG, [...NAMES, ...[...extra].map(([name, expression]) => ({ name, expression }))]));
+    (hf as any).__tables = () => tables;
+    return hf;
   }
   const hf = patchOffset(HyperFormula.buildEmpty(HF_CONFIG));
+  (hf as any).__tables = () => tables;
   for (const n of NAMES) hf.addNamedExpression(n.name, n.expression);
   if (sheets) {
     hf.suspendEvaluation();
@@ -212,7 +263,7 @@ const unkey = (k: number) => ({ r: Math.floor(k / MAX_COLS), c: k % MAX_COLS });
 const BAD_NAME = /[\\/?*[\]:]/;
 
 export class Workbook {
-  hf: HyperFormula;
+  hf!: HyperFormula;
   private metas = new Map<number, SheetMeta>();
   private past: Entry[] = [];
   private future: Entry[] = [];
@@ -220,7 +271,9 @@ export class Workbook {
   clip: Clip | null = null;
   name = 'Sổ tính 1';
 
-  private constructor(hf: HyperFormula) { this.hf = hf; }
+  private constructor(hf: HyperFormula) { this.attach(hf); }
+  /** gắn bộ tính + danh sách bảng sống cho lớp dịch tham chiếu có cấu trúc */
+  private attach(hf: HyperFormula) { this.hf = hf; (hf as any).__tables = () => this.tableReg(); }
 
   static create(): Workbook {
     const wb = new Workbook(buildHF());
@@ -399,7 +452,14 @@ export class Workbook {
     const oOrder = [...this.order];
     let nOrder: number[] = [];
     let fresh: MetaSnap | null = null;
-    this.record(() => { this.hf.addSheet(n); nid = this.hf.getSheetId(n)!; this.hf.setSheetContent(nid, cells); }, {
+    // bảng của bản sao: mã và tên mới (Bảng1 → Bảng2…) — gán trước khi nạp ô để [@Cột] dịch đúng
+    const tcopy = src.tables?.map((t) => ({ ...t, cols: t.cols.map((c) => ({ ...c })) })) ?? [];
+    this.record(() => {
+      this.hf.addSheet(n); nid = this.hf.getSheetId(n)!;
+      for (const t of tcopy) { t.id = ++this.tableSeq; this.meta(nid).tables = tcopy; t.name = this.nextTableName(); }
+      this.meta(nid).tables = tcopy;
+      this.hf.setSheetContent(nid, cells);
+    }, {
       undo: () => { this.order = oOrder; },
       redo: () => { if (fresh) restoreMeta(this.meta(nid), fresh); this.order = nOrder; },
     }, {
@@ -407,7 +467,7 @@ export class Workbook {
         const m = this.meta(nid);
         const sm = this.meta(id);
         m.colW = new AxisSizes(sm.colW.def, MAX_COLS); m.rowH = new AxisSizes(sm.rowH.def, MAX_ROWS);
-        restoreMeta(m, { ...src, styles: new Map([...src.styles].map(([k2, v]) => [k2, { ...v }])), merges: src.merges.map((g) => ({ ...g })), charts: [], pivots: [] });
+        restoreMeta(m, { ...src, styles: new Map([...src.styles].map(([k2, v]) => [k2, { ...v }])), merges: src.merges.map((g) => ({ ...g })), charts: [], pivots: [], tables: tcopy });
         // biểu đồ trỏ vào chính sheet gốc → trỏ sang bản sao
         m.charts = this.meta(id).charts.map((ch) => ({ ...ch, id: this.uid(), series: ch.series.map((x) => { const mv = (r?: Ref) => (r && r.sheet === id ? { ...r, sheet: nid } : r); return { ...x, vals: mv(x.vals)!, name: mv(x.name), cats: mv(x.cats) }; }) }));
         fresh = snapMeta(m);
@@ -632,6 +692,9 @@ export class Workbook {
     if (f !== undefined) return this.outF(f);
     const raw = this.hf.getCellSerialized(a);
     if (typeof raw === 'string') return raw;
+    // ô nằm trong vùng tràn của mảng động: không có nội dung riêng (như Excel)
+    if (raw === null || raw === undefined) { if (this.hf.isCellPartOfArray(a)) return ''; }
+    else if (this.hf.isCellPartOfArray(a) && !this.hf.doesCellHaveFormula(a)) return '';
     return editString(this.value(s, r, c), this.effFmt(s, r, c));
   }
   /** HyperFormula bỏ dấu nháy quanh tên sheet như 2024, Q1, 1Q khi xuất công thức → thêm lại */
@@ -729,11 +792,16 @@ export class Workbook {
     const before = snapMeta(m);
     const xBefore = this.snapRefs();
     let after = before, xAfter = xBefore;
-    this.record(hfOp, {
+    const hadTables = m.tables.length > 0;
+    this.record(() => {
+      hfOp();
+      // bảng: dời vùng bảng rồi cập nhật tên ẩn XT_… ngay trong cùng bước (chèn ở hàng dữ liệu đầu/hàng tổng HF chỉ dời, không nở)
+      if (hadTables) { shift(m); this.shiftRefs(s, ax, span); this.syncXT(); }
+    }, {
       undo: () => { restoreMeta(m, before); this.restoreRefs(xBefore); },
       redo: () => { restoreMeta(m, after); this.restoreRefs(xAfter); },
     }, {
-      post: () => { shift(m); this.shiftRefs(s, ax, span); after = snapMeta(m); xAfter = this.snapRefs(); },
+      post: () => { if (!hadTables) { shift(m); this.shiftRefs(s, ax, span); } after = snapMeta(m); xAfter = this.snapRefs(); },
     });
   }
   /** Xóa sheet: bỏ chuỗi biểu đồ và PivotTable trỏ tới sheet đó (mã sheet có thể bị dùng lại) */
@@ -837,14 +905,26 @@ export class Workbook {
     const tx = new StyleTxn(ops);
     const range = { sheet: cl.sheet, start: { sheet: cl.sheet, row: src.r1, col: src.c1 }, end: { sheet: cl.sheet, row: src.r2, col: src.c2 } };
     const target = this.A(s, r, c);
-    this.record(
-      () => {
-        if (cl.cut) this.hf.cut(range as any); else this.hf.copy(range as any);
-        return this.hf.paste(target);
-      },
-      tx.hist,
-      { batch: false, post: () => tx.apply() },
-    );
+    // cắt cả bảng → bảng đi theo (như Excel)
+    const moving = cl.cut ? this.meta(cl.sheet).tables.filter((t) => t.r1 >= src.r1 && t.r2 <= src.r2 && t.c1 >= src.c1 && t.c2 <= src.c2) : [];
+    if (moving.length && this.meta(s).tables.some((t) => !moving.includes(t) && !(t.r2 < r || t.r1 > r + h || t.c2 < c || t.c1 > c + w))) throw new Error('Bảng không thể chồng lên một bảng khác.');
+    this.group(() => {
+      this.record(
+        () => {
+          if (cl.cut) this.hf.cut(range as any); else this.hf.copy(range as any);
+          return this.hf.paste(target);
+        },
+        tx.hist,
+        { batch: false, post: () => tx.apply() },
+      );
+      if (moving.length) {
+        const dr = r - src.r1, dc = c - src.c1;
+        const moved = moving.map((t) => ({ ...t, r1: t.r1 + dr, r2: t.r2 + dr, c1: t.c1 + dc, c2: t.c2 + dc }));
+        const ids = new Set(moving.map((t) => t.id));
+        if (s === cl.sheet) this.tableChange(s, (L) => L.map((x) => moved.find((y) => y.id === x.id) ?? x));
+        else { this.tableChange(cl.sheet, (L) => L.filter((x) => !ids.has(x.id))); this.tableChange(s, (L) => [...L, ...moved]); }
+      }
+    });
     if (cl.cut) this.clip = null;
     return { r1: r, c1: c, r2: r + h, c2: c + w };
   }
@@ -900,6 +980,41 @@ export class Workbook {
   /** Công thức hợp lệ cú pháp không (không ghi vào ô) */
   isValidFormula(f: string, s: number): boolean {
     try { return this.hf.validateFormula(offsetIn(f, undefined, this.sheetName(s))); } catch { return false; }
+  }
+  /** Truy tìm Ô Tiền lệ: các ô/vùng công thức của ô dùng trực tiếp (cấp 1) */
+  precedentsOf(s: number, r: number, c: number): { s: number; range: Range }[] {
+    let p: any[] = [];
+    try { p = this.hf.getCellPrecedents({ sheet: s, row: r, col: c }) as any[]; } catch { return []; }
+    const out = p.filter((x) => (x.start ? x.start.sheet : x.sheet) >= 0).map((x) => x.start
+      ? { s: x.start.sheet, range: { r1: x.start.row, c1: x.start.col, r2: x.end.row, c2: x.end.col } }
+      : { s: x.sheet, range: { r1: x.row, c1: x.col, r2: x.row, c2: x.col } })
+      .filter((x) => !isExtName(this.sheetName(x.s)));
+    // vùng của bảng (tên ẩn XT_…) cũng là tiền lệ
+    const raw = (this.hf as any).__rawFormula?.({ sheet: s, row: r, col: c }) as string | undefined;
+    if (raw && /XT_/i.test(raw)) {
+      const reg = this.tableReg();
+      for (const m of raw.matchAll(/\bXT_(\d+)_(HD|DT|D|A|H|T)(?:_(\d+)_(\d+))?\b/gi)) {
+        const t = reg.find((x) => x.id === +m[1]);
+        const g = t && areaRange(t, m[2].toUpperCase() as Area, m[3] !== undefined ? +m[3] : undefined, m[4] !== undefined ? +m[4] : undefined);
+        if (t && g) out.push({ s: t.sheet, range: g });
+      }
+    }
+    return out;
+  }
+  /** Truy tìm Ô Phụ thuộc: các ô có công thức dùng trực tiếp ô này (cấp 1, kể cả qua vùng) */
+  directDependents(s: number, r: number, c: number): { s: number; r: number; c: number }[] {
+    const out = new Map<string, { s: number; r: number; c: number }>();
+    const visit = (a: any, depth: number) => {
+      let deps: any[] = [];
+      try { deps = this.hf.getCellDependents(a) as any[]; } catch { deps = []; }
+      for (const x of deps) {
+        if (x.start) { if (depth < 2) visit(x, depth + 1); continue; } // vùng trung gian → ô dùng vùng
+        if (x.sheet >= 0) out.set(x.sheet + ':' + x.row + ':' + x.col, { s: x.sheet, r: x.row, c: x.col });
+        else if (depth < 2) visit(x, depth + 1); // qua tên (vd vùng bảng) → ô dùng tên
+      }
+    };
+    visit({ sheet: s, row: r, col: c }, 0);
+    return [...out.values()];
   }
   /** Ô phụ thuộc trực tiếp vào một ô (kể cả qua vùng) */
   dependentsOf(s: number, r: number, c: number): { s: number; r: number; c: number }[] {
@@ -972,7 +1087,15 @@ export class Workbook {
       if (content !== undefined) cells.push([tr, tc, content]);
       // định dạng
       const kk = key(tr, tc);
-      if (what === 'all' || what === 'theme' || what === 'allMerge' || what === 'formats') sops.push([dstSt, kk, x.st ? { ...x.st } : undefined]);
+      if (what === 'all' || what === 'theme' || what === 'allMerge') sops.push([dstSt, kk, x.st ? { ...x.st } : undefined]);
+      else if (what === 'formats') {
+        // chỉ định dạng: giữ ghi chú/chú thích của ô đích
+        const d = dstSt.get(kk);
+        sops.push([dstSt, kk, clean({ ...(x.st ?? {}), nt: d?.nt, cm: d?.cm, cmDone: d?.cmDone })]);
+      } else if (what === 'comments') {
+        const d = dstSt.get(kk);
+        sops.push([dstSt, kk, clean({ ...(d ?? {}), nt: x.st?.nt, cm: x.st?.cm, cmDone: x.st?.cmDone })]);
+      }
       else if (what === 'noBorders') { const n = x.st ? { ...x.st } : undefined; if (n) delete n.bd; sops.push([dstSt, kk, n && Object.keys(n).length ? n : undefined]); }
       else if (what === 'formulasNum' || what === 'valuesNum') { const cur = { ...(dstSt.get(kk) ?? {}) }; if (x.st?.fmt) cur.fmt = x.st.fmt; else delete cur.fmt; sops.push([dstSt, kk, Object.keys(cur).length ? cur : undefined]); }
     }
@@ -1028,8 +1151,12 @@ export class Workbook {
     for (let r = g.r1; r <= g.r2; r++) for (let c = g.c1; c <= g.c2; c++) {
       const k = key(r, c);
       const n = src[(r - g.r1) % h]?.[(c - g.c1) % w];
-      const ln = st.get(k)?.ln;  // giữ liên kết của ô đích
-      ops.push([st, k, n || ln ? clean({ ...(n ?? {}), ln }) : undefined]);
+      // giữ liên kết, ghi chú, chú thích của ô đích (chổi định dạng chỉ chép định dạng)
+      const o = st.get(k);
+      const keep = { ln: o?.ln, nt: o?.nt, cm: o?.cm, cmDone: o?.cmDone };
+      const base = n ? { ...n, ln: undefined, nt: undefined, cm: undefined, cmDone: undefined } : {};
+      const v = clean({ ...base, ...keep });
+      ops.push([st, k, v]);
     }
     const tx = new StyleTxn(ops);
     tx.apply();
@@ -1322,6 +1449,765 @@ export class Workbook {
     }, tx.hist, { post: () => tx.apply() });
   }
 
+  /**
+   * Loại bỏ Trùng lặp: giữ lần xuất hiện đầu, so theo các cột `cols` (chữ không phân biệt hoa/thường như Excel).
+   * Chỉ dồn các ô trong vùng lên (không xóa nguyên hàng), ô thừa ở đáy vùng bị xóa. Trả về số hàng bị loại / còn lại.
+   */
+  removeDuplicates(s: number, g0: Range, cols: number[], header: boolean): { removed: number; kept: number } {
+    const u = this.used(s);
+    const g = { ...g0, r2: Math.min(g0.r2, u.rows - 1), c2: Math.min(g0.c2, u.cols - 1) };
+    const d1 = header ? g.r1 + 1 : g.r1;
+    if (!cols.length) throw new Error('Hãy chọn ít nhất một cột.');
+    if (d1 > g.r2) return { removed: 0, kept: 0 };
+    if (this.meta(s).merges.some((m) => !(m.r2 < g.r1 || m.r1 > g.r2 || m.c2 < g.c1 || m.c1 > g.c2)))
+      throw new Error('Không loại bỏ trùng lặp được trong vùng có ô gộp. Hãy bỏ gộp ô trước.');
+    const norm = (v: unknown) => (typeof v === 'string' ? 's' + v.toLocaleLowerCase('vi') : typeof v === 'number' ? 'n' + v : v === null || v === undefined ? 'e' : typeof v + String(v));
+    const seen = new Set<string>(), keep: number[] = [];
+    for (let r = d1; r <= g.r2; r++) {
+      const k = cols.map((c) => norm(this.value(s, r, c))).join('\u0001');
+      if (seen.has(k)) continue;
+      seen.add(k); keep.push(r);
+    }
+    const removed = g.r2 - d1 + 1 - keep.length;
+    if (!removed) return { removed: 0, kept: keep.length };
+    const st = this.meta(s).styles, qn = this.quoteNames();
+    const data: RawCellContent[][] = [], ops: StyleOp[] = [];
+    keep.forEach((r, j) => {
+      const row: RawCellContent[] = [];
+      for (let c = g.c1; c <= g.c2; c++) {
+        const a = this.A(s, r, c), f = this.hf.getCellFormula(a);
+        row.push(f !== undefined ? shiftFormula(String(this.outF(f, qn)), d1 + j - r, 0) : this.hf.getCellSerialized(a));
+        ops.push([st, key(d1 + j, c), st.get(key(r, c))]);
+      }
+      data.push(row);
+    });
+    for (let r = d1 + keep.length; r <= g.r2; r++) {
+      data.push(new Array(g.c2 - g.c1 + 1).fill(null));
+      for (let c = g.c1; c <= g.c2; c++) ops.push([st, key(r, c), undefined]);
+    }
+    const tx = new StyleTxn(ops);
+    const tbl = this.meta(s).tables.find((t) => t.c1 === g.c1 && t.c2 === g.c2 && dataRows(t).a === d1 && dataRows(t).b === g.r2);
+    this.group(() => {
+      this.record(() => { this.hf.setCellContents(this.A(s, d1, g.c1), data); }, tx.hist, { post: () => tx.apply() });
+      // trong bảng: bảng co lại (hàng tổng dời lên) như Excel
+      if (tbl) { this.moveTotals(s, tbl, tbl.r2 - removed); this.tableChange(s, (L) => L.map((x) => (x.id === tbl.id ? { ...x, r2: x.r2 - removed } : x))); }
+    });
+    return { removed, kept: keep.length };
+  }
+  /**
+   * Văn bản thành Cột: tách cột `col` (hàng r1..r2) theo dấu phân cách hoặc độ rộng cố định, ghi từ ô đích.
+   * types: 'g' Chung (tự nhận số/ngày), 't' Văn bản, 'x' Bỏ qua cột. Trả về số cột kết quả.
+   */
+  textToColumns(s: number, col: number, r1: number, r2: number, o: { delims?: string; consecutive?: boolean; qualifier?: string; widths?: number[]; dest?: { r: number; c: number }; types?: string[] }): number {
+    const parts = (t: string): string[] => {
+      if (o.widths) {
+        const out: string[] = []; let p = 0;
+        for (const w of [...o.widths, Infinity]) { if (p >= t.length) break; out.push(t.slice(p, w === Infinity ? undefined : w).trimEnd()); if (w === Infinity) break; p = w; }
+        return out;
+      }
+      const d = o.delims ?? '\t', q = o.qualifier ?? '"';
+      const out: string[] = []; let cur = '', inQ = false, i = 0;
+      while (i < t.length) {
+        const ch = t[i];
+        if (q && ch === q) { if (inQ && t[i + 1] === q) { cur += q; i += 2; continue; } inQ = !inQ; i++; continue; }
+        if (!inQ && d.includes(ch)) {
+          out.push(cur); cur = '';
+          if (o.consecutive) while (i + 1 < t.length && d.includes(t[i + 1])) i++;
+          i++; continue;
+        }
+        cur += ch; i++;
+      }
+      out.push(cur);
+      return out;
+    };
+    const dest = o.dest ?? { r: r1, c: col };
+    const list: [number, number, string | null][] = [];
+    let width = 0;
+    for (let r = r1; r <= r2; r++) {
+      const t = this.display(s, r, col).text;
+      if (!t && this.value(s, r, col) === null) continue;
+      const p = parts(t);
+      let k = 0;
+      p.forEach((v, i) => {
+        const ty = o.types?.[i] ?? 'g';
+        if (ty === 'x') return;
+        list.push([dest.r + r - r1, dest.c + k, v === '' ? null : ty === 't' ? "'" + v : v]);
+        k++;
+      });
+      width = Math.max(width, k);
+    }
+    this.writeCells(s, list);
+    return width;
+  }
+
+  // ---------- Bảng (Chèn ▸ Bảng, Ctrl+T) ----------
+  tableSeq = 0;
+  /** mọi bảng của sổ kèm tên sheet (cho lớp dịch tham chiếu có cấu trúc) */
+  tableReg(): TableReg[] {
+    const out: TableReg[] = [];
+    for (const [id, m] of this.metas) if (m.tables.length) { const n = this.hf.getSheetName(id); if (n === undefined) continue; for (const t of m.tables) out.push({ ...t, sheet: id, sheetName: n }); }
+    return out;
+  }
+  tables(s: number): TableDef[] { return this.meta(s).tables; }
+  tableAt(s: number, r: number, c: number): TableDef | undefined { const l = this.meta(s).tables; return l.length ? l.find((t) => inTable(t, r, c)) : undefined; }
+  tableByName(n: string): TableReg | undefined { return this.tableReg().find((t) => t.name.toLowerCase() === n.toLowerCase()); }
+  /** định dạng hiển thị: định dạng của bảng nằm dưới định dạng riêng của ô */
+  viewStyle(s: number, r: number, c: number): Style {
+    const st = this.style(s, r, c);
+    const l = this.meta(s).tables;
+    if (!l.length) return st;
+    const t = l.find((x) => inTable(x, r, c));
+    const ts = t && tableCellStyle(t, r, c);
+    if (!ts) return st;
+    const o: Style = { ...ts, ...st };
+    if (ts.bd || st.bd) o.bd = { ...(ts.bd ?? {}), ...(st.bd ?? {}) };
+    return o;
+  }
+  private tableNameTaken(n: string, except?: number) {
+    const u = n.toLowerCase();
+    return this.tableReg().some((t) => t.id !== except && t.name.toLowerCase() === u) || this.listNames().some((x) => x.name.toLowerCase() === u);
+  }
+  /** thay danh sách bảng của sheet (+ việc trên bộ tính) thành một bước hoàn tác */
+  private tableChange(s: number, f: (list: TableDef[]) => TableDef[], hfOp?: () => void) {
+    const m = this.meta(s), before = m.tables;
+    let after = before;
+    this.record(() => { m.tables = f(m.tables); after = m.tables; this.syncXT(); hfOp?.(); }, { undo: () => { m.tables = before; }, redo: () => { m.tables = after; } });
+  }
+  /** cập nhật biểu thức các tên ẩn XT_… theo vùng bảng hiện tại (gọi trong batch) */
+  private syncXT() {
+    const reg = this.tableReg();
+    for (const n of this.hf.listNamedExpressions()) {
+      const x = /^XT_(\d+)_(HD|DT|D|A|H|T)(?:_(\d+)_(\d+))?$/i.exec(n);
+      if (!x) continue;
+      const t = reg.find((y) => y.id === +x[1]);
+      const e = t ? xtExpr(t, x[2].toUpperCase() as any, x[3] !== undefined ? +x[3] : undefined, x[4] !== undefined ? +x[4] : undefined) : '=#REF!';
+      const cur = this.hf.getNamedExpression(n)?.expression;
+      if (cur !== e) try { this.hf.changeNamedExpression(n, e); } catch { /* bỏ qua */ }
+    }
+  }
+  /** gợi ý tên bảng kế tiếp: Bảng1, Bảng2… */
+  nextTableName() { let i = 1; while (this.tableNameTaken('Bảng' + i)) i++; return 'Bảng' + i; }
+  /**
+   * Tạo bảng từ vùng g. header=false: chèn hàng tiêu đề Cột1… phía trên (như Excel “Bảng có tiêu đề” bỏ chọn).
+   * Trả về bảng mới.
+   */
+  createTable(s: number, g0: Range, header = true, style = 'TableStyleMedium2'): TableDef {
+    const u = this.used(s);
+    let g = { ...g0, r2: g0.r2 >= MAX_ROWS - 1 ? Math.max(g0.r1, u.rows - 1) : g0.r2, c2: g0.c2 >= MAX_COLS - 1 ? Math.max(g0.c1, u.cols - 1) : g0.c2 };
+    if (g.c2 - g.c1 > 500) throw new Error('Bảng quá rộng (tối đa 500 cột).');
+    if (this.meta(s).tables.some((t) => !(t.r2 < g.r1 || t.r1 > g.r2 + (header ? 0 : 1) || t.c2 < g.c1 || t.c1 > g.c2))) throw new Error('Bảng không thể chồng lên một bảng khác.');
+    if (this.meta(s).merges.some((m) => !(m.r2 < g.r1 || m.r1 > g.r2 || m.c2 < g.c1 || m.c1 > g.c2))) throw new Error('Vùng có ô đã gộp. Hãy bỏ gộp ô trước khi tạo bảng.');
+    if (this.meta(s).pivots.some((p) => p.area && !(p.area.r2 < g.r1 || p.area.r1 > g.r2 || p.area.c2 < g.c1 || p.area.c1 > g.c2))) throw new Error('Bảng không thể chồng lên PivotTable.');
+    let t!: TableDef;
+    this.group(() => {
+      if (!header) { this.insertRows(s, g.r1, 1); g = { ...g, r2: g.r2 + 1 }; }
+      if (g.r2 === g.r1) g = { ...g, r2: g.r1 + 1 };
+      const used = new Set<string>();
+      const cols: TableDef['cols'] = [];
+      for (let c = g.c1; c <= g.c2; c++) {
+        let nm = header ? this.display(s, g.r1, c).text.trim() : '';
+        if (!nm) { let j = c - g.c1 + 1; nm = `Cột${j}`; while (used.has(nm.toLowerCase())) nm = `Cột${++j}`; }
+        let base = nm, k = 2; while (used.has(nm.toLowerCase())) nm = base + k++;
+        used.add(nm.toLowerCase()); cols.push({ id: cols.length + 1, name: nm });
+      }
+      const id = ++this.tableSeq;
+      t = { id, name: this.nextTableName(), r1: g.r1, c1: g.c1, r2: g.r2, c2: g.c2, header: true, totals: false, style, bandR: true, bandC: false, first: false, last: false, btn: true, cols };
+      // tiêu đề luôn là chữ cố định
+      const head = cols.map((x, i) => [g.r1, g.c1 + i, "'" + x.name] as [number, number, string]).filter(([r, c, v]) => this.rawText(s, r, c) !== v.slice(1));
+      if (head.length) this.writeCells(s, head);
+      this.tableChange(s, (l) => [...l, t]);
+      if (!this.meta(s).filter) this.filterChange(s, () => { this.meta(s).filter = { range: { r1: g.r1, c1: g.c1, r2: g.r2, c2: g.c2 }, conds: {} }; });
+    });
+    return t;
+  }
+  private tableById(s: number, id: number) { const t = this.meta(s).tables.find((x) => x.id === id); if (!t) throw new Error('Không tìm thấy bảng.'); return t; }
+  /** đổi tên / kiểu / tùy chọn hiển thị */
+  updateTable(s: number, id: number, patch: Partial<Pick<TableDef, 'name' | 'style' | 'bandR' | 'bandC' | 'first' | 'last' | 'btn'>>) {
+    const t = this.tableById(s, id);
+    if (patch.name !== undefined && patch.name !== t.name) {
+      const e = tableNameError(patch.name, (n) => this.tableNameTaken(n, id));
+      if (e) throw new Error(e);
+    }
+    this.group(() => {
+      this.tableChange(s, (l) => l.map((x) => (x.id === id ? { ...x, ...patch } : x)));
+      if (patch.btn !== undefined) {
+        const f = this.meta(s).filter, mine = f && f.range.r1 === t.r1 && f.range.c1 === t.c1;
+        if (!patch.btn && mine) this.clearFilter(s);
+        if (patch.btn && !f) this.filterChange(s, () => { this.meta(s).filter = { range: { r1: t.r1, c1: t.c1, r2: dataRows(t).b, c2: t.c2 }, conds: {} }; });
+      }
+    });
+  }
+  /** Hàng Tổng: bật thêm hàng SUBTOTAL dưới bảng (chèn hàng nếu bên dưới có dữ liệu), tắt thì xóa */
+  setTableTotals(s: number, id: number, on: boolean) {
+    const t = this.tableById(s, id);
+    if (t.totals === on) return;
+    this.group(() => {
+      if (on) {
+        const below = t.r2 + 1;
+        let busy = false;
+        for (let c = t.c1; c <= t.c2; c++) if (this.has(s, below, c)) busy = true;
+        if (busy) this.insertRows(s, below, 1);
+        const cur = this.tableById(s, id);
+        // mặc định: chữ "Tổng" ở cột đầu, cột cuối: Tổng nếu là số, ngược lại Đếm
+        const cols = cur.cols.map((c, i) => {
+          if (c.fn || c.label) return c;
+          if (i === 0 && cur.cols.length > 1) return { ...c, label: 'Tổng' };
+          if (i === cur.cols.length - 1) return { ...c, fn: (typeof this.value(s, dataRows(cur).b, cur.c2) === 'number' ? 'sum' : 'count') as TotalFn };
+          return c;
+        });
+        this.tableChange(s, (l) => l.map((x) => (x.id === id ? { ...x, r2: x.r2 + 1, totals: true, cols } : x)));
+        const nt = this.tableById(s, id);
+        const list: [number, number, string | null][] = [];
+        nt.cols.forEach((c, i) => {
+          const f = c.fn ? totalFormula(c.fn, c.name) : null;
+          list.push([nt.r2, nt.c1 + i, f ?? (c.label ? "'" + c.label : null)]);
+        });
+        this.writeCells(s, list);
+      } else {
+        const r = t.r2;
+        this.tableChange(s, (l) => l.map((x) => (x.id === id ? { ...x, r2: x.r2 - 1, totals: false } : x)));
+        this.clear(s, { r1: r, c1: t.c1, r2: r, c2: t.c2 });
+      }
+    });
+  }
+  /** chọn hàm cho một cột ở hàng tổng */
+  setTotalFn(s: number, id: number, col: number, fn: TotalFn) {
+    const t = this.tableById(s, id);
+    if (!t.totals) return;
+    const i = col - t.c1, c = t.cols[i];
+    if (!c) return;
+    this.group(() => {
+      this.tableChange(s, (l) => l.map((x) => (x.id === id ? { ...x, cols: x.cols.map((y, j) => (j === i ? { ...y, fn, label: undefined } : y)) } : x)));
+      const f = totalFormula(fn, c.name);
+      this.writeCells(s, [[t.r2, col, f]]);
+    });
+  }
+  /** Đổi kích thước Bảng (Thiết kế Bảng ▸ Đổi kích thước): giữ hàng tiêu đề ở chỗ cũ */
+  resizeTable(s: number, id: number, g: Range) {
+    const t = this.tableById(s, id);
+    if (g.r1 !== t.r1) throw new Error('Tiêu đề phải ở cùng hàng và vùng mới phải chồng lên bảng cũ.');
+    if (g.r2 <= g.r1 + (t.totals ? 1 : 0)) throw new Error('Bảng cần ít nhất một hàng dữ liệu.');
+    if (this.meta(s).tables.some((x) => x.id !== id && !(x.r2 < g.r1 || x.r1 > g.r2 || x.c2 < g.c1 || x.c1 > g.c2))) throw new Error('Bảng không thể chồng lên một bảng khác.');
+    this.group(() => {
+      const used = new Set<string>(), cols: TableDef['cols'] = [];
+      let nid = Math.max(...t.cols.map((x) => x.id)) + 1;
+      for (let c = g.c1; c <= g.c2; c++) {
+        const old = c >= t.c1 && c <= t.c2 ? t.cols[c - t.c1] : undefined;
+        let nm = old?.name ?? (this.display(s, g.r1, c).text.trim() || `Cột${c - g.c1 + 1}`);
+        const base = nm; let k = 2; while (used.has(nm.toLowerCase())) nm = base + k++;
+        used.add(nm.toLowerCase()); cols.push(old ? { ...old, name: nm } : { id: nid++, name: nm });
+      }
+      const head = cols.map((x, i) => [g.r1, g.c1 + i, "'" + x.name] as [number, number, string]).filter(([r, c, v]) => this.rawText(s, r, c) !== v.slice(1));
+      if (head.length) this.writeCells(s, head);
+      this.moveTotals(s, t, g.r2);
+      this.tableChange(s, (l) => l.map((x) => (x.id === id ? { ...x, r1: g.r1, c1: g.c1, r2: g.r2, c2: g.c2, cols } : x)));
+      const f = this.meta(s).filter;
+      if (f && f.range.r1 === t.r1 && f.range.c1 === t.c1) this.filterChange(s, () => { this.meta(s).filter = { range: { ...g, r2: dataRows(this.tableById(s, id)).b }, conds: {} }; });
+    });
+  }
+  /** công thức (dạng bộ tính) trong mọi sheet tham chiếu tới bảng → đổi về dạng địa chỉ ô */
+  private unlinkTable(id: number) {
+    const reg = this.tableReg(), t = reg.find((x) => x.id === id);
+    if (!t) return;
+    const re = new RegExp(`XT_${id}_|XTHISROW\\(`, 'i');
+    for (const sid of this.allSheetIds()) {
+      const d = this.hf.getSheetDimensions(sid);
+      for (let r = 0; r < d.height; r++) for (let c = 0; c < d.width; c++) {
+        const a = { sheet: sid, row: r, col: c };
+        if (!this.hf.doesCellHaveFormula(a)) continue;
+        const f = (this.hf as any).__rawFormula?.(a) as string | undefined;
+        if (!f || !re.test(f)) continue;
+        const a1 = decodeStructured(f, reg, { sheet: sid, r, c }, 'a1', id);
+        this.hf.setCellContents(a, [[decodeStructured(decFormulaNames(offsetOut(a1), nameDisplay(this.hf)), this.tableReg(), { sheet: sid, r, c }) as RawCellContent]]);
+      }
+    }
+  }
+  /** Chuyển thành Vùng: giữ định dạng của bảng thành định dạng ô, công thức đổi về địa chỉ ô */
+  convertTableToRange(s: number, id: number) {
+    const t = this.tableById(s, id);
+    this.group(() => {
+      const st = this.meta(s).styles, ops: StyleOp[] = [];
+      for (let r = t.r1; r <= t.r2; r++) for (let c = t.c1; c <= t.c2; c++) { const v = this.viewStyle(s, r, c); const o = st.get(key(r, c)); if (v !== o) ops.push([st, key(r, c), clean(v)]); }
+      const tx = new StyleTxn(ops);
+      this.record(() => this.unlinkTable(id), tx.hist, { post: () => tx.apply() });
+      const f = this.meta(s).filter;
+      if (f && f.range.r1 === t.r1 && f.range.c1 === t.c1) this.clearFilter(s);
+      this.tableChange(s, (l) => l.filter((x) => x.id !== id));
+    });
+  }
+  /**
+   * Sau khi người dùng nhập ô (r, c): đổi tên cột khi sửa tiêu đề, tự nở bảng khi gõ ngay dưới/bên phải,
+   * cột tính toán (công thức nhập vào cột trống được điền cả cột, hàng mới kế thừa công thức).
+   * Trả về true nếu có thay đổi bảng (để vẽ lại).
+   */
+  afterEdit(s: number, r: number, c: number): boolean {
+    const l = this.meta(s).tables;
+    if (!l.length) return false;
+    // sửa tiêu đề
+    const th = l.find((t) => t.header && r === t.r1 && c >= t.c1 && c <= t.c2);
+    if (th) {
+      const i = c - th.c1;
+      let nm = this.display(s, r, c).text.trim();
+      if (!nm) nm = `Cột${i + 1}`;
+      const base = nm; let k = 2;
+      while (th.cols.some((x, j) => j !== i && x.name.toLowerCase() === nm.toLowerCase())) nm = base + k++;
+      if (nm !== th.cols[i].name) this.tableChange(s, (L) => L.map((x) => (x.id === th.id ? { ...x, cols: x.cols.map((y, j) => (j === i ? { ...y, name: nm } : y)) } : x)));
+      if (this.rawText(s, r, c) !== nm) this.writeCells(s, [[r, c, "'" + nm]]);
+      return true;
+    }
+    if (!this.has(s, r, c)) return false;
+    // gõ ngay dưới bảng (không có hàng tổng) → thêm hàng
+    const tb = l.find((t) => !t.totals && r === t.r2 + 1 && c >= t.c1 && c <= t.c2 && !this.stripBusy(s, t.id, { r1: r, c1: t.c1, r2: r, c2: t.c2 }));
+    if (tb) {
+      this.tableChange(s, (L) => L.map((x) => (x.id === tb.id ? { ...x, r2: x.r2 + 1 } : x)));
+      const fill: [number, number, string][] = [];
+      for (let cc = tb.c1; cc <= tb.c2; cc++) {
+        if (cc === c || this.has(s, r, cc)) continue;
+        const up = this.rawText(s, r - 1, cc), up2 = r - 2 > tb.r1 ? this.rawText(s, r - 2, cc) : up;
+        if (up.startsWith('=') && up2.startsWith('=') && shiftFormula(up2, 1, 0) === up) fill.push([r, cc, shiftFormula(up, 1, 0)]);
+      }
+      if (fill.length) this.writeCells(s, fill);
+      const f = this.meta(s).filter;
+      if (f && f.range.r1 === tb.r1 && f.range.c1 === tb.c1) this.filterChange(s, () => { f.range = { ...f.range, r2: r }; });
+      return true;
+    }
+    // gõ ngay bên phải → thêm cột
+    const tr = l.find((t) => c === t.c2 + 1 && r >= t.r1 && r <= t.r2);
+    if (tr) {
+      if (this.stripBusy(s, tr.id, { r1: tr.r1, c1: c, r2: tr.r2, c2: c })) return false;
+      let nm = r === tr.r1 ? this.display(s, r, c).text.trim() : '';
+      let j = tr.cols.length + 1;
+      if (!nm) nm = `Cột${j}`;
+      while (tr.cols.some((x) => x.name.toLowerCase() === nm.toLowerCase())) nm = `Cột${++j}`;
+      const nid = Math.max(...tr.cols.map((x) => x.id)) + 1;
+      this.tableChange(s, (L) => L.map((x) => (x.id === tr.id ? { ...x, c2: x.c2 + 1, cols: [...x.cols, { id: nid, name: nm }] } : x)));
+      if (this.rawText(s, tr.r1, c) !== nm) this.writeCells(s, [[tr.r1, c, "'" + nm]]);
+      const f = this.meta(s).filter;
+      if (f && f.range.r1 === tr.r1 && f.range.c1 === tr.c1) this.filterChange(s, () => { f.range = { ...f.range, c2: c }; });
+      return true;
+    }
+    // cột tính toán: công thức vào cột dữ liệu đang trống → điền cả cột
+    const tc = l.find((t) => inTable(t, r, c));
+    if (tc) {
+      const d = dataRows(tc), f = this.rawText(s, r, c);
+      if (!f.startsWith('=') || r < d.a || r > d.b || d.b === d.a) return false;
+      for (let rr = d.a; rr <= d.b; rr++) if (rr !== r && this.has(s, rr, c)) return false;
+      const list: [number, number, string][] = [];
+      for (let rr = d.a; rr <= d.b; rr++) if (rr !== r) list.push([rr, c, shiftFormula(f, rr - r, 0)]);
+      this.writeCells(s, list);
+      return true;
+    }
+    return false;
+  }
+  /** tên cột theo ô tiêu đề (sau khi xóa/dán/điền đè hàng tiêu đề): ô trống → Cột<n>, trùng → thêm số */
+  syncHeaders(s: number) {
+    for (const t of this.meta(s).tables) {
+      if (!t.header) continue;
+      const used = new Set<string>(), fix: [number, number, string][] = [];
+      const cols = t.cols.map((col, i) => {
+        let nm = this.display(s, t.r1, t.c1 + i).text.trim();
+        if (!nm) nm = `Cột${i + 1}`;
+        const base = nm; let k = 2; while (used.has(nm.toLowerCase())) nm = base + k++;
+        used.add(nm.toLowerCase());
+        if (this.rawText(s, t.r1, t.c1 + i) !== nm) fix.push([t.r1, t.c1 + i, "'" + nm]);
+        return nm === col.name ? col : { ...col, name: nm };
+      });
+      if (fix.length) this.writeCells(s, fix);
+      if (cols.some((c, i) => c !== t.cols[i])) this.tableChange(s, (L) => L.map((x) => (x.id === t.id ? { ...x, cols } : x)));
+    }
+  }
+  /** chạy thao tác ghi ô rồi đồng bộ tên cột bảng — một bước hoàn tác */
+  withHeaders<T>(s: number, f: () => T): T {
+    if (!this.meta(s).tables.length) return f();
+    let out!: T;
+    this.group(() => { out = f(); this.syncHeaders(s); });
+    return out;
+  }
+  /** dời hàng tổng của bảng tới hàng newR (giữ công thức/nhãn) */
+  private moveTotals(s: number, t: TableDef, newR: number) {
+    if (!t.totals || newR === t.r2) return;
+    const row: [number, number, string | null][] = [];
+    for (let c = t.c1; c <= t.c2; c++) row.push([newR, c, this.rawText(s, t.r2, c) || null]);
+    this.clear(s, { r1: t.r2, c1: t.c1, r2: t.r2, c2: t.c2 });
+    this.writeCells(s, row);
+  }
+  /** vùng (dải mới khi bảng nở) có đụng bảng khác hoặc ô gộp không */
+  private stripBusy(s: number, id: number, g: Range) {
+    const m = this.meta(s);
+    return m.tables.some((x) => x.id !== id && !(x.r2 < g.r1 || x.r1 > g.r2 || x.c2 < g.c1 || x.c1 > g.c2))
+      || m.merges.some((x) => !(x.r2 < g.r1 || x.r1 > g.r2 || x.c2 < g.c1 || x.c1 > g.c2));
+  }
+  /** công thức dạng lưu tệp .xlsx (Bảng1[[#This Row],[Cột]] thay cho [@Cột]) */
+  fileFormula(s: number, r: number, c: number, f: string): string {
+    if (!f.includes('[')) return f;
+    const reg = this.tableReg();
+    if (!reg.length) return f;
+    const enc = encodeStructured(f, { tables: reg, self: { sheet: this.sheetName(s), r, c }, need: () => {} });
+    return decodeStructured(enc, reg, { sheet: s, r, c }, 'file');
+  }
+
+  /** vùng tràn (mảng động) chứa ô (r, c): ô gốc có công thức + vùng kết quả; null nếu không thuộc mảng */
+  spillRange(s: number, r: number, c: number): { r: number; c: number; range: Range } | null {
+    const part = (rr: number, cc: number) => rr >= 0 && cc >= 0 && this.hf.isCellPartOfArray({ sheet: s, row: rr, col: cc });
+    const hasF = (rr: number, cc: number) => this.hf.doesCellHaveFormula({ sheet: s, row: rr, col: cc });
+    if (!part(r, c)) return null;
+    let r0 = r, c0 = c, n = 0;
+    while (!hasF(r0, c0) && part(r0 - 1, c0) && n++ < 100000) r0--;
+    n = 0;
+    while (!hasF(r0, c0) && part(r0, c0 - 1) && n++ < 16384) c0--;
+    if (!hasF(r0, c0)) return null;
+    let r2 = r0, c2 = c0;
+    while (part(r2 + 1, c0) && !hasF(r2 + 1, c0)) r2++;
+    while (part(r0, c2 + 1) && !hasF(r0, c2 + 1)) c2++;
+    if (r2 === r0 && c2 === c0) return null;
+    return { r: r0, c: c0, range: { r1: r0, c1: c0, r2, c2 } };
+  }
+
+  // ---------- nhóm hàng/cột (Dữ liệu ▸ Đại cương) ----------
+  private axis(s: number, ax: 'r' | 'c') { return ax === 'r' ? this.meta(s).rowH : this.meta(s).colW; }
+  /** ghi một thay đổi đại cương + hàng/cột ẩn thành một bước hoàn tác */
+  private outlineChange(s: number, f: () => void) {
+    const m = this.meta(s);
+    const snap = () => ({ o: m.outline, hr: m.rowH.hidden(), hc: m.colW.hidden() });
+    const before = snap();
+    f();
+    const after = snap();
+    const put = (x: ReturnType<typeof snap>) => { m.outline = x.o; m.rowH.setHidden(x.hr); m.colW.setHidden(x.hc); };
+    this.record(null, { undo: () => put(before), redo: () => put(after) });
+  }
+  outlineLevel(s: number, ax: 'r' | 'c', i: number) { return this.meta(s).outline[ax][i] ?? 0; }
+  outlineMax(s: number, ax: 'r' | 'c') { let m = 0; for (const v of Object.values(this.meta(s).outline[ax])) if (v > m) m = v; return m; }
+  /** các khối liền nhau có cấp ≥ L: [đầu, cuối] */
+  outlineRuns(s: number, ax: 'r' | 'c', L: number): { a: number; b: number }[] {
+    const idx = Object.entries(this.meta(s).outline[ax]).filter(([, v]) => v >= L).map(([k]) => +k).sort((x, y) => x - y);
+    const out: { a: number; b: number }[] = [];
+    for (const i of idx) { const last = out[out.length - 1]; if (last && last.b === i - 1) last.b = i; else out.push({ a: i, b: i }); }
+    return out;
+  }
+  isCollapsed(s: number, ax: 'r' | 'c', L: number, b: number) { return this.meta(s).outline.x.includes(`${ax}:${L}:${b + 1}`); }
+  /** Nhóm (Alt+Shift+→): tăng cấp các hàng/cột a..b (tối đa 7 cấp như Excel) */
+  groupLines(s: number, ax: 'r' | 'c', a: number, b: number) {
+    const cur = this.meta(s).outline[ax];
+    for (let i = a; i <= b; i++) if ((cur[i] ?? 0) >= 7) throw new Error('Đã đạt tối đa 7 cấp nhóm.');
+    this.outlineChange(s, () => {
+      const m = this.meta(s), lv = { ...m.outline[ax] };
+      for (let i = a; i <= b; i++) lv[i] = (lv[i] ?? 0) + 1;
+      m.outline = { ...m.outline, [ax]: lv };
+    });
+  }
+  /** Bỏ nhóm (Alt+Shift+←): giảm cấp; hàng/cột hết thuộc nhóm thì hiện lại */
+  ungroupLines(s: number, ax: 'r' | 'c', a: number, b: number) {
+    const cur = this.meta(s).outline[ax];
+    let any = false;
+    for (let i = a; i <= b; i++) if (cur[i]) any = true;
+    if (!any) throw new Error('Không có nhóm nào trong vùng chọn để bỏ nhóm.');
+    this.outlineChange(s, () => {
+      const m = this.meta(s), lv = { ...m.outline[ax] }, A = this.axis(s, ax);
+      const show: number[] = [];
+      for (let i = a; i <= b; i++) { if (!lv[i]) continue; lv[i]--; if (!lv[i]) { delete lv[i]; show.push(i); } }
+      const hid = new Set(A.hidden());
+      if (show.some((i) => hid.has(i))) A.setHidden([...hid].filter((i) => !show.includes(i)));
+      const max = Math.max(0, ...Object.values(lv));
+      m.outline = { ...m.outline, [ax]: lv, x: m.outline.x.filter((k) => !k.startsWith(ax + ':') || +k.split(':')[1] <= max) };
+    });
+  }
+  /** Thu gọn (−) nhóm cấp L kết thúc ở b */
+  collapseGroup(s: number, ax: 'r' | 'c', L: number, a: number, b: number) {
+    this.outlineChange(s, () => {
+      const m = this.meta(s), A = this.axis(s, ax), hid = new Set(A.hidden());
+      for (let i = a; i <= b; i++) hid.add(i);
+      A.setHidden([...hid]);
+      const k = `${ax}:${L}:${b + 1}`;
+      if (!m.outline.x.includes(k)) m.outline = { ...m.outline, x: [...m.outline.x, k] };
+    });
+  }
+  /** Mở rộng (+): hiện lại, trừ các nhóm con vẫn đang thu gọn */
+  expandGroup(s: number, ax: 'r' | 'c', L: number, a: number, b: number) {
+    this.outlineChange(s, () => {
+      const m = this.meta(s), A = this.axis(s, ax);
+      const x = m.outline.x.filter((k) => k !== `${ax}:${L}:${b + 1}`);
+      const keep = new Set<number>();
+      for (const k of x) {
+        const [t, LL, end] = k.split(':');
+        if (t !== ax || +LL <= L) continue;
+        const run = this.outlineRuns(s, ax, +LL).find((g) => g.b + 1 === +end);
+        if (run && run.a >= a && run.b <= b) for (let i = run.a; i <= run.b; i++) keep.add(i);
+      }
+      const hid = A.hidden().filter((i) => i < a || i > b || keep.has(i));
+      A.setHidden(hid);
+      m.outline = { ...m.outline, x };
+    });
+  }
+  /** nút cấp 1, 2, 3…: hiện tới cấp n (cấp ≥ n bị thu gọn) */
+  showOutlineLevel(s: number, ax: 'r' | 'c', n: number) {
+    this.outlineChange(s, () => {
+      const m = this.meta(s), A = this.axis(s, ax), lv = m.outline[ax];
+      const inGroup = new Set(Object.keys(lv).map(Number));
+      const hid = A.hidden().filter((i) => !inGroup.has(i));
+      for (const [k, v] of Object.entries(lv)) if (v >= n) hid.push(+k);
+      A.setHidden(hid);
+      const x = m.outline.x.filter((k) => !k.startsWith(ax + ':'));
+      for (let L = n; L <= 7; L++) for (const g of this.outlineRuns(s, ax, L)) x.push(`${ax}:${L}:${g.b + 1}`);
+      m.outline = { ...m.outline, x };
+    });
+  }
+  /** Bỏ Đại cương: xóa mọi nhóm theo trục, hiện lại hàng/cột đã thu gọn */
+  clearOutline(s: number, ax: 'r' | 'c') {
+    this.outlineChange(s, () => {
+      const m = this.meta(s), A = this.axis(s, ax), lv = m.outline[ax];
+      const inGroup = new Set(Object.keys(lv).map(Number));
+      A.setHidden(A.hidden().filter((i) => !inGroup.has(i)));
+      m.outline = { ...m.outline, [ax]: {}, x: m.outline.x.filter((k) => !k.startsWith(ax + ':')) };
+    });
+  }
+  /**
+   * Tổng phụ (Dữ liệu ▸ Tổng phụ): chèn hàng tổng sau mỗi nhóm giá trị của cột `by`, hàng Tổng Cộng ở cuối,
+   * dùng SUBTOTAL(fn; …) và tạo nhóm 3 cấp như Excel. g: vùng dữ liệu kể cả hàng tiêu đề.
+   */
+  subtotal(s: number, g: Range, o: { by: number; fn: number; cols: number[]; replace?: boolean }) {
+    if (g.r2 <= g.r1) throw new Error('Vùng cần có hàng tiêu đề và ít nhất một hàng dữ liệu.');
+    if (!o.cols.length) throw new Error('Hãy chọn ít nhất một cột để tính tổng phụ.');
+    const FN: Record<number, string> = { 9: 'Tổng', 1: 'Trung bình', 2: 'Đếm', 3: 'Đếm', 4: 'Lớn nhất', 5: 'Nhỏ nhất', 6: 'Tích', 7: 'Độ lệch chuẩn', 10: 'Phương sai' };
+    let r2 = g.r2;
+    this.group(() => {
+      if (o.replace) r2 = this.removeSubtotals(s, g);
+      // nhóm theo giá trị liên tiếp của cột `by`
+      const groups: { a: number; b: number; label: string }[] = [];
+      for (let r = g.r1 + 1; r <= r2; r++) {
+        const t = this.display(s, r, o.by).text;
+        const last = groups[groups.length - 1];
+        if (last && last.label === t) last.b = r; else groups.push({ a: r, b: r, label: t });
+      }
+      if (!groups.length) return;
+      const name = FN[o.fn] ?? 'Tổng';
+      const cells = (r: number, a: number, b: number) => o.cols.map((c) => [r, c, `=SUBTOTAL(${o.fn};${colLetters(c)}${a + 1}:${colLetters(c)}${b + 1})`] as [number, number, string]);
+      // chèn từ dưới lên: chỉ số các nhóm phía trên không đổi
+      for (let i = groups.length - 1; i >= 0; i--) {
+        const gr = groups[i];
+        this.insertRows(s, gr.b + 1, 1);
+        this.writeCells(s, [[gr.b + 1, o.by, `${name} ${gr.label}`.trim()], ...cells(gr.b + 1, gr.a, gr.b)]);
+        this.setStyle(s, { r1: gr.b + 1, c1: g.c1, r2: gr.b + 1, c2: g.c2 }, { b: true });
+      }
+      const last = r2 + groups.length;
+      this.insertRows(s, last + 1, 1);
+      // Tổng Cộng tính trên các khối chi tiết (không cộng lặp các hàng tổng phụ)
+      const blocks: string[] = [];
+      let at = g.r1 + 1;
+      for (const gr of groups) { const n = gr.b - gr.a + 1; blocks.push(`${at + 1}:${at + n}`); at += n + 1; }
+      const grand = o.cols.map((c) => [last + 1, c, `=SUBTOTAL(${o.fn};${blocks.map((b) => { const [x, y] = b.split(':'); return `${colLetters(c)}${x}:${colLetters(c)}${y}`; }).join(';')})`] as [number, number, string]);
+      this.writeCells(s, [[last + 1, o.by, `${name} Cộng`], ...grand]);
+      this.setStyle(s, { r1: last + 1, c1: g.c1, r2: last + 1, c2: g.c2 }, { b: true });
+      // đại cương: chi tiết cấp 2, hàng tổng phụ cấp 1, Tổng Cộng ngoài nhóm
+      this.outlineChange(s, () => {
+        const m = this.meta(s), lv = { ...m.outline.r };
+        let r = g.r1 + 1;
+        for (const gr of groups) { const n = gr.b - gr.a + 1; for (let k = 0; k < n; k++) lv[r + k] = 2; lv[r + n] = 1; r += n + 1; }
+        m.outline = { ...m.outline, r: lv };
+      });
+    });
+  }
+  /** Xóa Tất cả tổng phụ: bỏ các hàng có SUBTOTAL trong vùng và đại cương hàng; trả về hàng cuối mới */
+  removeSubtotals(s: number, g: Range): number {
+    const u = this.used(s);
+    const rows: number[] = [];
+    for (let r = g.r1 + 1; r <= Math.min(u.rows - 1, g.r2 + 10000); r++) {
+      let hit = false, any = false;
+      for (let c = g.c1; c <= g.c2; c++) { const f = this.rawText(s, r, c); if (f) any = true; if (/^=SUBTOTAL\(/i.test(f)) hit = true; }
+      if (hit) rows.push(r);
+      else if (!any && r > g.r2) break;
+    }
+    let end = g.r2;
+    this.group(() => {
+      for (const r of rows.reverse()) { this.deleteRows(s, r, 1); if (r <= end) end--; }
+      this.clearOutline(s, 'r');
+    });
+    return Math.max(g.r1, end - 0);
+  }
+
+  // ---------- ghi chú & chú thích ----------
+  /** đặt/xóa ghi chú (text rỗng = xóa) */
+  setNote(s: number, r: number, c: number, text: string | null) {
+    const st = this.meta(s).styles, k = key(r, c), o = st.get(k);
+    const v = text && text.trim() ? text.replace(/\s+$/, '') : undefined;
+    if ((o?.nt ?? undefined) === v) return;
+    const tx = new StyleTxn([[st, k, clean({ ...(o ?? {}), nt: v })]]);
+    tx.apply();
+    this.record(null, tx.hist);
+  }
+  /** thêm bình luận vào chuỗi chú thích (tạo mới nếu chưa có) */
+  addComment(s: number, r: number, c: number, author: string, text: string, when = new Date()) {
+    const t = text.trim();
+    if (!t) return;
+    const st = this.meta(s).styles, k = key(r, c), o = st.get(k);
+    const list = [...(o?.cm ?? []), { a: author.trim() || 'Người dùng', t, d: when.toISOString() }];
+    const tx = new StyleTxn([[st, k, clean({ ...(o ?? {}), cm: list, cmDone: undefined })]]);
+    tx.apply();
+    this.record(null, tx.hist);
+  }
+  /** sửa / xóa một bình luận trong chuỗi (xóa bình luận đầu = xóa cả chuỗi như Excel) */
+  editComment(s: number, r: number, c: number, i: number, text: string | null) {
+    const st = this.meta(s).styles, k = key(r, c), o = st.get(k);
+    if (!o?.cm?.[i]) return;
+    let list: CommentItem[] | undefined = o.cm.map((x) => ({ ...x }));
+    if (text === null) list = i === 0 ? undefined : list.filter((_, j) => j !== i);
+    else list[i].t = text.trim();
+    const tx = new StyleTxn([[st, k, clean({ ...o, cm: list, cmDone: list ? o.cmDone : undefined })]]);
+    tx.apply();
+    this.record(null, tx.hist);
+  }
+  resolveComment(s: number, r: number, c: number, done: boolean) {
+    const st = this.meta(s).styles, k = key(r, c), o = st.get(k);
+    if (!o?.cm) return;
+    const tx = new StyleTxn([[st, k, clean({ ...o, cmDone: done || undefined })]]);
+    tx.apply();
+    this.record(null, tx.hist);
+  }
+  /** xóa ghi chú + chú thích trong vùng (Trang đầu ▸ Xóa ▸ Xóa Ghi chú và Chú thích) */
+  clearNotes(s: number, g0: Range, which: 'all' | 'notes' | 'comments' = 'all') {
+    const st = this.meta(s).styles, ops: StyleOp[] = [];
+    const g = g0;
+    st.forEach((o, k) => {
+      const r = Math.floor(k / MAX_COLS), c = k % MAX_COLS;
+      if (r < g.r1 || r > g.r2 || c < g.c1 || c > g.c2) return;
+      if (!o.nt && !o.cm) return;
+      const n = { ...o };
+      if (which !== 'comments') delete n.nt;
+      if (which !== 'notes') { delete n.cm; delete n.cmDone; }
+      ops.push([st, k, clean(n)]);
+    });
+    if (!ops.length) return 0;
+    const tx = new StyleTxn(ops);
+    tx.apply();
+    this.record(null, tx.hist);
+    return ops.length;
+  }
+  /** mọi ô có ghi chú / chú thích của trang tính, theo thứ tự đọc (hàng rồi cột) như Excel đi Trước/Tiếp */
+  private noteCache = new Map<string, { ver: number; list: { r: number; c: number }[] }>();
+  noteCells(s: number, kind: 'note' | 'comment' | 'any' = 'any'): { r: number; c: number }[] {
+    // lưới gọi mỗi lần vẽ → nhớ theo phiên bản sổ (duyệt bảng kiểu ô rất lớn tốn thời gian)
+    const ck = s + ':' + kind, hit = this.noteCache.get(ck);
+    if (hit && hit.ver === this.ver) return hit.list;
+    const out: { r: number; c: number }[] = [];
+    this.noteCache.set(ck, { ver: this.ver, list: out });
+    this.meta(s).styles.forEach((o, k) => { if ((kind !== 'comment' && o.nt) || (kind !== 'note' && o.cm)) out.push({ r: Math.floor(k / MAX_COLS), c: k % MAX_COLS }); });
+    return out.sort((a, b) => a.r - b.r || a.c - b.c);
+  }
+
+  // ---------- tên vùng (Công thức ▸ Tên đã Xác định) ----------
+  /** mọi tên do người dùng xác định (không gồm TRUE/FALSE dựng sẵn) */
+  listNames(): NameDef[] {
+    const disp = nameDisplay(this.hf);
+    return this.hf.getAllNamedExpressionsSerialized()
+      .filter((n) => !BUILTIN_NAMES.has(n.name.toUpperCase()) && !/^XT_\d+_/i.test(n.name))
+      .map((n) => {
+        const o: any = n.options ?? {};
+        return { name: disp.get(n.name.toUpperCase()) ?? n.name, expr: decFormulaNames(offsetOut(String(n.expression)), disp), scope: n.scope, comment: o.comment || undefined, hidden: o.hidden || undefined };
+      })
+      .sort((a, b) => COLLATOR.compare(a.name, b.name) || (a.scope ?? -1) - (b.scope ?? -1));
+  }
+  /** giá trị hiện tại của tên (để hiện trong Trình Quản lý Tên) */
+  nameValue(name: string, scope?: number): unknown {
+    return this.hf.getNamedExpressionValue(encName(name), scope);
+  }
+  private findName(name: string, scope?: number) {
+    return this.listNames().find((n) => n.name.toUpperCase() === name.trim().toUpperCase() && (n.scope ?? -1) === (scope ?? -1));
+  }
+  /** chuẩn hóa “Tham chiếu tới” → công thức cho bộ tính; lỗi thì ném thông báo tiếng Việt */
+  private nameExpr(name: string, expr: string, scope?: number) {
+    let e = expr.trim();
+    if (!e) throw new Error('Hãy nhập ô hoặc công thức mà tên tham chiếu tới.');
+    if (e[0] !== '=') e = '=' + e;
+    const enc = encName(name.trim());
+    const fx = encFormulaNames(offsetIn(e, undefined, ''));
+    if (!this.hf.isItPossibleToAddNamedExpression(enc, fx, scope) && !this.hf.getNamedExpression(enc, scope)) throw new Error('Công thức trong “Tham chiếu tới” không hợp lệ.');
+    return { enc, fx };
+  }
+  /** Xác định Tên (Alt+M,M,D): thêm tên mới */
+  defineName(name: string, expr: string, scope?: number, comment?: string) {
+    const err = nameError(name);
+    if (err) throw new Error(err);
+    if (this.findName(name, scope)) throw new Error(`Tên “${name.trim()}” đã có trong phạm vi này.`);
+    if (this.tableByName(name.trim()) || /^XT_\d+_/i.test(name.trim())) throw new Error(`Tên “${name.trim()}” đã được dùng cho một bảng.`);
+    const { enc, fx } = this.nameExpr(name, expr, scope);
+    nameDisplay(this.hf).set(enc.toUpperCase(), name.trim());
+    this.record(() => this.hf.addNamedExpression(enc, fx, scope, comment ? { comment } : undefined));
+  }
+  /** Sửa tên (đổi tên, phạm vi, tham chiếu, chú thích); đổi tên thì công thức đang dùng tên cũ được cập nhật như Excel */
+  updateName(oldName: string, oldScope: number | undefined, d: { name: string; expr: string; scope?: number; comment?: string }) {
+    const cur = this.findName(oldName, oldScope);
+    if (!cur) throw new Error(`Không tìm thấy tên “${oldName}”.`);
+    const err = nameError(d.name);
+    if (err) throw new Error(err);
+    const renamed = d.name.trim().toUpperCase() !== cur.name.toUpperCase() || (d.scope ?? -1) !== (cur.scope ?? -1);
+    if (renamed && this.findName(d.name, d.scope)) throw new Error(`Tên “${d.name.trim()}” đã có trong phạm vi này.`);
+    const { enc, fx } = this.nameExpr(d.name, d.expr, renamed ? d.scope : cur.scope);
+    const opts = d.comment ? { comment: d.comment } : undefined;
+    this.group(() => {
+      if (!renamed) { nameDisplay(this.hf).set(enc.toUpperCase(), d.name.trim()); this.record(() => this.hf.changeNamedExpression(enc, fx, cur.scope, opts)); return; }
+      nameDisplay(this.hf).set(enc.toUpperCase(), d.name.trim());
+      this.record(() => this.hf.addNamedExpression(enc, fx, d.scope, opts));
+      if (d.name.trim().toUpperCase() !== cur.name.toUpperCase()) this.renameRefs(cur.name, d.name.trim());
+      this.record(() => this.hf.removeNamedExpression(encName(cur.name), cur.scope));
+    });
+  }
+  deleteName(name: string, scope?: number) {
+    const cur = this.findName(name, scope);
+    if (!cur) return;
+    this.record(() => this.hf.removeNamedExpression(encName(cur.name), cur.scope));
+  }
+  /** cập nhật mọi công thức đang dùng tên cũ */
+  private renameRefs(oldName: string, newName: string) {
+    for (const s of this.sheetIds()) {
+      const rows = this.hf.getSheetSerialized(s);
+      const list: [number, number, string][] = [];
+      rows.forEach((row, r) => row?.forEach((v, c) => {
+        if (typeof v !== 'string' || v[0] !== '=') return;
+        const nv = renameInFormula(v, oldName, newName);
+        if (nv !== v) list.push([r, c, nv]);
+      }));
+      if (list.length) this.record(() => { for (const [r, c, v] of list) this.hf.setCellContents(this.A(s, r, c), [[v]]); });
+    }
+  }
+  /**
+   * Tạo từ Vùng chọn (Ctrl+Shift+F3): lấy chữ ở hàng trên/cột trái/hàng dưới/cột phải làm tên.
+   * Trả về số tên đã tạo; tên trùng được thay (như khi chọn “Có” ở Excel).
+   */
+  createNamesFrom(s: number, g: Range, o: { top?: boolean; left?: boolean; bottom?: boolean; right?: boolean }): number {
+    const sh = quoteSheet(this.sheetName(s));
+    const abs = (r1: number, c1: number, r2: number, c2: number) => `=${sh}!$${colLetters(c1)}$${r1 + 1}` + (r1 === r2 && c1 === c2 ? '' : `:$${colLetters(c2)}$${r2 + 1}`);
+    const clean = (t: string) => { let n = t.trim().replace(/\s+/g, '_').replace(/[^A-Za-z0-9_.\\\u00C0-\uFFFF]/g, ''); if (n && !/^[A-Za-z_\\\u00C0-\uFFFF]/.test(n)) n = '_' + n; return nameError(n) ? '' : n; };
+    const items: [string, string][] = [];
+    const r1 = g.r1 + (o.top ? 1 : 0), r2 = g.r2 - (o.bottom ? 1 : 0), c1 = g.c1 + (o.left ? 1 : 0), c2 = g.c2 - (o.right ? 1 : 0);
+    if (r1 > r2 || c1 > c2) return 0;
+    for (let c = c1; c <= c2; c++) {
+      if (o.top) { const n = clean(this.display(s, g.r1, c).text); if (n) items.push([n, abs(r1, c, r2, c)]); }
+      if (o.bottom) { const n = clean(this.display(s, g.r2, c).text); if (n) items.push([n, abs(r1, c, r2, c)]); }
+    }
+    for (let r = r1; r <= r2; r++) {
+      if (o.left) { const n = clean(this.display(s, r, g.c1).text); if (n) items.push([n, abs(r, c1, r, c2)]); }
+      if (o.right) { const n = clean(this.display(s, r, g.c2).text); if (n) items.push([n, abs(r, c1, r, c2)]); }
+    }
+    let made = 0;
+    this.group(() => {
+      for (const [n, e] of items) {
+        const cur = this.findName(n);
+        try { if (cur) this.updateName(cur.name, undefined, { name: cur.name, expr: e, comment: cur.comment }); else this.defineName(n, e); made++; } catch { /* bỏ qua tên lỗi */ }
+      }
+    });
+    return made;
+  }
+  /** tên trỏ tới một vùng ô → vị trí (để Hộp Tên / Đi tới nhảy tới) */
+  nameTarget(name: string, scopeSheet?: number): { sheet: number; range: Range } | null {
+    const n = (scopeSheet !== undefined ? this.findName(name, scopeSheet) : undefined) ?? this.findName(name);
+    if (!n) return null;
+    const m = /^=\s*(?:'((?:[^']|'')+)'|([^'!=]+))!\$?([A-Z]{1,3})\$?(\d+)(?::\$?([A-Z]{1,3})\$?(\d+))?\s*$/i.exec(n.expr);
+    if (!m) return null;
+    const sheet = this.hf.getSheetId((m[1] ?? m[2]).replace(/''/g, "'"));
+    if (sheet === undefined) return null;
+    const g = parseRange(m[3] + m[4] + (m[5] ? ':' + m[5] + m[6] : ''));
+    return g ? { sheet, range: g } : null;
+  }
+
   // ---------- lọc ----------
   isRowHidden(s: number, r: number) { return this.meta(s).rowH.isHidden(r); }
   private filterSnap(s: number) { const m = this.meta(s); return { f: m.filter ? JSON.parse(JSON.stringify(m.filter)) as SheetFilter : null, h: m.rowH.hidden() }; }
@@ -1356,6 +2242,9 @@ export class Workbook {
     const u = this.used(s);
     const g = f.range;
     const rowHas = (r: number) => { for (let c = g.c1; c <= g.c2; c++) if (this.has(s, r, c)) return true; return false; };
+    // lọc của Bảng: đúng vùng tiêu đề + dữ liệu (không gồm hàng tổng)
+    const t = this.meta(s).tables.find((x) => x.header && x.r1 === g.r1 && x.c1 === g.c1);
+    if (t) { const d = dataRows(t); return { r1: t.r1, c1: t.c1, r2: d.b, c2: t.c2 }; }
     let r2 = Math.min(g.r2, Math.max(g.r1, u.rows - 1));
     while (r2 + 1 < u.rows && rowHas(r2 + 1)) r2++;
     return r2 === g.r2 ? g : { ...g, r2 };
@@ -1680,6 +2569,7 @@ export class Workbook {
       name: this.name,
       calc: this.iterate.on ? { ...this.iterate } : undefined,
       iterVals: iterVals.length ? iterVals : undefined,
+      names: (() => { const l = this.listNames().map((n) => ({ name: n.name, expr: n.expr, scope: n.scope !== undefined ? this.sheetName(n.scope) : undefined, comment: n.comment, hidden: n.hidden })); return l.length ? l : undefined; })(),
       ext: this.extLinks.length || ext.length ? { links: this.extLinks, sheets: ext.map((id) => ({ name: this.sheetName(id), cells: this.hf.getSheetSerialized(id) })) } : undefined,
       sheets: this.sheetIds().map((id) => {
         const m = this.meta(id);
@@ -1698,6 +2588,8 @@ export class Workbook {
           hiddenRows: m.rowH.hidden(),
           hiddenCols: m.colW.hidden().length ? m.colW.hidden() : undefined,
           breaks: m.breaks.rows.length || m.breaks.cols.length ? m.breaks : undefined,
+          outline: Object.keys(m.outline.r).length || Object.keys(m.outline.c).length ? m.outline : undefined,
+          tables: m.tables.length ? m.tables : undefined,
           tabColor: m.tabColor,
           state: m.hidden ? 'hidden' : undefined,
           merges: m.merges,
@@ -1712,7 +2604,8 @@ export class Workbook {
     };
   }
   static fromJSON(d: BookJSON): Workbook {
-    const wb = new Workbook(buildHF([...d.sheets, ...(d.ext?.sheets ?? [])].map((x) => ({ name: x.name, cells: x.cells as RawCellContent[][] }))));
+    const pre: TableReg[] = d.sheets.flatMap((sh, i) => (sh.tables ?? []).map((t) => ({ ...t, sheet: -1 - i, sheetName: sh.name })));
+    const wb = new Workbook(buildHF([...d.sheets, ...(d.ext?.sheets ?? [])].map((x) => ({ name: x.name, cells: x.cells as RawCellContent[][] })), pre));
     wb.name = d.name || 'Sổ tính';
     wb.extLinks = d.ext?.links ?? [];
     const ids = d.sheets.map((x) => wb.hf.getSheetId(x.name)!);
@@ -1723,6 +2616,8 @@ export class Workbook {
       if (sh.rowDef) m.rowH = new AxisSizes(sh.rowDef, MAX_ROWS);
       m.colW.load((sh.colW ?? []) as [number, number][], sh.hiddenCols ?? []);
       m.breaks = { rows: sh.breaks?.rows ?? [], cols: sh.breaks?.cols ?? [] };
+      if (sh.outline) m.outline = { r: { ...sh.outline.r }, c: { ...sh.outline.c }, x: [...(sh.outline.x ?? [])] };
+      if (sh.tables?.length) { m.tables = sh.tables.map((t) => ({ ...t, cols: t.cols.map((c) => ({ ...c })) })); for (const t of m.tables) wb.tableSeq = Math.max(wb.tableSeq, t.id); }
       if (sh.tabColor) m.tabColor = sh.tabColor;
       if (sh.state === 'hidden') m.hidden = true;
       m.rowH.load((sh.rowH ?? []) as [number, number][], sh.hiddenRows ?? []);
@@ -1745,6 +2640,19 @@ export class Workbook {
       m.charts = (sh.charts ?? []).map((c: any) => ({ ...c, id: c.id ?? Math.random().toString(36).slice(2, 10), series: (c.series ?? []).map((x: any) => ({ name: refIn(x.name), cats: refIn(x.cats), vals: refIn(x.vals) })).filter((x: any) => x.vals) }));
       m.pivots = (sh.pivots ?? []).map((p: any) => ({ ...p, src: refIn(p.src) })).filter((p: any) => p.src);
     });
+    if (d.names?.length) {
+      const disp = nameDisplay(wb.hf);
+      wb.hf.suspendEvaluation();
+      for (const n of d.names) {
+        const scope = n.scope !== undefined ? wb.hf.getSheetId(n.scope) : undefined;
+        if (n.scope !== undefined && scope === undefined) continue;
+        const enc = encName(n.name);
+        const fx = encFormulaNames(offsetIn(n.expr[0] === '=' ? n.expr : '=' + n.expr, undefined, ''));
+        const opts: any = {}; if (n.comment) opts.comment = n.comment; if (n.hidden) opts.hidden = true;
+        try { if (wb.hf.isItPossibleToAddNamedExpression(enc, fx, scope)) { wb.hf.addNamedExpression(enc, fx, scope, Object.keys(opts).length ? opts : undefined); disp.set(enc.toUpperCase(), n.name); } } catch { /* tên lỗi: bỏ qua */ }
+      }
+      wb.hf.resumeEvaluation();
+    }
     wb.hf.clearUndoStack();
     if (d.calc) wb.iterate = { on: !!d.calc.on, count: d.calc.count ?? 100, delta: d.calc.delta ?? 0.001 };
     for (const [n, r, c, v] of d.iterVals ?? []) { const id = wb.hf.getSheetId(n); if (id !== undefined) wb.seeds.set(id + ':' + r + ':' + c, v); }
@@ -1771,12 +2679,20 @@ export interface SheetJSON {
   hiddenCols?: number[]; breaks?: { rows: number[]; cols: number[] }; tabColor?: string; state?: 'hidden';
   merges?: Range[]; cf?: CFRule[]; dv?: DVRule[]; filter?: SheetFilter | null;
   charts?: unknown[]; pivots?: unknown[]; print?: PrintSetup | null;
+  outline?: Outline;
+  tables?: TableDef[];
   /** biểu đồ đọc từ .xlsx, gắn sau khi sổ đã dựng (finishImport) */
   rawCharts?: unknown[];
 }
 export interface ExtLink { index: number; path: string; xml: string; rels?: string }
+/** một bình luận trong chuỗi chú thích */
+export interface CommentItem { a: string; t: string; d: string }
+export interface NameDef { name: string; expr: string; scope?: number; comment?: string; hidden?: boolean }
+const BUILTIN_NAMES = new Set(['TRUE', 'FALSE']);
 export interface BookJSON {
   v: number; name: string; sheets: SheetJSON[];
+  /** tên vùng: scope là tên trang tính (không có = cả sổ) */
+  names?: { name: string; expr: string; scope?: string; comment?: string; hidden?: boolean }[];
   calc?: { on: boolean; count?: number; delta?: number };
   iterVals?: [string, number, number, unknown][];
   ext?: { links: ExtLink[]; sheets: { name: string; cells: unknown[][] }[] };
@@ -1828,7 +2744,7 @@ function lit(v: unknown, inArray = false): string {
 }
 
 function newMeta(): SheetMeta {
-  return { styles: new Map(), colW: new AxisSizes(DEFAULT_COL_W, MAX_COLS), rowH: new AxisSizes(DEFAULT_ROW_H, MAX_ROWS), freeze: { rows: 0, cols: 0 }, merges: [], cf: [], dv: [], filter: null, charts: [], pivots: [], print: null, breaks: { rows: [], cols: [] } };
+  return { styles: new Map(), colW: new AxisSizes(DEFAULT_COL_W, MAX_COLS), rowH: new AxisSizes(DEFAULT_ROW_H, MAX_ROWS), freeze: { rows: 0, cols: 0 }, merges: [], cf: [], dv: [], filter: null, charts: [], pivots: [], print: null, breaks: { rows: [], cols: [] }, outline: NO_OUTLINE, tables: [] };
 }
 function clean(st: Style): Style | undefined {
   const o: any = {};
@@ -1899,6 +2815,37 @@ function shiftAll(m: SheetMeta, ax: 'r' | 'c', pt: (x: number) => number, span: 
     if (g) pr.area = g; else delete pr.area;
     m.print = pr;
   }
+  {
+    const key3 = ax === 'r' ? 'r' : 'c';
+    const lv = m.outline[key3], nl: Record<number, number> = {};
+    for (const [k, v] of Object.entries(lv)) { const nk = pt(+k); if (nk >= 0) nl[nk] = v; }
+    const nx = m.outline.x.map((kx) => { const [t, L, at] = kx.split(':'); if (t !== key3) return kx; const n = pt(+at); return n >= 0 ? `${t}:${L}:${n}` : ''; }).filter(Boolean);
+    m.outline = { ...m.outline, [key3]: nl, x: nx };
+  }
+  if (m.tables.length) {
+    m.tables = m.tables.flatMap((t) => {
+      const g = mv({ r1: t.r1, c1: t.c1, r2: t.r2, c2: t.c2 });
+      if (!g) return [];
+      if (ax === 'r') {
+        if (t.header && pt(t.r1) < 0) return []; // xóa hàng tiêu đề → bỏ bảng
+        if (g.r2 - g.r1 + 1 < (t.header ? 1 : 0) + (t.totals ? 1 : 0) + 1) return [];
+        return [{ ...t, ...g }];
+      }
+      // cột: giữ cột còn lại theo vị trí mới, cột chèn vào giữa đặt tên Cột<n>
+      const keep = new Map<number, TableDef['cols'][number]>();
+      t.cols.forEach((col, i) => { const n = pt(t.c1 + i); if (n >= 0) keep.set(n, col); });
+      let nid = Math.max(0, ...t.cols.map((x) => x.id)) + 1;
+      const used = new Set(t.cols.map((x) => x.name.toLowerCase()));
+      const cols: TableDef['cols'] = [];
+      for (let c = g.c1; c <= g.c2; c++) {
+        const k = keep.get(c);
+        if (k) { cols.push(k); continue; }
+        let j: number = cols.length + 1, nm: string = `Cột${j}`; while (used.has(nm.toLowerCase())) nm = `Cột${++j}`;
+        used.add(nm.toLowerCase()); cols.push({ id: nid++, name: nm });
+      }
+      return cols.length ? [{ ...t, ...g, cols }] : [];
+    });
+  }
   if (m.filter) {
     const g = mv(m.filter.range);
     if (!g) m.filter = null;
@@ -1918,14 +2865,14 @@ function remapStyles(m: Map<number, Style>, f: (r: number, c: number) => { r: nu
 // Bảng định dạng của mỗi sheet luôn là MỘT đối tượng Map cố định (chỉ sửa tại chỗ),
 // để các mục hoàn tác giữ tham chiếu tới nó không bị "lạc" sang bản cũ.
 function setAll(m: Map<number, Style>, src: Map<number, Style>) { if (m === src) return; m.clear(); src.forEach((v, k) => m.set(k, v)); }
-type MetaSnap = { styles: Map<number, Style>; colW: [number, number][]; rowH: [number, number][]; hidden: number[]; colHidden: number[]; freeze: { rows: number; cols: number }; merges: Range[]; cf: CFRule[]; dv: DVRule[]; filter: SheetFilter | null; charts: Chart[]; pivots: PivotDef[]; print: PrintSetup | null; breaks: { rows: number[]; cols: number[] }; tabColor?: string; sheetHidden?: boolean };
+type MetaSnap = { tables?: TableDef[]; outline?: Outline; styles: Map<number, Style>; colW: [number, number][]; rowH: [number, number][]; hidden: number[]; colHidden: number[]; freeze: { rows: number; cols: number }; merges: Range[]; cf: CFRule[]; dv: DVRule[]; filter: SheetFilter | null; charts: Chart[]; pivots: PivotDef[]; print: PrintSetup | null; breaks: { rows: number[]; cols: number[] }; tabColor?: string; sheetHidden?: boolean };
 function snapMeta(m: SheetMeta): MetaSnap {
-  return { styles: new Map(m.styles), colW: m.colW.entries(), rowH: m.rowH.entries(), hidden: m.rowH.hidden(), colHidden: m.colW.hidden(), freeze: { ...m.freeze }, merges: m.merges, cf: m.cf, dv: m.dv, filter: m.filter ? JSON.parse(JSON.stringify(m.filter)) : null, charts: m.charts, pivots: m.pivots, print: m.print, breaks: { rows: [...m.breaks.rows], cols: [...m.breaks.cols] }, tabColor: m.tabColor, sheetHidden: m.hidden };
+  return { styles: new Map(m.styles), colW: m.colW.entries(), rowH: m.rowH.entries(), hidden: m.rowH.hidden(), colHidden: m.colW.hidden(), freeze: { ...m.freeze }, merges: m.merges, cf: m.cf, dv: m.dv, filter: m.filter ? JSON.parse(JSON.stringify(m.filter)) : null, charts: m.charts, pivots: m.pivots, print: m.print, breaks: { rows: [...m.breaks.rows], cols: [...m.breaks.cols] }, tabColor: m.tabColor, sheetHidden: m.hidden, outline: m.outline, tables: m.tables };
 }
 function restoreMeta(m: SheetMeta, s: MetaSnap) {
   setAll(m.styles, new Map(s.styles)); m.colW.load(s.colW, s.colHidden ?? []); m.rowH.load(s.rowH, s.hidden); m.freeze = { ...s.freeze };
   m.merges = s.merges; m.cf = s.cf; m.dv = s.dv; m.filter = s.filter ? JSON.parse(JSON.stringify(s.filter)) : null;
-  m.charts = s.charts ?? []; m.pivots = s.pivots ?? []; m.print = s.print ?? null;
+  m.charts = s.charts ?? []; m.pivots = s.pivots ?? []; m.print = s.print ?? null; m.outline = s.outline ?? NO_OUTLINE; m.tables = s.tables ?? [];
   m.breaks = { rows: [...(s.breaks?.rows ?? [])], cols: [...(s.breaks?.cols ?? [])] }; m.tabColor = s.tabColor; m.hidden = s.sheetHidden;
 }
 

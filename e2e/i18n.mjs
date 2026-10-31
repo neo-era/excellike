@@ -117,7 +117,7 @@ await Promise.all([page.waitForEvent('load'), page.selectOption('#opt-lang', 'en
 await page.waitForFunction(() => window.__xl && window.__xl.grid);
 await wait(300);
 const VI = /[À-ỹĐđ]/;
-const SKIP = '.cell-editor, #fx-input, #namebox, .sheets .st, #doc-title, .fr-results td, .keys-row kbd, .clip-it, .fn-list b, .ac-list b, .bs-recent .rr b, .bs-recent .rr span small, .nv-name, #nav-pane .nv-list';
+const SKIP = '.t2c-prev, .ol-cols, .ol-sub select, .cell-editor, #fx-input, #namebox, .sheets .st, #doc-title, .fr-results td, .keys-row kbd, .clip-it, .fn-list b, .ac-list b, .bs-recent .rr b, .bs-recent .rr span small, .nv-name, #nav-pane .nv-list';
 const scan = (root) => X(([root, SKIP]) => {
   const out = new Set();
   const r = document.querySelector(root); if (!r) return [];
@@ -153,6 +153,27 @@ for (const [k, root, nm] of [['Control+1', '.dlg', 'Format Cells'], ['Control+f'
   await page.keyboard.press('Escape'); await wait(80);
   await X(() => document.querySelectorAll('.dlg-back, .fr-panel').forEach((e) => e.remove()));
 }
+// 0.7: hộp thoại mới + tab Thiết kế Bảng
+await X(() => { const x = window.__xl, s = x.grid.sheet; [['Loại', 'Tiền'], ['Cát', '1'], ['Đá', '2']].forEach((row, r) => row.forEach((v, c) => x.wb.setInput(s, 200 + r, 20 + c, v))); x.grid.select(201, 20); x.grid.focusKeys(); });
+for (const [k, nm] of [['Control+F3', 'Name Manager'], ['Control+t', 'Create Table'], ['Alt+Shift+ArrowRight', 'Group']]) {
+  await page.keyboard.press(k); await wait(200);
+  add(await scan('.dlg'), 'dlg:' + nm);
+  await page.keyboard.press('Escape'); await wait(80);
+  await X(() => { document.querySelectorAll('.dlg-back').forEach((e) => e.remove()); window.__xl.grid.focusKeys(); });
+}
+await tab('data');
+for (const id of ['d-sub', 'd-t2c', 'd-dup']) {
+  await X(() => { window.__xl.grid.select(201, 20); });
+  if (id === 'd-t2c') await X(() => window.__xl.grid.selectRange({ r1: 200, c1: 20, r2: 202, c2: 20 }));
+  await page.click(`#ribbon [data-id="${id}"]`); await wait(200);
+  add(await scan('.dlg'), 'dlg:' + id);
+  await page.keyboard.press('Escape'); await wait(80);
+  await X(() => document.querySelectorAll('.dlg-back').forEach((e) => e.remove()));
+}
+await X(() => { const x = window.__xl, s = x.grid.sheet; x.wb.createTable(s, { r1: 200, c1: 20, r2: 202, c2: 21 }); x.grid.select(201, 20); x.syncSelection(); });
+await wait(150);
+await tab('tdesign'); add(await scan('#ribbon'), 'ribbon:tdesign'); add(await scan('#tabs'), 'tabs2');
+await page.screenshot({ path: OUT + 'i18n-en-tdesign.png', clip: { x: 0, y: 0, width: 1920, height: 170 } });
 writeFileSync(OUT + 'i18n-missing.txt', [...missing].join('\n'));
 console.log(`chữ còn tiếng Việt khi chọn English: ${missing.size} (xem e2e/shots/i18n-missing.txt)`);
 ok(missing.size === 0, 'English: không còn chữ tiếng Việt trên giao diện');

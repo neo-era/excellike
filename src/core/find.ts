@@ -27,7 +27,7 @@ export function patternRe(what: string, o: { matchCase: boolean; whole: boolean 
 }
 function textOf(wb: Workbook, s: number, r: number, c: number, lookIn: FindOpts['lookIn']): string {
   if (lookIn === 'values') return wb.display(s, r, c).text;
-  if (lookIn === 'notes') return '';
+  if (lookIn === 'notes') { const st = wb.style(s, r, c); return [st.nt ?? '', ...(st.cm ?? []).map((x) => x.t)].join('\n').trim(); }
   return wb.rawText(s, r, c);
 }
 function sheetsOf(wb: Workbook, s: number, o: FindOpts) {
@@ -223,7 +223,8 @@ export function goSpecial(wb: Workbook, s: number, sel: Range[], o: SpecialOpts)
     }
     case 'cf': return wb.meta(s).cf.map((x) => ({ ...x.range }));
     case 'dv': return wb.meta(s).dv.map((x) => ({ ...x.range }));
-    case 'notes': case 'objects': return [];
+    case 'notes': return toRuns(wb.noteCells(s).map((p) => [p.r, p.c] as [number, number]));
+    case 'objects': return [];
   }
   return [];
 }

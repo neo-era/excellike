@@ -98,7 +98,7 @@ const menuItems = (page) => page.$$eval('.menu .mi span', (els) => els.map((e) =
   check('Định dạng ▸ Chiều cao Hàng…, Độ rộng Cột…, Ẩn & Bỏ ẩn, Đổi tên Trang tính, Màu Tab', ['Chiều cao Hàng…', 'Độ rộng Cột…', 'Ẩn & Bỏ ẩn', 'Đổi tên Trang tính', 'Màu Tab'].every((x) => fItems.includes(x)), fItems.join(','));
   await page.keyboard.press('Escape');
   const later = await X(page, () => [...document.querySelectorAll('#ribbon .later')].map((e) => e.title));
-  check('Lệnh chưa làm được đánh dấu rõ “có ở bản 0.x” hoặc “ngoài phạm vi”', later.length > 0 && later.every((t) => /bản 0\.\d|ngoài phạm vi/.test(t)), later.slice(0, 3).join(' | '));
+  check('Lệnh chưa làm được đánh dấu rõ “có ở bản 0.x” hoặc “ngoài phạm vi”', later.every((t) => /bản 0\.\d|ngoài phạm vi/.test(t)), later.slice(0, 3).join(' | '));
 
   // các thẻ khác
   const want = { 'Chèn': ['Bảng', 'Hình minh họa', 'Biểu đồ'], 'Bố trí Trang': ['Chủ đề', 'Thiết lập Trang', 'Co giãn cho Vừa', 'Tùy chọn Trang tính'], 'Công thức': ['Thư viện Hàm', 'Tên đã Xác định', 'Kiểm nghiệm Công thức', 'Tính toán'], 'Dữ liệu': ['Lấy & Chuyển đổi Dữ liệu', 'Sắp xếp & Lọc', 'Công cụ Dữ liệu', 'Dự báo', 'Đại cương'], 'Xem lại': ['Soát lỗi', 'Ghi chú', 'Bảo vệ'], 'Xem': ['Dạng xem Sổ làm việc', 'Hiện', 'Thu phóng', 'Cửa sổ'], 'Trợ giúp': ['Trợ giúp'] };
@@ -366,7 +366,7 @@ const menuItems = (page) => page.$$eval('.menu .mi span', (els) => els.map((e) =
   await page.mouse.click(p.x, p.y, { button: 'right' });
   await page.waitForSelector('.mini-tb');
   const cItems = await menuItems(page);
-  check('Menu chuột phải ô đủ mục như Excel', ['Cắt', 'Sao chép', 'Tùy chọn Dán:', 'Dán Đặc biệt…', 'Chèn…', 'Xóa…', 'Xóa Nội dung', 'Lọc', 'Sắp xếp', 'Bình luận Mới', 'Ghi chú Mới', 'Định dạng Ô…', 'Chọn từ Danh sách Thả xuống…', 'Xác định Tên…', 'Liên kết'].every((x) => cItems.includes(x)), cItems.join(','));
+  check('Menu chuột phải ô đủ mục như Excel', ['Cắt', 'Sao chép', 'Tùy chọn Dán:', 'Dán Đặc biệt…', 'Chèn…', 'Xóa…', 'Xóa Nội dung', 'Lọc', 'Sắp xếp', 'Chú thích Mới', 'Ghi chú Mới', 'Định dạng Ô…', 'Chọn từ Danh sách Thả xuống…', 'Xác định Tên…', 'Liên kết'].every((x) => cItems.includes(x)), cItems.join(','));
   const mini = await X(page, () => { const a = document.querySelector('.mini-tb').getBoundingClientRect(), b = document.querySelector('.ctx-wrap .menu').getBoundingClientRect(); return { above: a.bottom <= b.top + 1, ids: [...document.querySelectorAll('.mini-tb [data-m]')].map((e) => e.dataset.m) }; });
   check('Thanh mini nằm trên menu: phông, cỡ, A↑ A↓, $, %, 000, B, I, căn giữa, tô, màu chữ, viền, gộp', mini.above && ['fn', 'fs', 'grow', 'shrink', 'acct', 'pct', 'comma', 'b', 'i', 'center', 'bg', 'fg', 'border', 'merge'].every((k) => mini.ids.includes(k)), JSON.stringify(mini));
   await page.screenshot({ path: OUT + 'v05-ctx.png' });

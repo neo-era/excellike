@@ -119,8 +119,10 @@ describe('Review Đợt 2: ô gộp giữ viền, hằng mảng, CSV', () => {
     expect(back.style(0, 0, 0).bd?.l).toBeDefined();
   });
   it('hằng mảng đổi đúng dấu hàng/cột', () => {
-    expect(toVi('={1,2;3,4}')).toBe('={1,2|3,4}');
-    expect(toEn('={1,2|3,4}')).toBe('={1,2;3,4}');
+    // 0.7: cột “;”, hàng “|”, thập phân “,” trong app (trước đây {1,2|3,4} bị hiểu là số thập phân 1,2)
+    expect(toVi('={1,2.5;3,4}')).toBe('={1;2,5|3;4}');
+    expect(toEn('={1;2,5|3;4}')).toBe('={1,2.5;3,4}');
+    expect(toVi('=SUM({"a,b",1})')).toBe('=SUM({"a,b";1})');
   });
   it('CSV dấu phẩy: "1,500" là 1500; xuất số không làm tròn, dấu chấm', () => {
     const wb = Workbook.create();

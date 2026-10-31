@@ -24,6 +24,7 @@ type Drag =
 // phông ô và phông tiêu đề lấy từ CSS (--font-cell: Aptos Narrow/Calibri; --font-ui: Segoe UI)
 let FONT = "'Aptos Narrow', Calibri, 'Segoe UI', sans-serif";
 let UIFONT = "'Segoe UI', system-ui, sans-serif";
+const OUT = 14; // ô vuông dải đại cương (px ở 100%)
 const HDR_H = 20;
 /** cỡ chữ pt → px (96 dpi) như Excel: 11 pt = 14,67 px */
 export const ptPx = (fs?: number) => ((fs ?? 11) * 4) / 3;
@@ -59,6 +60,10 @@ export class Grid {
   private longPress = 0;
   onSelect: (s: Selection) => void = () => {};
   onContext: (x: number, y: number, zone: 'cell' | 'row' | 'col') => void = () => {};
+  /** chuột đang rê trên ô (r, c); -1 khi rời khỏi vùng ô — dùng hiện ghi chú */
+  onHover: (r: number, c: number) => void = () => {};
+  /** khung ô trên trang (tọa độ màn hình) */
+  cellPageRect(r: number, c: number) { const b = this.scroller.getBoundingClientRect(), a = this.cellRectM(r, c); return { left: b.left + a.x, top: b.top + a.y, width: a.w, height: a.h, right: b.left + a.x + a.w, bottom: b.top + a.y + a.h }; }
   onDraw: () => void = () => {};
   edit!: EditHost;
 
@@ -82,6 +87,7 @@ export class Grid {
     this.scroller.addEventListener('scroll', () => { this.growIfNeeded(); this.invalidate(); });
     this.scroller.addEventListener('pointerdown', (e) => this.onDown(e));
     this.scroller.addEventListener('pointermove', (e) => this.onMove(e));
+    this.scroller.addEventListener('pointerleave', () => this.onHover(-1, -1));
     this.scroller.addEventListener('pointerup', (e) => this.onUp(e));
     this.scroller.addEventListener('pointercancel', () => this.cancelDrag());
     this.scroller.addEventListener('dblclick', (e) => this.onDbl(e));
@@ -121,18 +127,26 @@ export class Grid {
   showFormulas = false;
   /** Dạng xem: Thường / Xem trước Ngắt Trang */
   view: 'normal' | 'break' = 'normal';
+  /** Ctrl+8: hiện/ẩn ký hiệu đại cương (nhóm hàng/cột) */
+  showOutline = true;
+  /** bề rộng dải đại cương bên trái số hàng / chiều cao dải trên tên cột */
+  get outW() { const m = this.showOutline && this.headings ? this.wb.outlineMax(this.sheet, 'r') : 0; return m ? Math.round((m + 1) * OUT * this.zoom) + 2 : 0; }
+  get outH() { const m = this.showOutline && this.headings ? this.wb.outlineMax(this.sheet, 'c') : 0; return m ? Math.round((m + 1) * OUT * this.zoom) + 2 : 0; }
   get hdrW() {
     if (!this.headings) return 0;
     if (this.frame) return this.frame.hw;
-    const k = this.scroller.scrollTop + '|' + this.zoom + '|' + this.sheet + '|' + this.height;
+    const ow = this.outW;
+    const k = this.scroller.scrollTop + '|' + this.zoom + '|' + this.sheet + '|' + this.height + '|' + ow;
     if (this.hdrCache.key === k) return this.hdrCache.w;
     const z = this.zoom;
     const lastRow = this.m.rowH.indexAt((this.scroller.scrollTop + this.height) / z + this.m.rowH.offset(this.fz.rows));
     const digits = String(Math.max(lastRow + 1, 100)).length;
-    this.hdrCache = { key: k, w: Math.round((10 + digits * 7) * z) };
+    this.hdrCache = { key: k, w: ow + Math.round((10 + digits * 7) * z) };
     return this.hdrCache.w;
   }
-  get hdrH() { return this.headings ? Math.round(HDR_H * this.zoom) : 0; }
+  get hdrH() { return this.headings ? this.outH + Math.round(HDR_H * this.zoom) : 0; }
+  /** bấm nút đại cương: kind 'r'|'c' là nút +/− tại hàng/cột tổng `at` cấp L; 'lr'|'lc' là nút cấp */
+  onOutline: (kind: 'r' | 'c' | 'lr' | 'lc', L: number, at: number) => void = () => {};
   colX(c: number) { return this.m.colW.offset(c) * this.zoom; }
   rowY(r: number) { return this.m.rowH.offset(r) * this.zoom; }
   colWpx(c: number) { return this.m.colW.get(c) * this.zoom; }
@@ -209,7 +223,7 @@ export class Grid {
     this.updateExtent();
     this.invalidate();
   }
-  setSheet(id: number) {
+  setSheet(id: number) { this.arrows = [];
     this.sheet = id;
     this.extR = 200; this.extC = 40;
     this.scroller.scrollTo(0, 0);
@@ -380,9 +394,11 @@ export class Grid {
       if (!rows.length || !cols.length || w <= 0 || h <= 0) continue;
       ctx.save(); ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
       this.drawCells(rows, cols, x + w);
+      this.drawNoteMarks(rows, cols);
       if (this.view === 'break') this.drawBreaks(rows, cols);
       this.region = { rows, cols };
       this.drawSelection();
+      this.drawArrows();
       ctx.restore();
     }
     this.drawHeaders(rowsF.concat(rowsS), colsF.concat(colsS));
@@ -443,6 +459,7 @@ export class Grid {
     let d = this.wb.display(this.sheet, r, c);
     if (this.showFormulas) { const t = this.wb.rawText(this.sheet, r, c); if (t.startsWith('=')) d = { ...d, text: t, align: 'l', value: t }; }
     const cf = this.wb.cfStyle(this.sheet, r, c);
+    if (this.wb.tables(this.sheet).length) d = { ...d, style: this.wb.viewStyle(this.sheet, r, c) };
     const st = cf.fg || cf.bg || cf.b || cf.i ? { ...d.style, ...(cf.fg ? { fg: cf.fg } : {}), ...(cf.bg ? { bg: cf.bg } : {}), ...(cf.b ? { b: true } : {}), ...(cf.i ? { i: true } : {}) } : d.style;
     return { d, st, bar: cf.bar };
   }
@@ -491,13 +508,14 @@ export class Grid {
     const effs = new Map<number, ReturnType<Grid['eff']>>();
     const E = (r: number, c: number) => { const k = r * MAX_COLS + c; let e = effs.get(k); if (!e) { e = this.eff(r, c); effs.set(k, e); } return e; };
     const lastR = Math.min(rows[rows.length - 1] ?? 0, used.rows - 1);
+    const tbl = wb.tables(s).length > 0;
     for (const r of rows) {
       const h = this.rowHpx(r);
       if (h <= 0) continue;
       const y = this.sy(r);
       for (const c of cols) {
         if (merges.length && wb.mergeAt(s, r, c)) continue;
-        const st = wb.style(s, r, c);
+        const st = tbl ? wb.viewStyle(s, r, c) : wb.style(s, r, c);
         const cfOn = wb.meta(s).cf.length > 0 && r <= lastR;
         const e = cfOn ? E(r, c) : null;
         const bg = e ? e.st.bg : st.bg;
@@ -516,7 +534,7 @@ export class Grid {
       const h = this.rowHpx(r);
       if (h <= 0) continue;
       for (const c of cols) {
-        const bd = wb.style(s, r, c).bd;
+        const bd = (tbl ? wb.viewStyle(s, r, c) : wb.style(s, r, c)).bd;
         if (!bd) continue;
         const x = this.sx(c), y = this.sy(r), w = this.colWpx(c);
         const m = merges.length ? wb.mergeAt(s, r, c) : null;
@@ -592,7 +610,8 @@ export class Grid {
   dvBtn() {
     const { ar, ac } = this.sel;
     const d = this.wb.dvAt(this.sheet, ar, ac);
-    if (!d || d.type !== 'list') return null;
+    const t = this.wb.tables(this.sheet).length ? this.wb.tableAt(this.sheet, ar, ac) : undefined;
+    if ((!d || d.type !== 'list') && !(t && t.totals && ar === t.r2)) return null;
     const a = this.cellRectM(ar, ac);
     const sz = Math.max(18 * this.zoom, Math.min(a.h, 24 * this.zoom));
     return { x: a.x + a.w + 1, y: a.y + a.h - sz, w: sz, h: sz };
@@ -766,9 +785,66 @@ export class Grid {
     ctx.restore();
   }
 
+  /** tam giác đỏ (ghi chú) / tím (chú thích) ở góc trên phải ô như Excel */
+  private drawNoteMarks(rows: number[], cols: number[]) {
+    const list = this.wb.noteCells(this.sheet);
+    if (!list.length) return;
+    const rs = new Set(rows), cs = new Set(cols), ctx = this.ctx, z = this.zoom;
+    for (const p of list) {
+      if (!rs.has(p.r) || !cs.has(p.c)) continue;
+      const m = this.wb.mergeAt(this.sheet, p.r, p.c);
+      const a = m ? this.cellRectM(m.r1, m.c1) : { x: this.sx(p.c), y: this.sy(p.r), w: this.colWpx(p.c), h: this.rowHpx(p.r) };
+      if (a.w <= 0 || a.h <= 0) continue;
+      const st = this.wb.style(this.sheet, p.r, p.c), sz = Math.max(5, 6 * z);
+      ctx.fillStyle = st.cm ? (st.cmDone ? '#9e9e9e' : '#7b3fbf') : '#d13438';
+      ctx.beginPath(); ctx.moveTo(a.x + a.w - 1 - sz, a.y + 1); ctx.lineTo(a.x + a.w - 1, a.y + 1); ctx.lineTo(a.x + a.w - 1, a.y + 1 + sz); ctx.closePath(); ctx.fill();
+    }
+  }
+  /** mũi tên Kiểm nghiệm Công thức: từ vùng tiền lệ tới ô phụ thuộc (xanh), trỏ ra sheet khác (nét đứt + biểu tượng) */
+  arrows: { from: Range; to: { r: number; c: number }; ext?: 'from' | 'to' }[] = [];
+  private drawArrows() {
+    if (!this.arrows.length) return;
+    const ctx = this.ctx, z = this.zoom, col = '#2E75B6';
+    const ctr = (r: number, c: number) => ({ x: this.sx(c) + this.colWpx(c) / 2, y: this.sy(r) + this.rowHpx(r) / 2 });
+    ctx.save();
+    ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = Math.max(1, 1.2 * z);
+    for (const a of this.arrows) {
+      const t = ctr(a.to.r, a.to.c);
+      let f = ctr(a.from.r1, a.from.c1);
+      if (a.ext === 'from') f = { x: t.x - 60 * z, y: t.y - 40 * z };
+      if (a.from.r2 > a.from.r1 || a.from.c2 > a.from.c1) {
+        const x1 = this.sx(a.from.c1), y1 = this.sy(a.from.r1), x2 = this.sx(a.from.c2) + this.colWpx(a.from.c2), y2 = this.sy(a.from.r2) + this.rowHpx(a.from.r2);
+        ctx.strokeRect(Math.round(x1) + 0.5, Math.round(y1) + 0.5, Math.round(x2 - x1) - 1, Math.round(y2 - y1) - 1);
+      }
+      let tx = t.x, ty = t.y;
+      if (a.ext === 'to') { tx = f.x + 60 * z; ty = f.y - 40 * z; }
+      ctx.setLineDash(a.ext ? [4 * z, 3 * z] : []);
+      ctx.beginPath(); ctx.moveTo(f.x, f.y); ctx.lineTo(tx, ty); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.beginPath(); ctx.arc(f.x, f.y, 2.6 * z, 0, Math.PI * 2); ctx.fill();
+      const ang = Math.atan2(ty - f.y, tx - f.x), L = 8 * z;
+      ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(tx - L * Math.cos(ang - 0.4), ty - L * Math.sin(ang - 0.4)); ctx.lineTo(tx - L * Math.cos(ang + 0.4), ty - L * Math.sin(ang + 0.4)); ctx.closePath(); ctx.fill();
+      if (a.ext) {
+        // biểu tượng trang tính ở đầu mũi tên trỏ sang sheet khác
+        const ix = a.ext === 'from' ? f.x - 8 * z : tx, iy = a.ext === 'from' ? f.y - 6 * z : ty - 6 * z;
+        ctx.fillStyle = '#fff'; ctx.fillRect(ix, iy, 12 * z, 10 * z); ctx.strokeRect(ix + 0.5, iy + 0.5, 12 * z, 10 * z);
+        ctx.beginPath(); ctx.moveTo(ix, iy + 4 * z); ctx.lineTo(ix + 12 * z, iy + 4 * z); ctx.moveTo(ix + 5 * z, iy); ctx.lineTo(ix + 5 * z, iy + 10 * z); ctx.stroke();
+        ctx.fillStyle = col;
+      }
+    }
+    ctx.restore();
+  }
   private drawSelection() {
     const ctx = this.ctx, C = this.colors, z = this.zoom;
     const g = this.range;
+    // vùng tràn của mảng động chứa ô hiện hành: viền xanh mảnh như Excel
+    const sp = this.wb.spillRange(this.sheet, this.sel.ar, this.sel.ac);
+    if (sp) {
+      const q = sp.range, px1 = this.sx(q.c1), py1 = this.sy(q.r1), px2 = this.sx(q.c2) + this.colWpx(q.c2), py2 = this.sy(q.r2) + this.rowHpx(q.r2);
+      ctx.save(); ctx.strokeStyle = '#4F81BD'; ctx.lineWidth = 1; ctx.setLineDash([]);
+      ctx.strokeRect(Math.round(px1) + 0.5, Math.round(py1) + 0.5, Math.round(px2 - px1) - 1, Math.round(py2 - py1) - 1);
+      ctx.restore();
+    }
     const x1 = this.sx(g.c1), y1 = this.sy(g.r1);
     const x2 = this.sx(g.c2) + this.colWpx(g.c2), y2 = this.sy(g.r2) + this.rowHpx(g.r2);
     if (this.focusCell) {
@@ -849,7 +925,7 @@ export class Grid {
 
   private drawHeaders(rows: number[], cols: number[]) {
     const ctx = this.ctx, C = this.colors, z = this.zoom, W = this.width, H = this.height;
-    const hw = this.hdrW, hh = this.hdrH, g = this.range;
+    const hw = this.hdrW, hh = this.hdrH, g = this.range, ow = this.outW, oh = this.outH;
     const full = { cols: g.r1 === 0 && g.r2 === MAX_ROWS - 1, rows: g.c1 === 0 && g.c2 === MAX_COLS - 1 };
     ctx.fillStyle = C.hdr;
     ctx.fillRect(0, 0, W, hh);
@@ -865,11 +941,11 @@ export class Grid {
       const x = this.sx(c), w = this.colWpx(c);
       if (w <= 0) continue;
       const on = c >= g.c1 && c <= g.c2;
-      if (on) { ctx.fillStyle = full.cols ? C.accent : C['hdr-on']; ctx.fillRect(x, 0, w, hh); }
+      if (on) { ctx.fillStyle = full.cols ? C.accent : C['hdr-on']; ctx.fillRect(x, oh, w, hh - oh); }
       ctx.fillStyle = on ? (full.cols ? C.cell : C['hdr-on-fg']) : C['hdr-fg'];
-      ctx.fillText(colName(c), x + w / 2, hh / 2 + 0.5);
+      ctx.fillText(colName(c), x + w / 2, oh + (hh - oh) / 2 + 0.5);
       ctx.strokeStyle = C['hdr-line'];
-      ctx.beginPath(); ctx.moveTo(Math.round(x + w) - 0.5, 0); ctx.lineTo(Math.round(x + w) - 0.5, hh); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(Math.round(x + w) - 0.5, oh); ctx.lineTo(Math.round(x + w) - 0.5, hh); ctx.stroke();
       if (on) { ctx.fillStyle = C.accent; ctx.fillRect(x, hh - 2, w, 2); }
     }
     ctx.restore();
@@ -879,11 +955,11 @@ export class Grid {
       const y = this.sy(r), h = this.rowHpx(r);
       if (h <= 0) continue;
       const on = r >= g.r1 && r <= g.r2;
-      if (on) { ctx.fillStyle = full.rows ? C.accent : C['hdr-on']; ctx.fillRect(0, y, hw, h); }
+      if (on) { ctx.fillStyle = full.rows ? C.accent : C['hdr-on']; ctx.fillRect(ow, y, hw - ow, h); }
       ctx.fillStyle = on ? (full.rows ? C.cell : C['hdr-on-fg']) : C['hdr-fg'];
-      ctx.fillText(String(r + 1), hw / 2, y + h / 2 + 0.5);
+      ctx.fillText(String(r + 1), ow + (hw - ow) / 2, y + h / 2 + 0.5);
       ctx.strokeStyle = C['hdr-line'];
-      ctx.beginPath(); ctx.moveTo(0, Math.round(y + h) - 0.5); ctx.lineTo(hw, Math.round(y + h) - 0.5); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(ow, Math.round(y + h) - 0.5); ctx.lineTo(hw, Math.round(y + h) - 0.5); ctx.stroke();
       if (on) { ctx.fillStyle = C.accent; ctx.fillRect(hw - 2, y, 2, h); }
     }
     ctx.restore();
@@ -897,6 +973,57 @@ export class Grid {
     ctx.moveTo(0, hh - 0.5); ctx.lineTo(W, hh - 0.5);
     ctx.moveTo(hw - 0.5, 0); ctx.lineTo(hw - 0.5, H);
     ctx.stroke();
+    if (ow || oh) this.drawOutline(rows, cols);
+  }
+  /** dải đại cương: ngoặc nhóm, nút +/−, nút cấp 1 2 3… như Excel */
+  private drawOutline(rows: number[], cols: number[]) {
+    const ctx = this.ctx, C = this.colors, z = this.zoom, W = this.width, H = this.height;
+    const hw = this.hdrW, hh = this.hdrH, ow = this.outW, oh = this.outH, u = OUT * z, s = this.sheet, wb = this.wb;
+    const btn = (x: number, y: number, t: string) => {
+      const b = Math.round(u - 4);
+      ctx.fillStyle = C.cell; ctx.fillRect(Math.round(x - b / 2) + 0.5, Math.round(y - b / 2) + 0.5, b, b);
+      ctx.strokeStyle = C['hdr-fg']; ctx.lineWidth = 1; ctx.strokeRect(Math.round(x - b / 2) + 0.5, Math.round(y - b / 2) + 0.5, b, b);
+      ctx.fillStyle = C['hdr-fg']; ctx.font = `600 ${Math.max(8, 10 * z)}px ${UIFONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(t, x + 0.5, y + 1);
+    };
+    ctx.save();
+    ctx.lineWidth = 1;
+    if (ow) {
+      const max = wb.outlineMax(s, 'r');
+      for (let L = 1; L <= max + 1; L++) btn((L - 1) * u + u / 2 + 1, this.outH + (hh - this.outH) / 2, String(L));
+      ctx.beginPath(); ctx.rect(0, hh, ow, H - hh); ctx.clip();
+      const vis = new Set(rows);
+      for (let L = 1; L <= max; L++) {
+        const x = (L - 1) * u + u / 2 + 1;
+        for (const g of wb.outlineRuns(s, 'r', L)) {
+          const sumR = g.b + 1, coll = wb.isCollapsed(s, 'r', L, g.b);
+          const y1 = this.sy(g.a), y2 = this.sy(g.b) + this.rowHpx(g.b);
+          if (y2 < hh || y1 > H) { if (!vis.has(sumR)) continue; }
+          ctx.strokeStyle = C['hdr-fg'];
+          if (y2 - y1 > 2 && !coll) { ctx.beginPath(); ctx.moveTo(x + 0.5, y1 + 2); ctx.lineTo(x + 0.5, y2 - 1); ctx.lineTo(x + u / 2, y2 - 1); ctx.stroke(); }
+          const ys = this.sy(sumR) + this.rowHpx(sumR) / 2;
+          if (this.rowHpx(sumR) > 0 || coll) btn(x, coll ? Math.max(ys, y2 + this.rowHpx(sumR) / 2) : ys, coll ? '+' : '−');
+        }
+      }
+      ctx.restore(); ctx.save();
+    }
+    if (oh) {
+      const max = wb.outlineMax(s, 'c');
+      for (let L = 1; L <= max + 1; L++) btn(this.outW + (hw - this.outW) / 2, (L - 1) * u + u / 2 + 1, String(L));
+      ctx.beginPath(); ctx.rect(hw, 0, W - hw, oh); ctx.clip();
+      for (let L = 1; L <= max; L++) {
+        const y = (L - 1) * u + u / 2 + 1;
+        for (const g of wb.outlineRuns(s, 'c', L)) {
+          const sumC = g.b + 1, coll = wb.isCollapsed(s, 'c', L, g.b);
+          const x1 = this.sx(g.a), x2 = this.sx(g.b) + this.colWpx(g.b);
+          ctx.strokeStyle = C['hdr-fg'];
+          if (x2 - x1 > 2 && !coll) { ctx.beginPath(); ctx.moveTo(x1 + 2, y + 0.5); ctx.lineTo(x2 - 1, y + 0.5); ctx.lineTo(x2 - 1, y + u / 2); ctx.stroke(); }
+          btn(this.sx(sumC) + this.colWpx(sumC) / 2, y, coll ? '+' : '−');
+        }
+      }
+    }
+    ctx.restore();
+    void cols;
   }
 
   // ---------- chuột / cảm ứng ----------
@@ -905,7 +1032,10 @@ export class Grid {
     return { x: e.clientX - b.left, y: e.clientY - b.top };
   }
   hit(x: number, y: number) {
-    const hw = this.hdrW, hh = this.hdrH;
+    const hw = this.hdrW, hh = this.hdrH, ow = this.outW, oh = this.outH;
+    // dải đại cương
+    if (ow && x < ow) return y >= hh ? { zone: 'olr' as const, r: this.rowAt(y), c: Math.floor(x / (OUT * this.zoom)) + 1 } : { zone: 'ollr' as const, r: 0, c: Math.floor(x / (OUT * this.zoom)) + 1 };
+    if (oh && y < oh) return x >= hw ? { zone: 'olc' as const, r: Math.floor(y / (OUT * this.zoom)) + 1, c: this.colAt(x) } : { zone: 'ollc' as const, r: Math.floor(y / (OUT * this.zoom)) + 1, c: 0 };
     if (x < hw && y < hh) return { zone: 'corner' as const, r: 0, c: 0 };
     if (y < hh) {
       const c = this.colAt(x);
@@ -954,6 +1084,10 @@ export class Grid {
       if (!this.edit.commit(0, 0)) return;
     }
     e.preventDefault();
+    if (h.zone === 'olr') { this.onOutline('r', h.c, h.r); return; }
+    if (h.zone === 'olc') { this.onOutline('c', h.r, h.c); return; }
+    if (h.zone === 'ollr') { this.onOutline('lr', h.c, 0); return; }
+    if (h.zone === 'ollc') { this.onOutline('lc', h.r, 0); return; }
     if (this.buttonAt(x, y, e.clientX, e.clientY)) return;
     this.scroller.setPointerCapture(e.pointerId);
     switch (h.zone) {
@@ -1021,7 +1155,8 @@ export class Grid {
     if (this.longPress && (Math.abs(x - this.pointer.x) > 8 || Math.abs(y - this.pointer.y) > 8)) { clearTimeout(this.longPress); this.longPress = 0; }
     if (!this.drag) {
       if (e.pointerType === 'mouse') {
-        const z = this.hit(x, y).zone;
+        const hh = this.hit(x, y), z = hh.zone;
+        if (z === 'cell') this.onHover(hh.r, hh.c); else this.onHover(-1, -1);
         this.scroller.style.cursor = z === 'resizeC' ? 'col-resize' : z === 'resizeR' ? 'row-resize' : z === 'fill' ? 'crosshair' : z === 'colh' ? 's-resize' : z === 'rowh' ? 'e-resize' : 'cell';
       }
       return;

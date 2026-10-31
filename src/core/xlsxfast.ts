@@ -138,7 +138,7 @@ export function parseStyles(xml: string): XfModel[] {
 
 // ---------- dữ liệu ô ----------
 export interface FastCell { r: number; c: number; s: number; t: string; v: string | null; f: { text: string | null; t?: string; si?: string; ref?: string } | null; inline: string | null }
-export interface FastRow { r: number; ht?: number; hidden?: boolean }
+export interface FastRow { r: number; ht?: number; hidden?: boolean; lv?: number; collapsed?: boolean }
 const A1 = /^([A-Z]+)(\d+)$/;
 function a1(ref: string): { r: number; c: number } | null {
   const m = A1.exec(ref);
@@ -170,8 +170,9 @@ export function takeSheetData(xml: string): { xml: string; cells: FastCell[]; ro
     const rAttr = attr1(ra, 'r');
     const r = rAttr ? +rAttr - 1 : lastR + 1;
     lastR = r;
-    const ht = attr1(ra, 'ht'), hid = attr1(ra, 'hidden');
-    if (ht !== undefined || hid === '1' || hid === 'true') rows.push({ r, ht: ht !== undefined ? +ht : undefined, hidden: hid === '1' || hid === 'true' });
+    const ht = attr1(ra, 'ht'), hid = attr1(ra, 'hidden'), lv = attr1(ra, 'outlineLevel'), col = attr1(ra, 'collapsed');
+    const isHid = hid === '1' || hid === 'true', isCol = col === '1' || col === 'true';
+    if (ht !== undefined || isHid || (lv && +lv > 0) || isCol) rows.push({ r, ht: ht !== undefined ? +ht : undefined, hidden: isHid, lv: lv ? +lv : undefined, collapsed: isCol || undefined });
     const inner = rm[2];
     if (!inner) continue;
     cellRe.lastIndex = 0;

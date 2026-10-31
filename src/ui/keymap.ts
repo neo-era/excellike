@@ -102,8 +102,8 @@ export const KEYMAP: KeyDef[] = [
   k('fmtCells', 'Ctrl+1', ['Ctrl+1'], 'nav', 'Hộp thoại Định dạng Ô', G.fmt),
   k('fmtFont', 'Ctrl+Shift+F', ['Ctrl+Shift+F', 'Ctrl+Shift+P'], 'nav', 'Định dạng Ô ▸ thẻ Phông', G.fmt),
   k('edit', 'F2', ['F2'], 'nav', 'Sửa ô hiện hành', G.fmt),
-  k('note', 'Shift+F2', ['Shift+F2'], 'nav', 'Chèn/sửa ghi chú ô', G.fmt, 'later', '0.7 (Ghi chú ô: đọc/ghi .xlsx)'),
-  k('comment', 'Ctrl+Shift+F2', ['Ctrl+Shift+F2'], 'nav', 'Chèn/trả lời chú thích dạng chuỗi', G.fmt, 'later', '0.7 (Chú thích)'),
+  k('note', 'Shift+F2', ['Shift+F2'], 'nav', 'Chèn/sửa ghi chú ô', G.fmt),
+  k('comment', 'Ctrl+Shift+F2', ['Ctrl+Shift+F2'], 'nav', 'Chèn/trả lời chú thích dạng chuỗi', G.fmt),
   k('insertDlg', 'Ctrl+Shift++', ['Ctrl+Shift+=', 'Ctrl+NumpadAdd'], 'nav', 'Hộp thoại Chèn ô (chọn cả hàng/cột thì chèn luôn)', G.fmt),
   k('deleteDlg', 'Ctrl+−', ['Ctrl+-', 'Ctrl+NumpadSubtract'], 'nav', 'Hộp thoại Xóa ô (chọn cả hàng/cột thì xóa luôn)', G.fmt),
   k('nowTime', 'Ctrl+Shift+:', ['Ctrl+Shift+;'], 'any', 'Nhập giờ hiện tại', G.fmt),
@@ -118,7 +118,9 @@ export const KEYMAP: KeyDef[] = [
   k('objects', 'Ctrl+6', ['Ctrl+6'], 'nav', 'Hiện / ẩn / hiện chỗ giữ cho đối tượng (biểu đồ)', G.fmt),
   k('outlineBd', 'Ctrl+Shift+&', ['Ctrl+Shift+7'], 'nav', 'Kẻ viền ngoài', G.fmt),
   k('noBd', 'Ctrl+Shift+_', ['Ctrl+Shift+-'], 'nav', 'Bỏ viền ngoài', G.fmt),
-  k('outline', 'Ctrl+8', ['Ctrl+8'], 'nav', 'Hiện/ẩn ký hiệu dàn bài (nhóm hàng/cột)', G.fmt, 'later', '0.7 (Nhóm hàng/cột)'),
+  k('outline', 'Ctrl+8', ['Ctrl+8'], 'nav', 'Hiện/ẩn ký hiệu dàn bài (nhóm hàng/cột)', G.fmt),
+  k('groupSel', 'Alt+Shift+→', ['Alt+Shift+ArrowRight'], 'nav', 'Nhóm hàng/cột đang chọn', G.data),
+  k('ungroupSel', 'Alt+Shift+←', ['Alt+Shift+ArrowLeft'], 'nav', 'Bỏ nhóm hàng/cột đang chọn', G.data),
   k('fillDown', 'Ctrl+D', ['Ctrl+D'], 'nav', 'Điền xuống', G.fmt),
   k('fillRight', 'Ctrl+R', ['Ctrl+R'], 'nav', 'Điền sang phải', G.fmt),
   k('nfGeneral', 'Ctrl+Shift+~', ['Ctrl+Shift+`'], 'nav', 'Định dạng Chung', G.fmt),
@@ -131,7 +133,7 @@ export const KEYMAP: KeyDef[] = [
   k('link', 'Ctrl+K', ['Ctrl+K'], 'nav', 'Chèn / sửa liên kết', G.fmt),
   k('spell', 'F7', ['F7'], 'nav', 'Kiểm tra chính tả', G.fmt, 'later', '0.9 (cần từ điển tiếng Việt)'),
   k('quick', 'Ctrl+Q', ['Ctrl+Q'], 'nav', 'Phân tích Nhanh cho vùng chọn', G.fmt),
-  k('table', 'Ctrl+L hoặc Ctrl+T', ['Ctrl+L', 'Ctrl+T'], 'nav', 'Tạo Bảng', G.fmt, 'later', '0.7 (Bảng + tham chiếu có cấu trúc)'),
+  k('table', 'Ctrl+L hoặc Ctrl+T', ['Ctrl+L', 'Ctrl+T'], 'nav', 'Tạo Bảng', G.fmt),
   k('stats', 'Ctrl+Shift+G', ['Ctrl+Shift+G'], 'nav', 'Thống kê Sổ làm việc', G.fmt),
 
   // ---------- Dán đặc biệt (trong hộp thoại) ----------
@@ -197,8 +199,10 @@ export const KEYMAP: KeyDef[] = [
   k('vAbove', 'Ctrl+Shift+"', ["Ctrl+Shift+'"], 'any', 'Chép giá trị ô phía trên vào ô hiện hành', G.data),
   k('chartHere', 'Alt+F1', ['Alt+F1'], 'nav', 'Tạo biểu đồ nhúng từ vùng hiện tại', G.data),
   k('chartSheet', 'F11', ['F11'], 'nav', 'Tạo biểu đồ trên trang tính riêng', G.data),
-  k('defName', 'Alt+M, M, D', [], 'nav', 'Xác định tên', G.data, 'later', '0.7 (Tên vùng)'),
-  k('pasteName', 'F3', ['F3'], 'any', 'Dán tên đã xác định', G.data, 'later', '0.7 (Tên vùng)'),
+  k('defName', 'Alt+M, M, D', [], 'nav', 'Xác định tên', G.data),
+  k('pasteName', 'F3', ['F3'], 'any', 'Dán tên đã xác định', G.data),
+  k('nameMgr', 'Ctrl+F3', ['Ctrl+F3'], 'nav', 'Trình Quản lý Tên', G.data),
+  k('createNames', 'Ctrl+Shift+F3', ['Ctrl+Shift+F3'], 'nav', 'Tạo tên từ vùng chọn', G.data),
   k('macros', 'Alt+F8 / Alt+F11 / Alt+F12', [], 'any', 'Macro, VBA, Power Query', G.data, 'no', 'Không chạy macro/VBA/Power Query'),
   k('filter', 'Ctrl+Shift+L', ['Ctrl+Shift+L'], 'nav', 'Bật/tắt Lọc', G.data),
   k('refresh', 'Ctrl+F5', ['Ctrl+F5'], 'nav', 'Làm mới dữ liệu trang tính (PivotTable trên trang)', G.data),
@@ -267,7 +271,7 @@ export function lookup(combo: string, ctx: 'nav' | 'edit'): KeyDef | undefined {
 }
 
 /** Phím 'any' do ô đang sửa xử lý (cần biết con trỏ chữ) */
-export const EDITOR_ANY = new Set(['today', 'nowTime', 'fAbove', 'vAbove', 'insFn', 'calcAll', 'editBar', 'enterUp', 'enter', 'cancel']);
+export const EDITOR_ANY = new Set(['pasteName', 'today', 'nowTime', 'fAbove', 'vAbove', 'insFn', 'calcAll', 'editBar', 'enterUp', 'enter', 'cancel']);
 /** Phím 'any' không xử lý chung khi đang gõ trong ô nhập (để ô nhập tự hoàn tác) */
 export const FIELD_KEYS = new Set(['undo', 'redo', 'zoomIn', 'zoomOut', 'nextSheet', 'prevSheet']);
 /** Định nghĩa phím cho một pha xử lý */

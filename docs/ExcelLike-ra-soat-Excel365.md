@@ -63,14 +63,14 @@ Ngày tra: 28/10/2026 (cập nhật 29/10/2026 cho bản 0.6). Đối chiếu **
 | Hộp thoại Định dạng ô (Ctrl+1): Số (Tùy chỉnh), Căn chỉnh, Phông, Viền, Tô, Bảo vệ | ✅ 0.6 (Tô: màu nền; mẫu/chuyển màu ✗) | P1 |
 | Định dạng có điều kiện: tô ô theo quy tắc, trùng lặp, Top/Bottom, trên/dưới TB, thanh dữ liệu, thang màu, quản lý | ✅ | – |
 | … Bộ biểu tượng, “Ngày xảy ra”, Quy tắc mới bằng công thức | ✗ | P2 |
-| Định dạng như Bảng (Table: tên bảng, hàng tổng, dải màu, tham chiếu có cấu trúc `Bảng1[Cột]`) | ✗ | P1 |
+| Định dạng như Bảng (Table: tên bảng, hàng tổng, dải màu, tham chiếu có cấu trúc `Bảng1[Cột]`) | ✅ 0.7 (21 kiểu) | P1 |
 | Kiểu ô (Cell Styles) | ✗ | P2 |
 | Chèn/Xóa hàng, cột | ✅ | – |
 | Chèn/Xóa ô (dồn xuống/phải, lên/trái) | ✅ 0.5 | P1 |
 | Định dạng: chiều cao hàng/độ rộng cột theo số, Tự khớp, Ẩn/Hiện hàng-cột-sheet, Di chuyển/Sao chép sheet, Màu thẻ, Bảo vệ sheet, Khóa ô | ✅ 0.5 (trừ Bảo vệ sheet, Khóa ô → 0.9) | P1 |
 | Tổng tự động ▸ Tổng/Trung bình/Đếm/Max/Min | ✅ 0.5 | P1 |
 | Điền ▸ Xuống/Phải/Lên/Trái/Chuỗi…/Flash Fill | ✅ 0.6 (Chuỗi: tuyến tính, tăng trưởng, ngày/ngày làm việc/tháng/năm, bước, giá trị dừng; Điền Nhanh Ctrl+E) | P2 |
-| Xóa ▸ Tất cả/Định dạng/Nội dung/Ghi chú/Liên kết | ◐ 0.6 (Tất cả, Định dạng, Nội dung, Siêu kết nối; Ghi chú → 0.7) | P1 |
+| Xóa ▸ Tất cả/Định dạng/Nội dung/Ghi chú/Liên kết | ✅ 0.7 (Tất cả, Định dạng, Nội dung, Ghi chú và Chú thích, Siêu kết nối) | P1 |
 | Sắp xếp & Lọc | ✅ | – |
 | Lọc nâng cao: theo màu, theo số (lớn hơn, top 10), theo ngày (tháng này, quý…) | ◐ (giá trị, chữ chứa) | P2 |
 | Tìm & Chọn: Tìm (Ctrl+F), Thay thế (Ctrl+H), Đi tới (F5/Ctrl+G), Đi tới Đặc biệt (ô trống, công thức, hằng số…) | ✅ 0.6 (hộp Tìm/Thay không chặn trang tính: ký tự đại diện * ? ~, khớp hoa/thường, toàn ô, trong trang/sổ, theo hàng/cột, công thức/giá trị, Tìm Tất cả có danh sách; Đi tới Đặc biệt 14 loại; Tìm theo Định dạng ✗) | **P1** |
@@ -79,7 +79,7 @@ Ngày tra: 28/10/2026 (cập nhật 29/10/2026 cho bản 0.6). Đối chiếu **
 ### Chèn (Insert)
 | Tính năng | ExcelLike | Ưu tiên |
 |---|---|---|
-| PivotTable, Bảng (Table) | ◐ (PivotTable ✅, Bảng ✗) | P1 |
+| PivotTable, Bảng (Table) | ✅ 0.7 | P1 |
 | PivotTable đề xuất, PivotChart | ✗ | P3 |
 | Biểu đồ: Cột/Thanh, Đường/Vùng, Tròn/Vành khuyên | ✅ | – |
 | Biểu đồ: Phân tán (XY), Kết hợp (cột + đường, trục phụ), Thác nước, Radar, Histogram, Pareto, Hộp | ✗ | P2 (XY, Kết hợp), P3 |
@@ -111,10 +111,10 @@ Ngày tra: 28/10/2026 (cập nhật 29/10/2026 cho bản 0.6). Đối chiếu **
 | Chèn hàm, Tổng tự động, thư viện hàm theo nhóm | ◐ (hộp chọn hàm có tìm kiếm; chưa có các nút nhóm Tài chính/Logic/…) | P2 |
 | Gợi ý hàm khi gõ + chú thích tham số | ✅ | – |
 | Hộp thoại Đối số hàm (Ctrl+A sau tên hàm) | ✅ 0.6 (kèm Ctrl+Shift+A chèn tên đối số) | P2 |
-| ~420 hàm Excel; mảng động (FILTER, SORT, UNIQUE, SEQUENCE tràn ô), LET, LAMBDA, XLOOKUP | ◐ (XLOOKUP ✅; mảng động/LET/LAMBDA ✗) | P1 (FILTER, SORT, UNIQUE), P2 |
+| ~420 hàm Excel; mảng động (FILTER, SORT, UNIQUE, SEQUENCE tràn ô), LET, LAMBDA, XLOOKUP | ◐ (XLOOKUP ✅; mảng động FILTER/SORT/SORTBY/UNIQUE/SEQUENCE/TAKE/DROP/CHOOSECOLS/TOCOL ✅ 0.7; LET/LAMBDA ✗) | P1 (FILTER, SORT, UNIQUE), P2 |
 | Hằng mảng nhiều cột `{1,2;3,4}` | ✗ (đang sai khi đọc tệp) | P1 |
-| Tên vùng: Đặt tên, Trình quản lý tên, Tạo từ vùng chọn, Dán tên (F3) | ✗ (tên trong tệp chưa đọc) | **P1** |
-| Truy vết: Ô tiền lệ/phụ thuộc (mũi tên), Hiện công thức (Ctrl+`), Kiểm tra lỗi, Đánh giá công thức, Cửa sổ theo dõi | ✗ | P1 (tiền lệ/phụ thuộc, Ctrl+`), P2 |
+| Tên vùng: Đặt tên, Trình quản lý tên, Tạo từ vùng chọn, Dán tên (F3) | ✅ 0.7 | **P1** |
+| Truy vết: Ô tiền lệ/phụ thuộc (mũi tên), Hiện công thức (Ctrl+`), Kiểm tra lỗi, Đánh giá công thức, Cửa sổ theo dõi | ◐ (tiền lệ/phụ thuộc ✅ 0.7, Ctrl+` ✅; còn lại 0.9) | P1 (tiền lệ/phụ thuộc, Ctrl+`), P2 |
 | Tham chiếu vòng: bật tính lặp | ✅ v0.4.1 | – |
 | Chế độ tính: Tự động / Thủ công (F9, Shift+F9) | ◐ (luôn tự động) | P2 |
 | Liên kết ngoài: giữ giá trị lưu sẵn, Sửa liên kết, cập nhật từ tệp khác | ◐ (giữ giá trị ✅; cập nhật ✗) | P2 |
@@ -126,17 +126,17 @@ Ngày tra: 28/10/2026 (cập nhật 29/10/2026 cho bản 0.6). Đối chiếu **
 | Mở CSV/Text | ✅ | – |
 | Sắp xếp, Lọc, Xóa lọc, Áp dụng lại | ✅ | – |
 | Lọc nâng cao (vùng điều kiện) | ✗ | P3 |
-| Văn bản thành cột, Xóa trùng lặp | ✗ | **P1** |
+| Văn bản thành cột, Xóa trùng lặp | ✅ 0.7 | **P1** |
 | Kiểm tra dữ liệu, khoanh dữ liệu không hợp lệ | ◐ (khoanh ✗) | P2 |
 | Hợp nhất (Consolidate) | ✗ | P3 |
 | What-If: Goal Seek, Scenario, Data Table; Dự báo | ✗ | P2 (Goal Seek), P3 |
-| Nhóm/Bỏ nhóm hàng-cột (dấu +/−), Tổng phụ (Subtotal) | ✗ | **P1** (dự toán nhiều cấp) |
+| Nhóm/Bỏ nhóm hàng-cột (dấu +/−), Tổng phụ (Subtotal) | ✅ 0.7 | **P1** (dự toán nhiều cấp) |
 | Lấy dữ liệu (Power Query), Kết nối, Mô hình dữ liệu, Kiểu dữ liệu Cổ phiếu/Địa lý | — | — |
 
 ### Xem lại (Review) — tab chưa có
 | Tính năng | ExcelLike | Ưu tiên |
 |---|---|---|
-| Ghi chú ô (Shift+F2), tam giác đỏ góc ô, hiện khi rê chuột; đọc/ghi từ .xlsx | ✗ (hiện mất khi lưu đè) | **P1** |
+| Ghi chú ô (Shift+F2), tam giác đỏ góc ô, hiện khi rê chuột; đọc/ghi từ .xlsx | ✅ 0.7 (+ chú thích dạng chuỗi) | **P1** |
 | Bình luận dạng chuỗi (Ctrl+Shift+F2), trả lời, đánh dấu xong | ✗ | P2 |
 | Kiểm tra chính tả (F7), Từ đồng nghĩa, Thống kê sổ (Ctrl+Shift+G) | ✗ | P3 (F7), P2 (Thống kê) |
 | Bảo vệ sheet / sổ (khóa ô, ẩn công thức, mật khẩu), Cho phép sửa vùng | ✗ | P2 |
@@ -156,7 +156,7 @@ Ngày tra: 28/10/2026 (cập nhật 29/10/2026 cho bản 0.6). Đối chiếu **
 ### Tab ngữ cảnh
 | Tab | ExcelLike | Ưu tiên |
 |---|---|---|
-| Thiết kế Bảng (Table Design) | ✗ | P1 (cùng tính năng Bảng) |
+| Thiết kế Bảng (Table Design) | ✅ 0.7 | P1 (cùng tính năng Bảng) |
 | PivotTable: Phân tích / Thiết kế (bố cục Gọn/Dàn ý/Bảng, tổng phụ, tổng cộng, kiểu, nhóm theo ngày, trường tính toán, % của tổng) | ◐ (ngăn trường riêng; bố cục Bảng) | P2 |
 | Biểu đồ: Thiết kế / Định dạng | ◐ (hộp thoại riêng) | P2 |
 | Định dạng Ảnh/Hình | ✗ | P3 |
@@ -175,10 +175,10 @@ Ngày tra: 28/10/2026 (cập nhật 29/10/2026 cho bản 0.6). Đối chiếu **
 | Nội dung | ExcelLike | Ưu tiên |
 |---|---|---|
 | Giá trị, công thức, định dạng, gộp ô, cố định ngăn, lọc, CF, DV, biểu đồ cơ bản, thiết lập in, tính lặp, liên kết ngoài | ✅ | – |
-| Tên vùng (definedNames), vùng in nhiều khối | ✗ | **P1** |
-| Ghi chú/bình luận, hình ảnh, hình vẽ, hộp chữ | ✗ (báo trước, mất khi lưu đè) | P1 (ghi chú, ảnh), P2 |
-| Bảng (Table) có tham chiếu có cấu trúc | ✗ | P1 |
-| Nhóm hàng/cột (outline), hàng/cột ẩn | ◐ (ẩn ✅ 0.5 có Ẩn/Bỏ ẩn, outline ✗) | P1 |
+| Tên vùng (definedNames), vùng in nhiều khối | ◐ (tên vùng ✅ 0.7) | **P1** |
+| Ghi chú/bình luận, hình ảnh, hình vẽ, hộp chữ | ◐ (ghi chú/chú thích ✅ 0.7; ảnh, hình vẽ ✗) | P1 (ghi chú, ảnh), P2 |
+| Bảng (Table) có tham chiếu có cấu trúc | ✅ 0.7 | P1 |
+| Nhóm hàng/cột (outline), hàng/cột ẩn | ✅ 0.7 (ẩn + outline) | P1 |
 | Đầu trang/chân trang, ngắt trang thủ công | ✅ 0.5 | P1 |
 | Bảo vệ sheet, màu thẻ sheet, sheet ẩn | ◐ 0.5 (màu thẻ, sheet ẩn, cột ẩn giữ độ rộng; bảo vệ → 0.9) | P2 |
 | PivotTable “sống” (pivotCache) | ✗ (ghi thành bảng giá trị) | P3 |
@@ -189,7 +189,7 @@ Ngày tra: 28/10/2026 (cập nhật 29/10/2026 cho bản 0.6). Đối chiếu **
 Nguồn duy nhất trong mã: `src/ui/keymap.ts` — dùng cho bộ điều phối phím, bảng phím tắt F1 trong app, bảng dưới đây (`node --experimental-strip-types tools/keytable.mjs`) và test e2e (`e2e/v06.mjs` bấm thật từng phím).
 
 Không làm (giữ nguyên lý do): Power Pivot (27 dòng), Copilot (9), Alt+F8/F11/F12 (macro, VBA, Power Query), Ctrl+F6/Ctrl+Tab đổi cửa sổ sổ khác (mỗi cửa sổ một sổ), Ctrl+F5/F7/F8 cửa sổ con kiểu cũ, Alt+Space (Windows xử lý).
-Có ở bản sau (cần tính năng lớn trước): Shift+F2 ghi chú, Ctrl+Shift+F2 chú thích, Ctrl+8 dàn bài, Ctrl+L/Ctrl+T Bảng, F3 / Alt+M,M,D tên vùng → 0.7; F7 chính tả, Alt+Shift+F10 kiểm tra lỗi, Shift+kéo chèn ô → 0.9.
+Đã làm ở 0.7: Shift+F2 ghi chú, Ctrl+Shift+F2 chú thích, Ctrl+8 dàn bài, Alt+Shift+→/← nhóm, Ctrl+L/Ctrl+T Bảng, F3 / Ctrl+F3 / Ctrl+Shift+F3 / Alt+M,M,D tên vùng (test bấm thật 174/174). Có ở bản sau: F7 chính tả, Alt+Shift+F10 kiểm tra lỗi, Shift+kéo chèn ô → 0.9.
 
 Hành vi đã làm giống Excel: Ctrl+A chọn vùng dữ liệu rồi mới cả trang; Ctrl+Home về ô đầu vùng không cố định; F4 khi sửa đổi $ tham chiếu, khi không sửa thì lặp lệnh cuối (Ctrl+Y cũng lặp khi không có gì để làm lại); Tab…Tab rồi Enter về cột bắt đầu; Enter/Tab đi vòng trong vùng chọn và sang khối kế tiếp; Ctrl+Enter điền mọi ô đang chọn (công thức dời tham chiếu); Delete giữ định dạng; Backspace xóa rồi sửa; Ctrl+D/R chép cả định dạng; Ctrl+Shift++ / Ctrl+− chọn cả hàng/cột thì chèn/xóa luôn; Ctrl+; Ctrl+Shift+: Ctrl+' Ctrl+Shift+" chèn tại con trỏ khi đang sửa; nhóm trang tính áp nhập liệu/định dạng/xóa cho mọi trang trong nhóm.
 
@@ -274,8 +274,8 @@ Tổng 180 mục: ✅ 167 · ◐ 9 · — 4
 | Ctrl+1 | Hộp thoại Định dạng Ô | ✅ |
 | Ctrl+Shift+F | Định dạng Ô ▸ thẻ Phông | ✅ |
 | F2 | Sửa ô hiện hành | ✅ |
-| Shift+F2 | Chèn/sửa ghi chú ô | ◐ sau (0.7 (Ghi chú ô: đọc/ghi .xlsx)) |
-| Ctrl+Shift+F2 | Chèn/trả lời chú thích dạng chuỗi | ◐ sau (0.7 (Chú thích)) |
+| Shift+F2 | Chèn/sửa ghi chú ô | ✅ 0.7 |
+| Ctrl+Shift+F2 | Chèn/trả lời chú thích dạng chuỗi | ✅ 0.7 |
 | Ctrl+Shift++ | Hộp thoại Chèn ô (chọn cả hàng/cột thì chèn luôn) | ✅ |
 | Ctrl+− | Hộp thoại Xóa ô (chọn cả hàng/cột thì xóa luôn) | ✅ |
 | Ctrl+Shift+: | Nhập giờ hiện tại | ✅ |
@@ -290,7 +290,7 @@ Tổng 180 mục: ✅ 167 · ◐ 9 · — 4
 | Ctrl+6 | Hiện / ẩn / hiện chỗ giữ cho đối tượng (biểu đồ) | ✅ |
 | Ctrl+Shift+& | Kẻ viền ngoài | ✅ |
 | Ctrl+Shift+_ | Bỏ viền ngoài | ✅ |
-| Ctrl+8 | Hiện/ẩn ký hiệu dàn bài (nhóm hàng/cột) | ◐ sau (0.7 (Nhóm hàng/cột)) |
+| Ctrl+8 | Hiện/ẩn ký hiệu dàn bài (nhóm hàng/cột) | ✅ 0.7 |
 | Ctrl+D | Điền xuống | ✅ |
 | Ctrl+R | Điền sang phải | ✅ |
 | Ctrl+Shift+~ | Định dạng Chung | ✅ |
@@ -303,7 +303,7 @@ Tổng 180 mục: ✅ 167 · ◐ 9 · — 4
 | Ctrl+K | Chèn / sửa liên kết | ✅ |
 | F7 | Kiểm tra chính tả | ◐ sau (0.9 (cần từ điển tiếng Việt)) |
 | Ctrl+Q | Phân tích Nhanh cho vùng chọn | ✅ |
-| Ctrl+L hoặc Ctrl+T | Tạo Bảng | ◐ sau (0.7 (Bảng + tham chiếu có cấu trúc)) |
+| Ctrl+L hoặc Ctrl+T | Tạo Bảng | ✅ 0.7 |
 | Ctrl+Shift+G | Thống kê Sổ làm việc | ✅ |
 
 **Hộp Dán Đặc biệt**
@@ -378,8 +378,8 @@ Tổng 180 mục: ✅ 167 · ◐ 9 · — 4
 | Ctrl+Shift+" | Chép giá trị ô phía trên vào ô hiện hành | ✅ |
 | Alt+F1 | Tạo biểu đồ nhúng từ vùng hiện tại | ✅ |
 | F11 | Tạo biểu đồ trên trang tính riêng | ✅ |
-| Alt+M, M, D | Xác định tên | ◐ sau (0.7 (Tên vùng)) |
-| F3 | Dán tên đã xác định | ◐ sau (0.7 (Tên vùng)) |
+| Alt+M, M, D | Xác định tên | ✅ 0.7 |
+| F3 | Dán tên đã xác định | ✅ 0.7 |
 | Alt+F8 / Alt+F11 / Alt+F12 | Macro, VBA, Power Query | — không làm (Không chạy macro/VBA/Power Query) |
 | Ctrl+Shift+L | Bật/tắt Lọc | ✅ |
 | Ctrl+F5 | Làm mới dữ liệu trang tính (PivotTable trên trang) | ✅ |
@@ -428,9 +428,9 @@ Tổng 180 mục: ✅ 167 · ◐ 9 · — 4
 | **0.5 – Giao diện giống hệt Excel 365 + In ấn (đã làm)** | Thanh tiêu đề + QAT + ô Tìm lệnh; Ribbon 3 tầng có nút tách đôi và nút ↘ hộp thoại; đủ 9 tab (thêm Bố trí Trang, Xem lại, Trợ giúp); Backstage toàn màn hình; lưới/tiêu đề/vùng chọn/chấm điền đúng màu và nét Excel; thẻ sheet + thanh trạng thái đầy đủ (Chế độ, Trung bình/Đếm/Tổng tùy chọn, 3 nút dạng xem, thanh trượt thu phóng); menu chuột phải đầy đủ + thanh mini; KeyTips (Alt/F10); phông Segoe UI/Aptos (Calibri khi không có). Giữ chạy tốt trên điện thoại (dạng ribbon đơn giản hóa). |
 | **0.6.1 – Giao diện theo ảnh Excel 365 + ngôn ngữ (đã làm)** | Ribbon đủ nhóm như ảnh (Kiểu Ô dạng bộ sưu tập, Phần bổ trợ, Kiểu Dữ liệu, Hiệu suất, Dạng xem Trang tính, Ô Tiêu điểm, Dẫn hướng, thẻ Tự động hóa), Tệp ▸ Trang đầu (mẫu, Ưa thích, Tìm tệp, ngày tương đối, Chia sẻ), Trợ năng ở thanh trạng thái, chọn Tiếng Việt/English trong Tùy chọn. |
 | **0.6 – Bàn phím giống hệt (đã làm)** | 167/180 mục phím của trang Microsoft trong phạm vi (bảng ở mục C), Tìm & Thay thế, Đi tới/Đặc biệt, Dán Đặc biệt, Chổi định dạng, Định dạng Ô (Ctrl+1), F4, Ctrl+`, Điền Nhanh, Chuỗi, Liên kết, chọn nhiều vùng, nhóm trang tính, Phân tích Nhanh, Bảng tạm Office, bảng phím tắt F1. Test bấm thật từng phím: 164/164 + 3 phím bản Windows. |
-| **0.7 – Dữ liệu dự toán** | Tên vùng (đọc/ghi .xlsx), Bảng (Table) + tham chiếu có cấu trúc, Nhóm hàng/cột + Tổng phụ, Văn bản thành cột, Xóa trùng lặp, Ghi chú ô (đọc/ghi), hằng mảng nhiều cột, mảng động FILTER/SORT/UNIQUE. |
+| **0.7 – Dữ liệu dự toán (đã làm, 0.7.0)** | Tên vùng (đọc/ghi .xlsx), Bảng (Table) + tham chiếu có cấu trúc, Nhóm hàng/cột + Tổng phụ, Văn bản thành cột, Xóa trùng lặp, Ghi chú ô (đọc/ghi), hằng mảng nhiều cột, mảng động FILTER/SORT/UNIQUE. Làm thêm: Chú thích dạng chuỗi, SORTBY/TAKE/DROP/CHOOSECOLS/TOCOL, Truy tìm Ô Tiền lệ/Phụ thuộc (kéo từ 0.9). |
 | **0.8 – In ấn hồ sơ** | Phần lớn đã kéo lên 0.5 theo yêu cầu “in ấn giống Excel 365”. Còn lại: Dạng xem Bố trí trang (thước, sửa đầu/chân trang tại chỗ), kéo đường ngắt trang, trang đầu/chẵn lẻ khác, ảnh trong đầu trang. |
-| **0.9 – Phân tích** | Truy vết tiền lệ/phụ thuộc, Đánh giá công thức, Goal Seek, biểu đồ XY + Kết hợp + tab Thiết kế/Định dạng biểu đồ, ảnh trong sổ, liên kết (Ctrl+K), Bảo vệ sheet. |
+| **0.9 – Phân tích** | Đánh giá công thức, Goal Seek, biểu đồ XY + Kết hợp + tab Thiết kế/Định dạng biểu đồ, ảnh trong sổ, liên kết (Ctrl+K), Bảo vệ sheet. |
 | **1.0** | Rà soát lại bảng này, kiểm chứng tổng, cập nhật trạng thái. |
 
 **Không làm (giữ nguyên lý do):** Power Query/Power Pivot/Mô hình dữ liệu, Copilot, Python trong Excel, chạy macro VBA, Office Scripts, cộng tác thời gian thực/OneDrive/SharePoint, Kiểu dữ liệu Cổ phiếu/Địa lý, Bản đồ 3D, Microsoft Forms, Nhãn độ nhạy.

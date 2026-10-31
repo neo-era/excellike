@@ -387,6 +387,61 @@ Review độc lập Đợt 4: 1 lỗi nặng (Esc ở hộp thoại hỏi lưu l
 - Điều kiện lọc cũ không còn khớp giá trị nào thì coi như chọn tất cả.
 - Không chọn giá trị nào thì không bấm Lọc được.
 
+## 6l. Bản 0.7.0 (31/10/2026) — Dữ liệu dự toán
+
+**Đã làm:**
+- **Tên vùng:** Xác định Tên, Trình Quản lý Tên (Ctrl+F3), Tạo từ Vùng chọn (Ctrl+Shift+F3), Dán Tên (F3), Hộp Tên tạo/nhảy tới tên. Đọc/ghi definedNames trong .xlsx. Tên có dấu tiếng Việt được mã hóa `_xHHHH_` ở lớp vá vì HyperFormula không nhận.
+- **Ghi chú & Chú thích:** Shift+F2 ghi chú (tam giác đỏ, hiện khi rê chuột, Hiện Tất cả Ghi chú). Ctrl+Shift+F2 chú thích dạng chuỗi (trả lời, Giải quyết, ngăn Chú thích). Đọc ghi chú và threadedComments từ .xlsx; khi lưu, chuỗi chú thích ghi thành ghi chú. Tên người dùng đặt trong Tùy chọn.
+- **Nhóm hàng/cột:** dải đại cương bên lề có ngoặc, nút +/− và nút cấp 1-2-3; Ctrl+8; Alt+Shift+→/←; Hiện/Ẩn Chi tiết; Xóa Đại cương. Đọc/ghi outlineLevel/collapsed.
+- **Tổng phụ:** chèn hàng tổng theo nhóm và hàng Tổng Cộng; dùng SUBTOTAL; tự tạo 2 cấp nhóm; Loại bỏ Tất cả.
+- **Văn bản thành Cột:** dấu phân cách hoặc độ rộng cố định; ký tự bao văn bản; kiểu cột Chung/Văn bản/Bỏ qua; xem trước; ô đích; cảnh báo ghi đè.
+- **Loại bỏ Trùng lặp:** chọn cột; tự nhận tiêu đề. Ô trong vùng được dồn lên; trong Bảng thì bảng co lại.
+- **Bảng (Ctrl+T/Ctrl+L, Định dạng như Bảng):**
+  - 21 kiểu Nhạt/Trung bình/Đậm.
+  - Hàng Tổng có thả xuống chọn hàm (SUBTOTAL 101–110).
+  - Bảng tự nở khi gõ ngay dưới hoặc bên phải.
+  - Cột tính toán: nhập công thức vào cột trống thì cả cột được điền; hàng mới kế thừa công thức.
+  - Sửa tiêu đề thì đổi tên cột.
+  - Tab ngữ cảnh Thiết kế Bảng: Tên Bảng, Đổi kích thước, Loại trùng, Tóm tắt bằng PivotTable, Chuyển thành Vùng, tùy chọn kiểu.
+  - Hộp Tên chọn được bảng; cắt-dán cả bảng thì bảng đi theo.
+  - Đọc/ghi xl/tables/tableN.xml, đã kiểm bằng openpyxl.
+- **Tham chiếu có cấu trúc:** `Bảng1[Cột]`, `[@Cột]`, `[@[Đơn giá]]`, `Bảng1[#All]`, `Bảng1[[#Totals];[Cột]]`, `[[Cột1]:[Cột2]]`. Khi lưu tệp, dạng ghi ra đúng chuẩn Excel (`Bảng1[[#This Row],[Cột]]`).
+  - Cách làm: ở lớp vá, vùng bảng → tên ẩn `XT_<mã bảng>_<vùng>_<mã cột>` (tuyệt đối). Bảng nở/co chỉ cần đổi biểu thức tên. Đổi tên bảng/cột không phải sửa công thức, vì dịch ngược theo mã.
+  - `[@Cột]` → `XTHISROW($C5)`: cột tuyệt đối, hàng tương đối.
+  - Chuyển thành Vùng thì công thức đổi về địa chỉ ô.
+- **Mảng động:**
+  - Có sẵn trong HyperFormula: SORT, UNIQUE, SEQUENCE, VSTACK/HSTACK.
+  - Tự viết (`src/core/dynarray.ts`): FILTER kiểu Excel (mảng 2 chiều, điều kiện theo hàng hoặc cột, `nếu_rỗng`), SORTBY, TAKE, DROP, CHOOSECOLS, CHOOSEROWS, TOCOL, TOROW.
+  - Kết quả tràn ra ô bên cạnh; bị chặn thì báo #SPILL!. Ô tràn hiện công thức gốc màu xám, vùng tràn có viền xanh.
+  - Lưu .xlsx dạng `t="array"` + `cm="1"` + xl/metadata.xml (XLDAPR) để Excel không thêm dấu @. Khi đọc, ô tràn lưu sẵn được bỏ để bộ tính tự tràn.
+- **Hằng mảng nhiều cột:** trong app viết `{1;2,5|3;4}` (cột “;”, hàng “|”, thập phân “,”), tương ứng `{1,2.5;3,4}` trong tệp. Trước đây `{1,2|3,4}` bị hiểu thành số thập phân 1,2.
+- **Truy tìm Ô Tiền lệ / Phụ thuộc / Loại bỏ Mũi tên:** mũi tên xanh, khung quanh vùng; mỗi lần bấm thêm một cấp; sheet khác thì nét đứt + biểu tượng.
+
+**Rà soát độc lập:** tìm 15 lỗi xác nhận, đã sửa:
+- chuyển một bảng làm hỏng tham chiếu bảng khác;
+- tính tạm làm lệch hoàn tác;
+- chèn hàng ở hàng dữ liệu đầu không nở tên bảng;
+- tên cột có `, . #` hỏng khi qua .xlsx;
+- xóa/dán tiêu đề không đổi tên cột;
+- bảng nở đè bảng khác;
+- cột bị xóa hiện `Bảng1[]`;
+- bảng “ma” sau khi xóa trang;
+- đổi kích thước bỏ quên hàng tổng;
+- Tìm & Thay thế bỏ qua công thức có bảng;
+- truy tìm bỏ sót vùng bảng;
+- chuỗi trong công thức bị dịch;
+- loại trùng trong bảng để hàng trống;
+- cắt-dán bảng;
+- Esc không đóng bảng thả xuống ngay sau khi mở.
+
+**Hạn chế còn lại:**
+- FILTER/UNIQUE giữ trước vùng bằng kích thước đầu vào, nên ô trống trong vùng đó vẫn gây #SPILL! (Excel thì không).
+- Kết quả rỗng báo #VALUE! (Excel báo #CALC!).
+- Điều kiện lọc của bảng chưa ghi vào tệp.
+- Sao chép (không cắt) cả bảng chưa tạo bảng mới.
+
+**Kiểm thử:** unit 264/264; giao diện 0.7 73/73; phím tắt 174/174; i18n 92/92 (English không sót chữ Việt); 0.5 120/120; Đợt 1–3, điện thoại, máy tính 35/35, bản quyền 22/22, Key Manager 32/32; mở tệp lớn 3,0 s.
+
 ## 7. Kiểm chứng cuối theo tiêu chí Bước 0
 
 | # | Tiêu chí | Kết quả |

@@ -139,10 +139,11 @@ describe('Review Đợt 3', () => {
     const { wb } = await readXlsx(await zip.generateAsync({ type: 'uint8array' }));
     expect(wb.display(0, 1, 1).text).toBe('1');
   });
-  it('L7b: tệp openpyxl có ghi chú + biểu đồ mở được, báo trước ghi chú sẽ mất', async () => {
+  it('L7b: tệp openpyxl có ghi chú + biểu đồ mở được, đọc được ghi chú (từ 0.7)', async () => {
     const { wb, warnings } = await readXlsx(readFileSync(new URL('./fixtures/ghichu-bieudo.xlsx', import.meta.url)));
     expect(wb.meta(0).charts.length).toBe(1);
-    expect(warnings.join(' ')).toMatch(/1 ghi chú/);
+    expect(wb.noteCells(0).length).toBe(1);
+    expect(warnings.join(' ')).not.toMatch(/ghi chú/);
   });
 });
 

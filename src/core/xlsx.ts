@@ -1,7 +1,7 @@
 // Đọc / ghi tệp Excel .xlsx bằng ExcelJS (+ JSZip để tự đọc phần Kiểm tra dữ liệu)
 import ExcelJS from 'exceljs';
 import JSZip from 'jszip';
-import { colName, parseA1, parseRef, rangeToA1, MAX_ROWS, type Range } from './address';
+import { colName, parseA1, parseRef, parseRange, rangeToA1, MAX_ROWS, type Range } from './address';
 import { shiftFormula } from './formula';
 import { toEn, toVi } from './locale';
 import { normalizeInput } from './input';
@@ -13,6 +13,7 @@ import { quoteSheet } from './formula';
 import { parseSharedStrings, parseStyles, takeSheetData, unescXml, type FastCell, type FastRow, type XfModel } from './xlsxfast';
 import { isDateFmt } from './numfmt';
 import { MARGIN_PRESETS, normPrint, PAPERS, paperByCode, storePrint, type NPrint } from './paginate';
+import type { TableDef, TotalFn } from './tables';
 
 const EPOCH = Date.UTC(1899, 11, 30);
 // Độ rộng cột Excel tính theo số ký tự; phông của app rộng hơn Calibri nên lấy 8px/ký tự để số không bị ####
@@ -53,7 +54,7 @@ function colorOf(c: any): string | undefined {
 const argb = (h: string) => ({ argb: 'FF' + h.replace('#', '').toUpperCase().padStart(6, '0') });
 
 // ---------- tiền tố hàm mới ----------
-const XLFN = ['XLOOKUP', 'XMATCH', 'IFS', 'SWITCH', 'TEXTJOIN', 'CONCAT', 'MAXIFS', 'MINIFS', 'IFNA', 'STDEV.S', 'STDEV.P', 'VAR.S', 'VAR.P', 'UNIQUE', 'SEQUENCE', 'DAYS', 'ISOWEEKNUM', 'CEILING.MATH', 'FLOOR.MATH', 'PERCENTILE.INC', 'PERCENTILE.EXC', 'QUARTILE.INC', 'RANK.EQ', 'RANK.AVG', 'MODE.SNGL', 'NORM.DIST', 'NORM.INV', 'NETWORKDAYS.INTL', 'WORKDAY.INTL', 'COVARIANCE.S', 'COVARIANCE.P', 'BITAND', 'BITOR', 'BITXOR'];
+const XLFN = ['XLOOKUP', 'XMATCH', 'IFS', 'SWITCH', 'TEXTJOIN', 'CONCAT', 'MAXIFS', 'MINIFS', 'IFNA', 'STDEV.S', 'STDEV.P', 'VAR.S', 'VAR.P', 'UNIQUE', 'SEQUENCE', 'FILTER', 'SORT', 'SORTBY', 'TAKE', 'DROP', 'CHOOSECOLS', 'CHOOSEROWS', 'TOCOL', 'TOROW', 'VSTACK', 'HSTACK', 'DAYS', 'ISOWEEKNUM', 'CEILING.MATH', 'FLOOR.MATH', 'PERCENTILE.INC', 'PERCENTILE.EXC', 'QUARTILE.INC', 'RANK.EQ', 'RANK.AVG', 'MODE.SNGL', 'NORM.DIST', 'NORM.INV', 'NETWORKDAYS.INTL', 'WORKDAY.INTL', 'COVARIANCE.S', 'COVARIANCE.P', 'BITAND', 'BITOR', 'BITXOR'];
 const XLWS = ['FILTER', 'SORT', 'SORTBY'];
 const fnRe = (names: string[]) => new RegExp(`(^|[^A-Za-z0-9_.])(${names.map((n) => n.replace('.', '\\.')).join('|')})\\(`, 'g');
 const RE_XLFN = fnRe(XLFN), RE_XLWS = fnRe(XLWS);
@@ -110,6 +111,33 @@ function attrs(tag: string): Record<string, string> {
   for (const m of tag.matchAll(/([\w:]+)="([^"]*)"/g)) o[m[1].replace(/^\w+:/, '')] = unesc(m[2]);
   return o;
 }
+/** xl/commentsN.xml → [{r, c, text}] (ghi chú kiểu cũ) */
+function parseCommentsXml(xml: string): { r: number; c: number; text: string }[] {
+  const x = strip(xml), out: { r: number; c: number; text: string }[] = [];
+  for (const m of x.matchAll(/<comment\b([^>]*)>([\s\S]*?)<\/comment>/g)) {
+    const p = parseA1(attrs(m[1]).ref ?? '');
+    if (!p) continue;
+    const t = [...m[2].replace(/<rPh\b[\s\S]*?<\/rPh>/g, '').matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)].map((y) => unesc(y[1])).join('').replace(/\r\n?/g, '\n');
+    out.push({ r: p.r, c: p.c, text: t });
+  }
+  return out;
+}
+/** xl/threadedComments/*.xml → chuỗi chú thích theo ô */
+function parseThreaded(xml: string, persons: Map<string, string>): { r: number; c: number; items: { a: string; t: string; d: string }[]; done: boolean }[] {
+  const x = strip(xml);
+  const roots = new Map<string, { r: number; c: number; items: { a: string; t: string; d: string }[]; done: boolean }>();
+  const replies: { parent: string; item: { a: string; t: string; d: string } }[] = [];
+  for (const m of x.matchAll(/<threadedComment\b([^>]*)>([\s\S]*?)<\/threadedComment>/g)) {
+    const a = attrs(m[1]);
+    const t = unesc(/<text>([\s\S]*?)<\/text>/.exec(m[2])?.[1] ?? '').replace(/\r\n?/g, '\n');
+    const item = { a: persons.get(a.personId ?? '') || 'Người dùng', t, d: a.dT ? new Date(a.dT).toISOString() : new Date(0).toISOString() };
+    if (a.parentId) { replies.push({ parent: a.parentId, item }); continue; }
+    const p = parseA1(a.ref ?? '');
+    if (p && a.id) roots.set(a.id, { r: p.r, c: p.c, items: [item], done: a.done === '1' || a.done === 'true' });
+  }
+  for (const rp of replies) roots.get(rp.parent)?.items.push(rp.item);
+  return [...roots.values()];
+}
 interface RawDV { a: Record<string, string>; sqref: string; f1?: string; f2?: string }
 function parseDVXml(xml: string): RawDV[] {
   const out: RawDV[] = [];
@@ -161,12 +189,30 @@ export async function readXlsxBook(buf: ArrayBuffer | Uint8Array): Promise<{ boo
   const locLinks = new Map<string, [number, number, string][]>();
   const extLinksBy = new Map<string, [number, number, string][]>();
   const fastBy = new Map<string, { cells: FastCell[]; rows: FastRow[] }>();
+  const notesBy = new Map<string, { r: number; c: number; text: string }[]>();
+  const tablesBy = new Map<string, TableDef[]>();
+  const threadsBy = new Map<string, { r: number; c: number; items: { a: string; t: string; d: string }[]; done: boolean }[]>();
+  const persons = new Map<string, string>();
+  for (const pf of Object.keys(zip.files).filter((f) => /^xl\/persons\/[^/]+\.xml$/i.test(f))) {
+    for (const m of ((await zip.file(pf)!.async('string')) ?? '').matchAll(/<(?:\w+:)?person\b([^>]*)\/?>/g)) { const pa = attrs(m[1]); if (pa.id) persons.set(pa.id, pa.displayName ?? ''); }
+  }
   const chartsBySheet = new Map<string, RawChart[]>();
   // tính lặp (File → Options → Formulas → Enable iterative calculation)
   const calcTag = /<(?:\w+:)?calcPr\b[^>]*>/.exec(wbXml)?.[0] ?? '';
   const iterOn = /\biterate="(1|true)"/.test(calcTag);
   const calc = iterOn ? { on: true, count: +(/iterateCount="(\d+)"/.exec(calcTag)?.[1] ?? 100), delta: +(/iterateDelta="([^"]+)"/.exec(calcTag)?.[1] ?? 0.001) || 0.001 } : undefined;
   const iterVals: [string, number, number, unknown][] = [];
+  // tên vùng (definedNames); bỏ các tên hệ thống _xlnm.* (vùng in, lọc…)
+  const sheetOrder = [...wbXml.matchAll(/<(?:\w+:)?sheet\b([^>]*)\/?>/g)].map((m) => attrs(m[1]).name);
+  const bookNames: NonNullable<BookJSON['names']> = [];
+  for (const m of wbXml.matchAll(/<(?:\w+:)?definedName\b([^>]*)>([\s\S]*?)<\/(?:\w+:)?definedName>/g)) {
+    const a = attrs(m[1]);
+    if (!a.name || /^_xlnm\./i.test(a.name) || /^_FilterDatabase$/i.test(a.name)) continue;
+    const body = unesc(m[2]).trim();
+    if (!body) continue;
+    const scope = a.localSheetId !== undefined ? sheetOrder[+a.localSheetId] : undefined;
+    bookNames.push({ name: a.name, expr: toVi('=' + stripPrefixes(body)), scope, comment: a.comment || undefined, hidden: a.hidden === '1' || a.hidden === 'true' || undefined });
+  }
   // liên kết sang tệp khác: lấy giá trị Excel lưu sẵn trong externalLinkN.xml
   const extLinks: ExtLink[] = [];
   const extSheets: { name: string; cells: unknown[][] }[] = [];
@@ -275,11 +321,17 @@ export async function readXlsxBook(buf: ArrayBuffer | Uint8Array): Promise<{ boo
         let ry = rx;
         for (const rm of rx.matchAll(/<Relationship\b[^>]*\/>/g)) {
           const ra = attrs(rm[0].slice(13, -2));
-          if (!/\/(comments|vmlDrawing)$/.test(ra.Type ?? '')) continue;
+          if (!/\/(comments|vmlDrawing|threadedComment|table)$/.test(ra.Type ?? '')) continue;
           const tp = resolve(path, ra.Target ?? '');
-          // ghi chú (comment) được đếm để cảnh báo (dữ liệu ô đọc riêng nên ExcelJS không gắn ghi chú vào ô)
-          if (/comments$/.test(ra.Type)) extraNotes += ((await zip.file(tp)?.async('string')) ?? '').split(/<(?:\w+:)?comment\b/).length - 1;
-          if (/^xl\/comments\d+\.xml$/.test(tp) || (/vmlDrawing$/.test(ra.Type) && /^xl\/drawings\/vmlDrawing\d+\.vml$/.test(tp))) continue;
+          if (/\/table$/.test(ra.Type)) {
+            const t = parseTableXml((await zip.file(tp)?.async('string')) ?? '');
+            if (t) (tablesBy.get(a.name) ?? tablesBy.set(a.name, []).get(a.name)!).push(t);
+            xml = xml.replace(new RegExp(`<tablePart\\b[^>]*r:id="${ra.Id}"[^>]*/>`), '');
+            if (!/<tablePart\b/.test(xml)) xml = xml.replace(/<tableParts\b[^>]*\/>|<tableParts\b[^>]*>\s*<\/tableParts>/, '');
+          }
+          // ghi chú và chú thích dạng chuỗi: tự đọc rồi gỡ khỏi bản đưa cho ExcelJS (dữ liệu ô đọc riêng)
+          if (/\/comments$/.test(ra.Type)) for (const n of parseCommentsXml((await zip.file(tp)?.async('string')) ?? '')) (notesBy.get(a.name) ?? notesBy.set(a.name, []).get(a.name)!).push(n);
+          if (/threadedComment$/.test(ra.Type)) for (const n of parseThreaded((await zip.file(tp)?.async('string')) ?? '', persons)) (threadsBy.get(a.name) ?? threadsBy.set(a.name, []).get(a.name)!).push(n);
           ry = ry.replace(rm[0], '');
           if (/vmlDrawing$/.test(ra.Type)) xml = xml.replace(new RegExp(`<legacyDrawing\\b[^>]*r:id="${ra.Id}"[^>]*/>`), '');
           zip.remove(tp);
@@ -367,11 +419,19 @@ export async function readXlsxBook(buf: ArrayBuffer | Uint8Array): Promise<{ boo
     const links = new Map<number, string>();
     for (const [r, c, ln] of extLinksBy.get(ws.name) ?? []) links.set(r * 16384 + c, ln);
     let maxC = 0;
+    // công thức mảng (mảng động FILTER/SORT… hoặc mảng cũ): ô gốc giữ công thức, các ô còn lại do bộ tính tự tràn ra
+    const spills: Range[] = [];
     for (const cl of fd.cells) {
       const { r, c } = cl;
       if (c + 1 > maxC) maxC = c + 1;
       let raw: unknown = null;
       let isText = false;
+      if (cl.f?.t === 'array' && cl.f.ref) { const g = parseRange(cl.f.ref); if (g && (g.r2 > g.r1 || g.c2 > g.c1)) spills.push(g); }
+      if (!cl.f && spills.length && spills.some((g) => r >= g.r1 && r <= g.r2 && c >= g.c1 && c <= g.c2)) {
+        const st0 = cl.s ? styleOf(cl.s) : null;
+        if (st0) styles.push([r * 16384 + c, st0]);
+        continue;
+      }
       if (cl.f && cl.f.t !== 'dataTable') {
         if (iterOn) { const pv = plainVal(cl); if (pv.raw !== null && (typeof pv.raw === 'number' || typeof pv.raw === 'string' || typeof pv.raw === 'boolean')) iterVals.push([ws.name, r, c, pv.raw]); }
         if (cl.f.t === 'shared' && cl.f.si !== undefined) {
@@ -395,16 +455,21 @@ export async function readXlsxBook(buf: ArrayBuffer | Uint8Array): Promise<{ boo
     const rowDef = props.defaultRowHeight ? pt2px(props.defaultRowHeight) : 20;
     const colW: [number, number][] = [];
     const hiddenCols: number[] = [];
-    for (let i = 1; i <= Math.max(ws.columnCount, maxC, 1); i++) {
+    const olR: Record<number, number> = {}, olC: Record<number, number> = {}, olX: string[] = [];
+    for (let i = 1; i <= Math.max(ws.columnCount, maxC, (ws as any)._columns?.length ?? 0, 1); i++) {
       const col: any = ws.getColumn(i);
       if (col.hidden) hiddenCols.push(i - 1);
+      if (col.outlineLevel) olC[i - 1] = Math.min(7, +col.outlineLevel);
+      if (col.collapsed) olX.push(`c:${(olC[i - 1] ?? 0) + 1}:${i - 1}`);
       if (col.width && w2px(col.width) !== colDef && w2px(col.width) > 0) colW.push([i - 1, w2px(col.width)]);
     }
     const af: any = ws.autoFilter;
     const afRef = typeof af === 'string' ? af : af?.from ? `${typeof af.from === 'string' ? af.from : colName(af.from.column - 1) + af.from.row}:${typeof af.to === 'string' ? af.to : colName(af.to.column - 1) + af.to.row}` : null;
-    const fr = afRef ? parseRef(afRef) : null;
+    let fr: Range | null = afRef ? parseRef(afRef) : null;
     const rowH: [number, number][] = [];
     const hiddenRows: number[] = [];
+    for (const row of fd.rows) if (row.lv) olR[row.r] = Math.min(7, row.lv);
+    for (const row of fd.rows) if (row.collapsed) olX.push(`r:${(olR[row.r] ?? 0) + 1}:${row.r}`);
     for (const row of fd.rows) {
       // hàng ẩn trong vùng lọc là do lọc → bỏ lọc sẽ hiện lại
       if (row.hidden) hiddenRows.push(row.r);
@@ -426,6 +491,17 @@ export async function readXlsxBook(buf: ArrayBuffer | Uint8Array): Promise<{ boo
     const print = printIn(ws);
     const props2: any = ws.properties ?? {};
     const tc = props2.tabColor?.argb ? '#' + String(props2.tabColor.argb).slice(-6).toLowerCase() : undefined;
+    {
+      // ghi chú / chú thích gắn vào kiểu ô (dùng bản riêng vì kiểu được dùng chung)
+      const th = threadsBy.get(ws.name) ?? [], nt = notesBy.get(ws.name) ?? [];
+      if (th.length || nt.length) {
+        const at = new Map(styles.map((e, i) => [e[0], i]));
+        const put = (r: number, c: number, patch: Style) => { const k = r * 16384 + c, i = at.get(k); if (i !== undefined) styles[i] = [k, { ...styles[i][1], ...patch }]; else { at.set(k, styles.length); styles.push([k, patch]); } };
+        const thr = new Set(th.map((t) => t.r * 16384 + t.c));
+        for (const t of th) put(t.r, t.c, { cm: t.items, ...(t.done ? { cmDone: true } : {}) });
+        for (const n of nt) if (!thr.has(n.r * 16384 + n.c) && n.text.trim()) put(n.r, n.c, { nt: n.text });
+      }
+    }
     if (locLinks.get(ws.name)?.length) {
       const at = new Map(styles.map((e, i) => [e[0], i]));
       for (const [r, c, ln] of locLinks.get(ws.name)!) {
@@ -434,7 +510,12 @@ export async function readXlsxBook(buf: ArrayBuffer | Uint8Array): Promise<{ boo
         if (i !== undefined) styles[i] = [k, { ...styles[i][1], ln }]; else styles.push([k, { ln }]);
       }
     }
-    sheets.push({ name: ws.name, cells, styles, colW, rowH, freeze, colDef, rowDef, hiddenRows, hiddenCols, merges, cf, dv, filter: fr ? { range: fr, conds: {} } : null, print, breaks: breaksBySheet.get(ws.name), tabColor: tc, state: (ws as any).state === 'hidden' || (ws as any).state === 'veryHidden' ? 'hidden' : undefined });
+    const outline = Object.keys(olR).length || Object.keys(olC).length ? { r: olR, c: olC, x: olX } : undefined;
+    const tbls = tablesBy.get(ws.name) ?? [];
+    tbls.forEach((t, i) => { t.id = i + 1 + sheets.reduce((n, x) => n + (x.tables?.length ?? 0), 0); });
+    // nút lọc của bảng dùng bộ lọc trang tính khi trang chưa có
+    if (!fr) { const t = tbls.find((x) => x.btn && x.header); if (t) fr = { r1: t.r1, c1: t.c1, r2: t.r2 - (t.totals ? 1 : 0), c2: t.c2 }; }
+    sheets.push({ tables: tbls.length ? tbls : undefined, outline, name: ws.name, cells, styles, colW, rowH, freeze, colDef, rowDef, hiddenRows, hiddenCols, merges, cf, dv, filter: fr ? { range: fr, conds: {} } : null, print, breaks: breaksBySheet.get(ws.name), tabColor: tc, state: (ws as any).state === 'hidden' || (ws as any).state === 'veryHidden' ? 'hidden' : undefined });
   });
   if (!sheets.length) throw new Error('Tệp không có trang tính nào.');
   // danh sách dài do app ghi ra sheet ẩn → đưa về danh sách gõ sẵn
@@ -447,10 +528,9 @@ export async function readXlsxBook(buf: ArrayBuffer | Uint8Array): Promise<{ boo
   if (images + pics) warnings.push(`Tệp có ${images + pics} hình ảnh — chưa hiển thị và sẽ mất nếu lưu đè.`);
   if (unsupportedCharts) warnings.push(`Tệp có ${unsupportedCharts} biểu đồ loại chưa hỗ trợ (tán xạ, radar…) — sẽ mất nếu lưu đè.`);
   if (shapes) warnings.push(`Tệp có ${shapes} hình vẽ/hộp chữ — chưa hỗ trợ, sẽ mất nếu lưu đè.`);
-  notes += extraNotes;
-  if (notes) warnings.push(`Tệp có ${notes} ghi chú (comment) — chưa hỗ trợ, sẽ mất nếu lưu đè.`);
+  void notes; void extraNotes;
   if (extLinks.length) warnings.push(`Tệp có liên kết tới ${extLinks.length} tệp khác — dùng giá trị lưu sẵn trong tệp (như Excel khi chưa cập nhật liên kết); liên kết được giữ nguyên khi lưu.`);
-  const book: BookJSON = { v: 2, name: 'Sổ tính', sheets, calc, iterVals: iterVals.length ? iterVals : undefined, ext: extLinks.length ? { links: extLinks, sheets: extSheets } : undefined };
+  const book: BookJSON = { v: 2, name: 'Sổ tính', sheets, calc, names: bookNames.length ? bookNames : undefined, iterVals: iterVals.length ? iterVals : undefined, ext: extLinks.length ? { links: extLinks, sheets: extSheets } : undefined };
   for (const sh of book.sheets) { const raw = chartsBySheet.get(sh.name); if (raw?.length) sh.rawCharts = raw; }
   return { book, warnings };
 }
@@ -576,6 +656,13 @@ export async function writeXlsx(wb: Workbook): Promise<Uint8Array> {
     if (sh.colDef) for (let c = 1; c <= Math.max(1, wb.used(id).cols); c++) { const col = ws.getColumn(c); if (!col.width && !col.hidden) col.width = px2w(sh.colDef); }
     for (const [r, h] of sh.rowH ?? []) { const row = ws.getRow(r + 1); if (h === 0) row.hidden = true; else row.height = px2pt(h); }
     for (const r of sh.hiddenRows ?? []) ws.getRow(r + 1).hidden = true;
+    // nhóm hàng/cột (đại cương), hàng/cột tổng đang thu gọn
+    if (sh.outline) {
+      for (const [r, L] of Object.entries(sh.outline.r)) ws.getRow(+r + 1).outlineLevel = L;
+      for (const [c, L] of Object.entries(sh.outline.c)) { const col = ws.getColumn(+c + 1); if (!col.width) col.width = px2w(sh.colDef ?? 64); col.outlineLevel = L; }
+      for (const k of sh.outline.x) { const [t, , at] = k.split(':'); if (t === 'r') ws.getRow(+at + 1); else { const col = ws.getColumn(+at + 1); if (!col.width) col.width = px2w(sh.colDef ?? 64); } }
+      (ws.properties as any).outlineProperties = { summaryBelow: true, summaryRight: true };
+    }
     for (const r of sh.breaks?.rows ?? []) ws.getRow(r).addPageBreak();
     // giá trị
     sh.cells.forEach((row, r) => row?.forEach((raw, c) => {
@@ -583,7 +670,7 @@ export async function writeXlsx(wb: Workbook): Promise<Uint8Array> {
       const cell = ws.getCell(r + 1, c + 1);
       const v: any = wb.value(id, r, c);
       if (typeof raw === 'string' && raw.startsWith('=') && raw.length > 1) {
-        const formula = addPrefixes(toEn(raw)).slice(1);
+        const formula = addPrefixes(toEn(wb.fileFormula(id, r, c, raw))).slice(1);
         const result = v && typeof v === 'object' ? (STD_ERR.has(v.value) ? { error: v.value } : undefined) : v;
         cell.value = (result === undefined ? { formula } : { formula, result }) as any;
       } else if (v && typeof v === 'object') {
@@ -603,7 +690,8 @@ export async function writeXlsx(wb: Workbook): Promise<Uint8Array> {
       if (out) ws.addConditionalFormatting({ ref: refOut(rule.range), rules: [out] } as any);
     }
     for (const rule of sh.dv ?? []) (ws as any).dataValidations.add(refOut(rule.range), dvOut(rule, dsLists));
-    if (sh.filter) ws.autoFilter = rangeToA1(sh.filter.range);
+    // bộ lọc của bảng nằm trong tệp bảng; Excel báo lỗi tệp nếu trang tính cũng có autoFilter chồng lên bảng
+    if (sh.filter && !(sh.tables ?? []).some((t) => t.r1 === sh.filter!.range.r1 && t.c1 === sh.filter!.range.c1)) ws.autoFilter = rangeToA1(sh.filter.range);
     if (sh.print) printOut(ws, sh.print);
   });
   // trang tính đang mở khi mở tệp: trang hiện đầu tiên (không trỏ vào trang ẩn)
@@ -616,10 +704,104 @@ export async function writeXlsx(wb: Workbook): Promise<Uint8Array> {
   const buf = new Uint8Array(await x.xlsx.writeBuffer() as ArrayBuffer);
   const withCharts = wb.sheetIds().some((id) => wb.meta(id).charts.length);
   let out = withCharts ? await addChartsToZip(buf, wb) : buf;
-  if (wb.extLinks.length || wb.iterate.on) out = await addWorkbookExtras(out, wb);
+  if (wb.extLinks.length || wb.iterate.on || wb.listNames().length) out = await addWorkbookExtras(out, wb);
   if (json.sheets.some((sh) => (sh.styles as [number, Style][]).some(([, st]) => st.ln?.startsWith('#')))) out = await fixLocations(out);
   if (json.sheets.some((sh) => sh.breaks?.cols.length)) out = await addColBreaks(out, json.sheets.map((sh) => sh.breaks?.cols ?? []));
+  if (json.sheets.some((sh) => sh.outline?.x.length)) out = await addCollapsed(out, json.sheets.map((sh) => sh.outline?.x ?? []));
+  if (json.sheets.some((sh) => sh.tables?.length)) out = await addTables(out, json.sheets.map((sh) => sh.tables ?? []));
+  // mảng động: đánh dấu ô gốc là công thức mảng có tràn (cm="1" + metadata XLDAPR) để Excel không thêm dấu @
+  const spillAt = wb.sheetIds().map((id) => {
+    const out2: { a: string; ref: string }[] = [];
+    const sh = json.sheets[wb.sheetIds().indexOf(id)];
+    sh.cells.forEach((row, r) => row?.forEach((v, c) => {
+      if (typeof v !== 'string' || v[0] !== '=') return;
+      const sp = wb.spillRange(id, r, c);
+      if (sp && sp.r === r && sp.c === c) out2.push({ a: colName(c) + (r + 1), ref: rangeToA1(sp.range) });
+    }));
+    return out2;
+  });
+  if (spillAt.some((x) => x.length)) out = await addDynamicArrays(out, spillAt);
   return out;
+}
+async function addDynamicArrays(buf: Uint8Array, all: { a: string; ref: string }[][]): Promise<Uint8Array> {
+  const zip = await JSZip.loadAsync(buf);
+  for (let i = 0; i < all.length; i++) {
+    if (!all[i].length) continue;
+    const path = `xl/worksheets/sheet${i + 1}.xml`;
+    let xml = await zip.file(path)?.async('string');
+    if (!xml) continue;
+    for (const { a, ref } of all[i]) {
+      xml = xml.replace(new RegExp(`<c r="${a}"([^>]*)><f>`), (m0, at: string) => `<c r="${a}"${at.replace(/\scm="\d+"/, '')} cm="1"><f t="array" ref="${ref}">`);
+    }
+    zip.file(path, xml);
+  }
+  zip.file('xl/metadata.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<metadata xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:xda="http://schemas.microsoft.com/office/spreadsheetml/2017/dynamicarray"><metadataTypes count="1"><metadataType name="XLDAPR" minSupportedVersion="120000" copy="1" pasteAll="1" pasteValues="1" merge="1" splitFirst="1" rowColShift="1" clearFormats="1" clearComments="1" assign="1" coerce="1" cellMeta="1"/></metadataTypes><futureMetadata name="XLDAPR" count="1"><bk><extLst><ext uri="{bdbb8cdc-fa1e-496e-a857-3c3f30c029c3}"><xda:dynamicArrayProperties fDynamic="1" fCollapsed="0"/></ext></extLst></bk></futureMetadata><cellMetadata count="1"><bk><rc t="1" v="0"/></bk></cellMetadata></metadata>');
+  let rx = await zip.file('xl/_rels/workbook.xml.rels')!.async('string');
+  if (!/sheetMetadata/.test(rx)) rx = rx.replace('</Relationships>', '<Relationship Id="rIdMeta1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sheetMetadata" Target="metadata.xml"/></Relationships>');
+  zip.file('xl/_rels/workbook.xml.rels', rx);
+  let ct = await zip.file('[Content_Types].xml')!.async('string');
+  if (!/metadata\.xml/.test(ct)) ct = ct.replace('</Types>', '<Override PartName="/xl/metadata.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheetMetadata+xml"/></Types>');
+  zip.file('[Content_Types].xml', ct);
+  return new Uint8Array(await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' }));
+}
+
+// ---------- Bảng (xl/tables/tableN.xml) ----------
+const TFN_IN: Record<string, TotalFn> = { sum: 'sum', average: 'average', count: 'count', countNums: 'counta', max: 'max', min: 'min', stdDev: 'stdev', var: 'var', none: 'none' };
+const TFN_OUT: Record<string, string> = { sum: 'sum', average: 'average', count: 'count', counta: 'countNums', max: 'max', min: 'min', stdev: 'stdDev', var: 'var' };
+function parseTableXml(x: string): TableDef | null {
+  const tm = /<(?:\w+:)?table\b([^>]*)>/.exec(x);
+  if (!tm) return null;
+  const a = attrs(tm[1]);
+  const g = parseRange(String(a.ref ?? ''));
+  if (!g) return null;
+  const cols: TableDef['cols'] = [];
+  for (const m of x.matchAll(/<(?:\w+:)?tableColumn\b([^>]*?)(?:\/>|>)/g)) {
+    const ca = attrs(m[1]);
+    cols.push({ id: cols.length + 1, name: unescXml(String(ca.name ?? `Cột${cols.length + 1}`)).replace(/_x000a_/gi, '\n'), fn: ca.totalsRowFunction ? TFN_IN[ca.totalsRowFunction] : undefined, label: ca.totalsRowLabel ? unescXml(ca.totalsRowLabel) : undefined });
+  }
+  const si = /<(?:\w+:)?tableStyleInfo\b([^>]*)\/?>/.exec(x);
+  const sa = si ? attrs(si[1]) : {};
+  const on = (v: unknown) => v === '1' || v === 'true';
+  return {
+    id: 0, name: String(a.displayName ?? a.name ?? 'Bảng'), r1: g.r1, c1: g.c1, r2: g.r2, c2: g.c2,
+    header: a.headerRowCount !== '0', totals: +(a.totalsRowCount ?? 0) > 0,
+    style: String(sa.name ?? ''), bandR: on(sa.showRowStripes), bandC: on(sa.showColumnStripes), first: on(sa.showFirstColumn), last: on(sa.showLastColumn),
+    btn: /<(?:\w+:)?autoFilter\b/.test(x), cols: cols.slice(0, g.c2 - g.c1 + 1),
+  };
+}
+const escX = (t: string) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/\n/g, '_x000a_');
+async function addTables(buf: Uint8Array, all: TableDef[][]): Promise<Uint8Array> {
+  const zip = await JSZip.loadAsync(buf);
+  let ct = await zip.file('[Content_Types].xml')!.async('string');
+  let n = 0;
+  for (let i = 0; i < all.length; i++) {
+    if (!all[i].length) continue;
+    const path = `xl/worksheets/sheet${i + 1}.xml`;
+    let xml = await zip.file(path)?.async('string');
+    if (!xml) continue;
+    const rp = relsPath(path);
+    let rels = (await zip.file(rp)?.async('string')) ?? '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>';
+    const parts: string[] = [];
+    for (const t of all[i]) {
+      n++;
+      const rid = `rIdTbl${n}`;
+      const ref = rangeToA1({ r1: t.r1, c1: t.c1, r2: t.r2, c2: t.c2 });
+      const af = t.btn && t.header ? `<autoFilter ref="${rangeToA1({ r1: t.r1, c1: t.c1, r2: t.r2 - (t.totals ? 1 : 0), c2: t.c2 })}"/>` : '';
+      const cols = t.cols.map((c, j) => `<tableColumn id="${j + 1}" name="${escX(c.name)}"${t.totals && c.label ? ` totalsRowLabel="${escX(c.label)}"` : ''}${t.totals && c.fn && c.fn !== 'none' ? ` totalsRowFunction="${TFN_OUT[c.fn]}"` : ''}/>`).join('');
+      const style = t.style ? `<tableStyleInfo name="${t.style}" showFirstColumn="${+t.first}" showLastColumn="${+t.last}" showRowStripes="${+t.bandR}" showColumnStripes="${+t.bandC}"/>` : '';
+      zip.file(`xl/tables/table${n}.xml`, `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<table xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" id="${n}" name="${escX(t.name)}" displayName="${escX(t.name)}" ref="${ref}"${t.header ? '' : ' headerRowCount="0"'}${t.totals ? ' totalsRowCount="1"' : ' totalsRowShown="0"'}>${af}<tableColumns count="${t.cols.length}">${cols}</tableColumns>${style}</table>`);
+      rels = rels.replace('</Relationships>', `<Relationship Id="${rid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/table" Target="../tables/table${n}.xml"/></Relationships>`);
+      ct = ct.replace('</Types>', `<Override PartName="/xl/tables/table${n}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"/></Types>`);
+      parts.push(`<tablePart r:id="${rid}"/>`);
+    }
+    if (!/xmlns:r=/.test(xml.slice(0, 600))) xml = xml.replace(/<worksheet\b/, '<worksheet xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"');
+    const tp = `<tableParts count="${parts.length}">${parts.join('')}</tableParts>`;
+    xml = /<extLst>/.test(xml) ? xml.replace('<extLst>', tp + '<extLst>') : xml.replace('</worksheet>', tp + '</worksheet>');
+    zip.file(path, xml);
+    zip.file(rp, rels);
+  }
+  zip.file('[Content_Types].xml', ct);
+  return new Uint8Array(await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' }));
 }
 
 /** Ghi lại liên kết ngoài (externalLinks) và chế độ tính lặp vào workbook.xml */
@@ -644,6 +826,20 @@ async function addWorkbookExtras(buf: Uint8Array, wb: Workbook): Promise<Uint8Ar
     if (!/xmlns:r=/.test(wx.slice(0, wx.indexOf('>', wx.indexOf('<workbook'))))) wx = wx.replace('<workbook ', '<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" ');
     wx = wx.replace('</sheets>', `</sheets><externalReferences>${refs}</externalReferences>`);
   }
+  // tên vùng (definedNames): giữ các tên _xlnm.* (vùng in…) ExcelJS đã ghi
+  const names = wb.listNames();
+  if (names.length) {
+    const xe = (t: string) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const order = wb.sheetIds();
+    const items = names.map((n) => {
+      const local = n.scope !== undefined ? order.indexOf(n.scope) : -1;
+      return `<definedName name="${xe(n.name)}"${local >= 0 ? ` localSheetId="${local}"` : ''}${n.comment ? ` comment="${xe(n.comment)}"` : ''}${n.hidden ? ' hidden="1"' : ''}>${xe(addPrefixes(toEn(n.expr)).slice(1))}</definedName>`;
+    }).join('');
+    // thay bằng hàm: công thức có $A$1… không được hiểu thành nhóm $1 của regex
+    if (/<\/definedNames>/.test(wx)) wx = wx.replace('</definedNames>', () => items + '</definedNames>');
+    else if (/<definedNames\s*\/>/.test(wx)) wx = wx.replace(/<definedNames\s*\/>/, () => `<definedNames>${items}</definedNames>`);
+    else wx = wx.replace(/(<\/externalReferences>|<\/sheets>)(?![\s\S]*<\/externalReferences>)/, (m0) => `${m0}<definedNames>${items}</definedNames>`);
+  }
   if (wb.iterate.on) {
     const it = `iterate="1" iterateCount="${wb.iterate.count}" iterateDelta="${wb.iterate.delta}"`;
     if (/<calcPr\b/.test(wx)) wx = wx.replace(/<calcPr\b([^>]*?)(\/?)>/, (_m, a, sl) => `<calcPr${a.replace(/\s(iterate|iterateCount|iterateDelta)="[^"]*"/g, '')} ${it}${sl}>`);
@@ -657,7 +853,16 @@ async function addWorkbookExtras(buf: Uint8Array, wb: Workbook): Promise<Uint8Ar
 /** Vùng cột nguyên ghi gọn kiểu C1:C1048576 */
 const refOut = (g: Range) => (g.r2 >= MAX_ROWS - 1 && g.r1 === 0 ? `${colName(g.c1)}1:${colName(g.c2)}${MAX_ROWS}` : rangeToA1(g));
 
+/** chữ của ghi chú khi ghi .xlsx: chú thích dạng chuỗi ghi thành ghi chú có tên người viết và ngày */
+export function noteTextOut(st: Style): string | null {
+  if (st.cm?.length) {
+    return st.cm.map((x) => { const d = new Date(x.d); const ds = isNaN(+d) ? '' : ` (${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()})`; return `${x.a}${ds}:\n${x.t}`; }).join('\n\n') + (st.nt ? '\n\n' + st.nt : '');
+  }
+  return st.nt ?? null;
+}
 function styleOut(cell: ExcelJS.Cell, st: Style, wb: Workbook, id: number, r: number, c: number) {
+  const nt = noteTextOut(st);
+  if (nt) (cell as any).note = { texts: [{ text: nt }] };
   const font: any = {};
   if (st.b) font.bold = true;
   if (st.i) font.italic = true;
@@ -1023,6 +1228,22 @@ async function addColBreaks(buf: Uint8Array, cols: number[][]): Promise<Uint8Arr
   return zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });
 }
 
+/** đánh dấu hàng/cột tổng của nhóm đang thu gọn (collapsed="1") — ExcelJS không ghi được thuộc tính này */
+async function addCollapsed(buf: Uint8Array, keys: string[][]): Promise<Uint8Array> {
+  const zip = await JSZip.loadAsync(buf);
+  for (let i = 0; i < keys.length; i++) {
+    if (!keys[i].length) continue;
+    const path = `xl/worksheets/sheet${i + 1}.xml`;
+    let xml = await zip.file(path)?.async('string');
+    if (!xml) continue;
+    const rows = new Set<number>(), cols = new Set<number>();
+    for (const k of keys[i]) { const [t, , at] = k.split(':'); (t === 'r' ? rows : cols).add(+at + 1); }
+    xml = xml.replace(/<row\b([^>]*?)(\/?)>/g, (m0, a: string, sl: string) => { const n = /\br="(\d+)"/.exec(a); return n && rows.has(+n[1]) && !/collapsed=/.test(a) ? `<row${a} collapsed="1"${sl}>` : m0; });
+    xml = xml.replace(/<col\b([^>]*?)\/>/g, (m0, a: string) => { const lo = +(/\bmin="(\d+)"/.exec(a)?.[1] ?? 0), hi = +(/\bmax="(\d+)"/.exec(a)?.[1] ?? 0); return [...cols].some((c) => c >= lo && c <= hi) && !/collapsed=/.test(a) ? `<col${a} collapsed="1"/>` : m0; });
+    zip.file(path, xml);
+  }
+  return zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });
+}
 /** Chỉ nhận liên kết an toàn: web, email, tệp, vị trí trong sổ (chặn javascript:, data:…) */
 export function safeLink(u: string): boolean { return /^(https?:|mailto:|file:|#|\\\\|[A-Za-z]:\\)/i.test(u.trim()) || (!/^[a-z][\w+.-]*:/i.test(u.trim()) && !!u.trim()); }
 

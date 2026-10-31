@@ -62,7 +62,8 @@ export function openPopover(el: HTMLElement, x: number, y: number) {
   document.body.appendChild(el);
   place(el, x, y);
   openEl = el;
-  setTimeout(() => { document.addEventListener('pointerdown', outside, true); document.addEventListener('keydown', escClose, true); });
+  document.addEventListener('keydown', escClose, true); // Esc đóng ngay cả khi bấm liền sau khi mở
+  setTimeout(() => { document.addEventListener('pointerdown', outside, true); });
 }
 
 function buildMenu(items: MenuItem[], isSub: boolean): HTMLElement {
