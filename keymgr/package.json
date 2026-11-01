@@ -1,7 +1,7 @@
 {
   "name": "excellike-keymgr",
   "productName": "ExcelLike Key Manager",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Quản lý và sinh key bản quyền ExcelLike",
   "author": "Mai Vũ Lâm",
   "main": "electron/main.cjs",

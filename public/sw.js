@@ -16,6 +16,7 @@ self.addEventListener('fetch', (e) => {
   const sameOrigin = url.origin === location.origin;
   const font = /fonts\.(googleapis|gstatic)\.com$/.test(url.hostname);
   if (!sameOrigin && !font) return;
+  if (sameOrigin && url.pathname.includes('/keymgr/')) return; // Key Manager bản iPhone có service worker riêng
   if (req.mode === 'navigate') {
     // trang chính: mạng trước để nhận bản mới, mất mạng thì dùng cache
     e.respondWith(fetch(req).then((r) => { const cp = r.clone(); caches.open(VERSION).then((c) => c.put('./index.html', cp)); return r; })

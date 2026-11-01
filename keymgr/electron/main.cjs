@@ -10,6 +10,8 @@ if (TEST.XL_KM_DATA) app.setPath('userData', TEST.XL_KM_DATA);
 if (!app.requestSingleInstanceLock()) { app.quit(); return; }
 
 const DATA = () => app.getPath('userData');
+/** key do Key Manager bản iPhone cấp có số từ đây trở lên */
+const IPHONE_RANGE = 100001;
 const SIGN_FILE = () => path.join(DATA(), 'signing.bin');
 const DB_FILE = () => path.join(DATA(), 'keys.json');
 const LOG = (m) => { try { fs.appendFileSync(path.join(DATA(), 'keymgr-log.txt'), `[${new Date().toISOString()}] ${m}\n`); } catch { /* bỏ qua */ } };
@@ -55,7 +57,8 @@ function readDb() {
     }
   }
   // số kế tiếp luôn lớn hơn mọi số đã cấp
-  d.nextSerial = Math.max(Number.isInteger(d.nextSerial) ? d.nextSerial : 1, ...d.keys.map((k) => (Number.isInteger(k.serial) ? k.serial + 1 : 1)));
+  // (key cấp trên iPhone đánh số từ 100001 — không tính vào dãy số của bản Windows)
+  d.nextSerial = Math.max(Number.isInteger(d.nextSerial) && d.nextSerial < IPHONE_RANGE ? d.nextSerial : 1, ...d.keys.map((k) => (Number.isInteger(k.serial) && k.serial < IPHONE_RANGE ? k.serial + 1 : 1)));
   return d;
 }
 const DATE_RE = /^\d{4}-\d\d-\d\d$/;
@@ -214,7 +217,7 @@ ipcMain.handle('km:restore', async () => {
       db.keys.push(k); have.set(k.serial, k); added++;
     }
     db.keys.sort((a, b) => a.serial - b.serial);
-    db.nextSerial = Math.max(db.nextSerial, ...db.keys.map((k) => k.serial + 1));
+    db.nextSerial = Math.max(db.nextSerial, ...db.keys.filter((k) => k.serial < IPHONE_RANGE).map((k) => k.serial + 1));
     writeDb(db);
     if (conflict) LOG(`Khôi phục: ${conflict} key trùng số nhưng khác nội dung (giữ bản đang có)`);
     return { ok: true, added, bad, conflict };
