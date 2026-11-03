@@ -1,6 +1,6 @@
 import { DynamicOffsetPlugin, offsetIn, offsetOut } from './offset';
 import { DEFAULT_ALLOW, type PwHash, type ProtectAllow, type SheetProtect } from './protect';
-import { DynArrayPlugin, DYN_NAMES } from './dynarray';
+import { DynArrayPlugin, DYN_NAMES, fitRegistry } from './dynarray';
 import { areaRange, type Area, encodeStructured, decodeStructured, tableCellStyle, tableNameError, dataRows, inTable, xtExpr, totalFormula, type TableDef, type TableReg, type TotalFn } from './tables';
 import { encFormulaNames, decFormulaNames, encName, nameError, renameInFormula } from './names';
 import { HyperFormula, FunctionPlugin, FunctionArgumentType, CellError, ErrorType } from 'hyperformula';
@@ -127,8 +127,9 @@ export const HF_CONFIG: Partial<ConfigParams> = {
   undoLimit: HISTORY,
   maxRows: MAX_ROWS,
   maxColumns: MAX_COLS,
-  useColumnIndex: false,
+  useColumnIndex: true,
   smartRounding: true,
+  accentSensitive: true, // như Excel: “Bến Nghé” khác “Ben Nghe” (và nhanh hơn: không phải bỏ dấu mỗi lần so sánh)
   precisionRounding: 15, // giống Excel: 15 chữ số có nghĩa (mặc định của HyperFormula chỉ 10)
 };
 
@@ -201,6 +202,27 @@ function ensurePlugins() {
   HyperFormula.registerFunctionPlugin(DynArrayPlugin as any, { enGB: Object.fromEntries(DYN_NAMES.map((n) => [n, n])) } as any);
   HyperFormula.registerFunctionPlugin(TableRowPlugin as any, { enGB: { XTHISROW: 'XTHISROW' } } as any);
   HyperFormula.registerFunctionPlugin(DynamicOffsetPlugin as any, { enGB: { XOFS3: 'XOFS3', XOFS4: 'XOFS4', XOFS5: 'XOFS5' } } as any);
+  // So sánh chuỗi (=, <, >…) trong HyperFormula thử đọc chuỗi thành ngày ở MỖI lần so sánh — rất chậm với FILTER/SUMIF
+  // trên vùng lớn. Chuỗi không có chữ số thì không thể là ngày/giờ; chuỗi có số thì nhớ kết quả đọc.
+  try {
+    const probe: any = HyperFormula.buildEmpty(HF_CONFIG);
+    const proto = Object.getPrototypeOf(probe._evaluator.interpreter.arithmeticHelper.dateTimeHelper);
+    const orig = proto.dateStringToDateNumber;
+    if (orig && !orig.__fast) {
+      const memo = new WeakMap<object, Map<string, unknown>>();
+      const fast = function (this: object, s: string) {
+        if (typeof s === 'string' && !/\d/.test(s)) return undefined;
+        let m = memo.get(this); if (!m) memo.set(this, (m = new Map()));
+        if (m.has(s)) return m.get(s);
+        const v = orig.call(this, s);
+        if (m.size > 20000) m.clear();
+        m.set(s, v); return v;
+      };
+      (fast as any).__fast = true;
+      proto.dateStringToDateNumber = fast;
+    }
+    probe.destroy?.();
+  } catch { /* phiên bản HyperFormula khác: bỏ qua tối ưu */ }
   pluginsReady = true;
 }
 /** OFFSET động: đổi công thức khi vào bộ tính và đổi ngược khi đọc ra (xem offset.ts) */
@@ -211,9 +233,16 @@ const fin = (v: string, self: { r: number; c: number } | undefined, sheet: strin
   if (v[0] !== '=') return v;
   let x = offsetIn(v, self, sheet);
   if (ctx && x.includes('[')) x = encodeStructured(x, { tables: ctx.tables(), self: self && { sheet, r: self.r, c: self.c }, need: ctx.need, inline: ctx.inline });
-  return encFormulaNames(x);
+  x = encFormulaNames(x);
+  // mảng động có kích thước phụ thuộc dữ liệu (FILTER, UNIQUE): bọc XFIT để bộ tính chỉ giữ đúng vùng tràn thật
+  // (sổ tính đo kích thước thật rồi đặt lại — xem Workbook.refitDyn); ô trong công thức tính tạm (self rỗng) thì không bọc
+  if (self && DYN_SIZE.test(x) && !/^=\s*XFIT\s*\(/i.test(x)) x = '=XFIT(1;1;' + x.slice(1) + ')';
+  return x;
 };
-const NEEDS_FIN = /OFFSET\s*\(|[^\u0000-\u02AF]|\[/i;
+const DYN_SIZE = /(?<![\w.])(?:_xlfn\.)?(?:_xlws\.)?(?:FILTER|UNIQUE)\s*\(/i;
+const NEEDS_FIN = /OFFSET\s*\(|[^\u0000-\u02AF]|\[|FILTER\s*\(|UNIQUE\s*\(/i;
+/** bỏ lớp bọc XFIT khi đưa công thức ra ngoài (thanh công thức, lưu tệp) */
+const unfit = (f: string) => { const m = /^=XFIT\(\s*\d+\s*[;,]\s*\d+\s*[;,]/i.exec(f); return m && f.endsWith(')') ? '=' + f.slice(m[0].length, -1) : f; };
 function mapRows(cells: RawCellContent[][], sheet: string, r0 = 0, c0 = 0, ctx?: TblCtx): RawCellContent[][] {
   let hit = false;
   for (const row of cells) { if (row) for (const v of row) if (typeof v === 'string' && v[0] === '=' && NEEDS_FIN.test(v)) { hit = true; break; } if (hit) break; }
@@ -240,13 +269,14 @@ function patchOffset(hf: HyperFormula): HyperFormula {
     if (Array.isArray(c)) return set(a, mapRows(c, name, a.row, a.col, ctx));
     return set(a, typeof c === 'string' ? fin(c, { r: a.row, c: a.col }, name, ctx) : c);
   };
-  const out = (f: string, at?: { sheet: number; r: number; c: number }) => decodeStructured(decFormulaNames(offsetOut(f), nameDisplay(hf)), hfTables(hf), at);
+  const out = (f: string, at?: { sheet: number; r: number; c: number }) => decodeStructured(decFormulaNames(offsetOut(unfit(f)), nameDisplay(hf)), hfTables(hf), at);
   const calc = h.calculateFormula.bind(hf);
   h.calculateFormula = (f: string, sheet: number) => calc(fin(f, undefined, hf.getSheetName(sheet) ?? '', { ...tblCtx(hf), inline: true }), sheet);
   const vf = h.validateFormula.bind(hf);
   h.validateFormula = (f: string) => vf(f.includes('[') ? encodeStructured(f, { tables: hfTables(hf), need: () => {}, inline: true }).replace(/(?<![\w'!])\[(?:[^[\]]|\[[^\]]*\])*\]/g, '1') : f);
   h.setSheetContent = (id: number, cells: RawCellContent[][]) => sheetSet(id, mapRows(cells, hf.getSheetName(id) ?? '', 0, 0, tblCtx(hf)));
   h.__rawFormula = (a: any) => gf(a);
+  h.__rawSet = set;
   h.getCellFormula = (a: any) => { const f = gf(a); return f === undefined ? f : out(f, { sheet: a.sheet, r: a.row, c: a.col }); };
   h.getCellSerialized = (a: any) => { const v = gs(a); return typeof v === 'string' && v[0] === '=' ? out(v, { sheet: a.sheet, r: a.row, c: a.col }) : v; };
   h.getSheetSerialized = (id: number) => gss(id).map((row: any[], i: number) => row.map((v, j) => (typeof v === 'string' && v[0] === '=' ? out(v, { sheet: id, r: i, c: j }) : v)));
@@ -307,7 +337,34 @@ export class Workbook {
   onChange(f: () => void) { this.listeners.add(f); return () => this.listeners.delete(f); }
   /** Tăng mỗi khi sổ thay đổi — dùng làm khóa bộ nhớ đệm (CF) */
   ver = 0;
-  private emit() { this.ver++; if (this.iterate.on) this.resolveIter(); this.listeners.forEach((f) => f()); }
+  private emit() { this.ver++; this.refitDyn(); if (this.iterate.on) this.resolveIter(); this.listeners.forEach((f) => f()); }
+  /**
+   * Mảng động FILTER/UNIQUE: đặt lại kích thước vùng giữ trước của XFIT theo kết quả thật (như Excel tràn đúng số ô).
+   * Không ghi vào lịch sử Hoàn tác: hoàn tác/làm lại thao tác gốc thì kích thước lại được đo và đặt lại.
+   */
+  refitDyn() {
+    const h = this.hf as any, reg = fitRegistry(h._dependencyGraph);
+    if (!reg.size) return;
+    const ur = h._crudOperations?.undoRedo;
+    for (let pass = 0; pass < 4 && reg.size; pass++) {
+      const items = [...reg.values()]; reg.clear();
+      const lim = ur?.undoLimit, depth = ur?.undoStack.length ?? 0, redo = ur?.redoStack, clr = ur?.clearRedoStack;
+      if (ur) { ur.undoLimit = Number.MAX_SAFE_INTEGER; ur.clearRedoStack = () => {}; }
+      try {
+        this.hf.batch(() => {
+          for (const it of items) {
+            const a = { sheet: it.s, row: it.r, col: it.c };
+            const raw: string | undefined = h.__rawFormula(a);
+            if (!raw || !/^=XFIT\(/i.test(raw)) continue;
+            const nf = raw.replace(/^=XFIT\(\s*\d+\s*([;,])\s*\d+\s*[;,]/i, (_m: string, sep: string) => `=XFIT(${it.h}${sep}${it.w}${sep}`);
+            if (nf !== raw) h.__rawSet(a, nf);
+          }
+        });
+      } finally {
+        if (ur) { ur.undoStack.length = Math.min(ur.undoStack.length, depth); ur.undoLimit = lim; ur.clearRedoStack = clr; ur.redoStack = redo; }
+      }
+    }
+  }
 
   // ---------- lịch sử ----------
   private hfDepth(): number | null {
@@ -3123,6 +3180,7 @@ export class Workbook {
       }
       wb.hf.resumeEvaluation();
     }
+    wb.refitDyn();
     wb.hf.clearUndoStack();
     if (d.calc) wb.iterate = { on: !!d.calc.on, count: d.calc.count ?? 100, delta: d.calc.delta ?? 0.001 };
     for (const [n, r, c, v] of d.iterVals ?? []) { const id = wb.hf.getSheetId(n); if (id !== undefined) wb.seeds.set(id + ':' + r + ':' + c, v); }

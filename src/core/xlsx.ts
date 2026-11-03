@@ -493,6 +493,11 @@ export async function readXlsxBook(buf: ArrayBuffer | Uint8Array): Promise<{ boo
           else { const m = masters.get('si' + cl.f.si); raw = m ? shiftFormula(m.f, r - m.r, c - m.c) : plainVal(cl).raw; }
         } else if (cl.f.text) raw = toVi('=' + stripPrefixes(cl.f.text));
         else ({ raw, isText } = plainVal(cl));
+        // mảng động FILTER/UNIQUE: lấy kích thước tràn Excel đã lưu (ref) làm kích thước giữ trước — mở nhanh, không phải đo lại
+        if (cl.f.t === 'array' && cl.f.ref && typeof raw === 'string' && /(?:FILTER|UNIQUE)\s*\(/i.test(raw)) {
+          const g = parseRange(cl.f.ref);
+          if (g) raw = `=XFIT(${g.r2 - g.r1 + 1};${g.c2 - g.c1 + 1};${(raw as string).slice(1)})`;
+        }
       } else ({ raw, isText } = plainVal(cl));
       // chữ trông như số/công thức/ngày → giữ là chữ (thêm dấu ' như Excel)
       if (isText && needsApostrophe(raw as string)) raw = "'" + raw;

@@ -59,7 +59,7 @@ describe('Mảng động trong .xlsx', () => {
     const buf = await writeXlsx(wb);
     const z = await JSZip.loadAsync(buf);
     const x = await z.file('xl/worksheets/sheet1.xml')!.async('string');
-    expect(x).toMatch(/<c r="F1"[^>]* cm="1"><f t="array" ref="F1:H4">_xlfn\._xlws\.FILTER\(/);
+    expect(x).toMatch(/<c r="F1"[^>]* cm="1"><f t="array" ref="F1:H3">_xlfn\._xlws\.FILTER\(/);
     expect(await z.file('xl/metadata.xml')?.async('string')).toMatch(/XLDAPR/);
     // giả lập tệp Excel: ô tràn có giá trị lưu sẵn
     const x2 = x.replace(/<c r="G1"[^>]*\/>|<c r="G1"[^>]*>[\s\S]*?<\/c>/, '<c r="G1"><v>3</v></c>');

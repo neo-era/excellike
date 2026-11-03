@@ -30,8 +30,25 @@ export class DynArrayPlugin extends FunctionPlugin {
     CHOOSECOLS: { method: 'choosecols', sizeOfResultArrayMethod: 'chooseColsSize', parameters: [{ argumentType: R }, { argumentType: N }], repeatLastArgs: 1, vectorizationForbidden: true },
     CHOOSEROWS: { method: 'chooserows', sizeOfResultArrayMethod: 'chooseRowsSize', parameters: [{ argumentType: R }, { argumentType: N }], repeatLastArgs: 1, vectorizationForbidden: true },
     TOCOL: { method: 'tocol', sizeOfResultArrayMethod: 'toColSize', parameters: [{ argumentType: R }, { argumentType: N, defaultValue: 0 }, { argumentType: N, defaultValue: 0 }], vectorizationForbidden: true },
+    XFIT: { method: 'xfit', sizeOfResultArrayMethod: 'xfitSize', enableArrayArithmeticForArguments: true, parameters: [{ argumentType: N }, { argumentType: N }, { argumentType: R }], vectorizationForbidden: true },
     TOROW: { method: 'torow', sizeOfResultArrayMethod: 'toRowSize', parameters: [{ argumentType: R }, { argumentType: N, defaultValue: 0 }, { argumentType: N, defaultValue: 0 }], vectorizationForbidden: true },
   };
+  /** XFIT(h; w; biểu_thức): vùng tràn đúng kích thước h×w đã biết (lần tính trước) thay vì kích thước tối đa có thể */
+  xfitSize(ast: any) { const h = lit(ast.args?.[0]), w = lit(ast.args?.[1]); return h && w && h > 0 && w > 0 ? new ArraySize(w, h) : ArraySize.error(); }
+  xfit(ast: any, state: any) {
+    const at = state.formulaAddress, reg = fitRegistry((this as any).dependencyGraph);
+    const k = at ? `${at.sheet}:${at.row}:${at.col}` : '';
+    return (this as any).runFunction(ast.args, state, (this as any).metadata('XFIT'), (h: number, w: number, v: SimpleRangeValue | CellError) => {
+      if (isErr(v)) { if (k) { if (h === 1 && w === 1) reg.delete(k); else reg.set(k, { s: at.sheet, r: at.row, c: at.col, h: 1, w: 1 }); } return v; }
+      const ah = v.height(), aw = v.width();
+      if (k) { if (ah === h && aw === w) reg.delete(k); else reg.set(k, { s: at.sheet, r: at.row, c: at.col, h: ah, w: aw }); }
+      if (ah === h && aw === w) return v;
+      // tạm thời: cắt/đệm cho vừa vùng đã giữ; sổ tính sẽ đặt lại kích thước rồi tính lại
+      const d = v.data as Grid, g: Grid = [];
+      for (let i = 0; i < h; i++) { const row: unknown[] = []; for (let j = 0; j < w; j++) row.push(i < ah && j < aw ? d[i][j] : EmptyValue); g.push(row); }
+      return out(g);
+    });
+  }
   private sz(ast: any, state: any, i = 0) { return (this as any).arraySizeForAst(ast.args[i], state) as ArraySize; }
   firstSize(ast: any, state: any) { if (!ast.args.length) return ArraySize.error(); const a = this.sz(ast, state); return new ArraySize(a.width, a.height); }
   takeSize(ast: any, state: any) {
@@ -118,4 +135,8 @@ export class DynArrayPlugin extends FunctionPlugin {
   tocol(ast: any, state: any) { return (this as any).runFunction(ast.args, state, (this as any).metadata('TOCOL'), (arr: SimpleRangeValue, ig: number, bc: number) => { const f = this.flat(arr, ig, bc); return f.length ? out(f.map((v) => [v])) : new CellError(ErrorType.VALUE); }); }
   torow(ast: any, state: any) { return (this as any).runFunction(ast.args, state, (this as any).metadata('TOROW'), (arr: SimpleRangeValue, ig: number, bc: number) => { const f = this.flat(arr, ig, bc); return f.length ? out([f]) : new CellError(ErrorType.VALUE); }); }
 }
-export const DYN_NAMES = ['FILTER', 'SORTBY', 'TAKE', 'DROP', 'CHOOSECOLS', 'CHOOSEROWS', 'TOCOL', 'TOROW'];
+/** ô XFIT có kích thước thật khác kích thước đang giữ: khóa "sheet:hàng:cột" → kích thước thật (theo từng bộ tính) */
+export interface FitMiss { s: number; r: number; c: number; h: number; w: number }
+const FIT = new WeakMap<object, Map<string, FitMiss>>();
+export function fitRegistry(graph: object): Map<string, FitMiss> { let m = FIT.get(graph); if (!m) FIT.set(graph, (m = new Map())); return m; }
+export const DYN_NAMES = ['XFIT', 'FILTER', 'SORTBY', 'TAKE', 'DROP', 'CHOOSECOLS', 'CHOOSEROWS', 'TOCOL', 'TOROW'];
