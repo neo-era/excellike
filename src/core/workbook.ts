@@ -9,7 +9,7 @@ import { shiftFormula, fixSheetQuotes, needsQuote, quoteSheet, transposeFormula 
 import type { ConfigParams, RawCellContent, SimpleCellAddress } from 'hyperformula';
 import { MAX_COLS, MAX_ROWS, type Range, rangeSize, toA1 } from './address';
 import { normalizeInput } from './input';
-import { editString, formatValue, isDateFmt, type Align } from './numfmt';
+import { editString, formatValue, formatNumber, isDateFmt, type Align } from './numfmt';
 import { AxisSizes } from './sizes';
 import { fillPlan, seriesValues, type SrcCell, type SeriesOpts } from './series';
 import { toTSV, parseTSV } from './tsv';
@@ -159,6 +159,38 @@ class ExcelIntPlugin extends FunctionPlugin {
       d === 0 ? new CellError(ErrorType.DIV_BY_ZERO) : n - d * Math.floor(n / d));
   }
 }
+/**
+ * TEXT(giá_trị; mã_định_dạng) như Excel chạy trên Windows tiếng Việt: trong mã định dạng của TEXT, "," là dấu thập phân,
+ * "." là dấu nhóm nghìn (Excel đọc mã theo vùng của máy) — TEXT(29;"#,##0") = "29,0", TEXT(1234,5;"#.##0") = "1.235".
+ * Dùng bộ định dạng số của ô (đổi chỗ , . rồi định dạng) thay cho TEXT của HyperFormula (không hiểu #,##0…).
+ */
+export function swapSeps(fmt: string): string {
+  let o = '', q = false;
+  for (let i = 0; i < fmt.length; i++) {
+    const ch = fmt[i];
+    if (ch === '"') { q = !q; o += ch; continue; }
+    if (!q && ch === '\\') { o += ch + (fmt[i + 1] ?? ''); i++; continue; }
+    o += q ? ch : ch === ',' ? '.' : ch === '.' ? ',' : ch;
+  }
+  return o;
+}
+class ExcelTextPlugin extends FunctionPlugin {
+  static implementedFunctions = { TEXT: { method: 'text', parameters: [{ argumentType: FunctionArgumentType.SCALAR }, { argumentType: FunctionArgumentType.STRING }] } };
+  text(ast: any, state: any) {
+    return (this as any).runFunction(ast.args, state, (this as any).metadata('TEXT'), (v: any, fmt: string) => {
+      if (v instanceof CellError) return v;
+      let n = typeof v === 'number' ? v : v && typeof v === 'object' && typeof v.val === 'number' ? v.val : v === null || v === undefined || (typeof v === 'symbol') ? 0 : null;
+      // số lưu dạng chữ ("123") cũng định dạng như số (như Excel)
+      if (n === null && typeof v === 'string' && v.trim() !== '') { const x = (this as any).coerceScalarToNumberOrError?.(v); if (typeof x === 'number') n = x; else if (x && typeof x === 'object' && typeof x.val === 'number') n = x.val; }
+      if (n !== null) { try { return formatNumber(n, swapSeps(fmt)); } catch { return new CellError(ErrorType.VALUE); } }
+      if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE';
+      const t = typeof v === 'string' ? v : '';
+      // chuỗi: phần văn bản @ của mã (nếu có), không thì giữ nguyên như Excel
+      const sec = fmt.split(';')[3] ?? (fmt.includes('@') ? fmt : null);
+      return sec ? sec.replace(/"([^"]*)"/g, '$1').replace(/@/g, t) : t;
+    });
+  }
+}
 /** XTHISROW(ô): giá trị ô cùng hàng của cột bảng — mã nội bộ của [@Cột] */
 class TableRowPlugin extends FunctionPlugin {
   static implementedFunctions = { XTHISROW: { method: 'xthisrow', parameters: [{ argumentType: FunctionArgumentType.SCALAR }] } };
@@ -211,6 +243,8 @@ function ensurePlugins() {
   HyperFormula.unregisterFunction('MOD');
   HyperFormula.registerFunctionPlugin(ExcelIntPlugin as any, { enGB: { INT: 'INT', MOD: 'MOD' } } as any);
   HyperFormula.registerFunctionPlugin(ExcelForecastPlugin as any, { enGB: { FORECAST: 'FORECAST', 'FORECAST.LINEAR': 'FORECAST.LINEAR', INTERCEPT: 'INTERCEPT' } } as any);
+  HyperFormula.unregisterFunction('TEXT');
+  HyperFormula.registerFunctionPlugin(ExcelTextPlugin as any, { enGB: { TEXT: 'TEXT' } } as any);
   HyperFormula.unregisterFunction('FILTER');
   HyperFormula.registerFunctionPlugin(DynArrayPlugin as any, { enGB: Object.fromEntries(DYN_NAMES.map((n) => [n, n])) } as any);
   HyperFormula.registerFunctionPlugin(TableRowPlugin as any, { enGB: { XTHISROW: 'XTHISROW' } } as any);
@@ -251,13 +285,13 @@ const fin = (v: string, self: { r: number; c: number } | undefined, sheet: strin
   x = encFormulaNames(x);
   // mảng động có kích thước phụ thuộc dữ liệu (FILTER, UNIQUE): bọc XFIT để bộ tính chỉ giữ đúng vùng tràn thật
   // (sổ tính đo kích thước thật rồi đặt lại — xem Workbook.refitDyn); ô trong công thức tính tạm (self rỗng) thì không bọc
-  if (self && DYN_SIZE.test(x) && !/^=\s*XFIT\s*\(/i.test(x)) x = '=XFIT(1;1;' + x.slice(1) + ')';
+  if (self && DYN_SIZE.test(x) && !/^=\s*X(?:FIT|CSE)\s*\(/i.test(x)) x = '=XFIT(1;1;' + x.slice(1) + ')';
   return x;
 };
 const DYN_SIZE = /(?<![\w.])(?:_xlfn\.)?(?:_xlws\.)?(?:FILTER|UNIQUE|LET|MAP|SCAN|BYROW|BYCOL|MAKEARRAY|REDUCE|XLAMCALL)\s*\(/i;
 const NEEDS_FIN = /OFFSET\s*\(|[^\u0000-\u02AF]|\[|FILTER\s*\(|UNIQUE\s*\(|LAMBDA\s*\(|LET\s*\(|MAP\s*\(|SCAN\s*\(|BYROW\s*\(|BYCOL\s*\(|MAKEARRAY\s*\(|REDUCE\s*\(/i;
 /** bỏ lớp bọc XFIT khi đưa công thức ra ngoài (thanh công thức, lưu tệp) */
-const unfit = (f: string) => { const m = /^=XFIT\(\s*\d+\s*[;,]\s*\d+\s*[;,]/i.exec(f); return m && f.endsWith(')') ? '=' + f.slice(m[0].length, -1) : f; };
+const unfit = (f: string) => { const m = /^=X(?:FIT|CSE)\(\s*\d+\s*[;,]\s*\d+\s*[;,]/i.exec(f); return m && f.endsWith(')') ? '=' + f.slice(m[0].length, -1) : f; };
 function mapRows(cells: RawCellContent[][], sheet: string, r0 = 0, c0 = 0, ctx?: TblCtx): RawCellContent[][] {
   let hit = false;
   for (const row of cells) { if (row) for (const v of row) if (typeof v === 'string' && v[0] === '=' && NEEDS_FIN.test(v)) { hit = true; break; } if (hit) break; }
@@ -419,7 +453,7 @@ export class Workbook {
   private resumeCalc() {
     for (const v of this.freshV) { if (v.cachedCellValue !== undefined) v.cachedCellValue = undefined; }
     this.freshV.clear();
-    this.hf.resumeEvaluation();
+    this.noteChanges(this.hf.resumeEvaluation());
   }
   /** tính phần đang chờ, rồi tạm dừng lại nếu đang Thủ công (không phát sự kiện) */
   private settleNow() {
@@ -427,7 +461,7 @@ export class Workbook {
     if (h._evaluationSuspended) this.resumeCalc();
     this.fresh = new WeakMap(); this.calcDirty = false;
     this.refitDyn();
-    if (this.iterate.on) this.resolveIter();
+    if (this.needIter) this.resolveIter();
     if (this.calcMode === 'manual') this.hf.suspendEvaluation();
   }
   /** bao quanh một thao tác ghi: Thủ công + sửa ô → chỉ đánh dấu chờ tính; thao tác khác → tính ngay như Tự động */
@@ -469,7 +503,19 @@ export class Workbook {
   onChange(f: () => void) { this.listeners.add(f); return () => this.listeners.delete(f); }
   /** Tăng mỗi khi sổ thay đổi — dùng làm khóa bộ nhớ đệm (CF) */
   ver = 0;
-  private emit() { this.ver++; if (!this.held) { this.refitDyn(); if (this.iterate.on) this.resolveIter(); } this.listeners.forEach((f) => f()); }
+  /** dùng lại kết quả “không hội tụ” lần trước: chỉ khi thao tác là gõ ô và không chạm ô vòng / ô đầu vào của vòng */
+  private memoOk = false;
+  private lastSet: unknown[] | null = null;
+  private touchesWatch(ch: unknown[]) { return (ch as any[]).some((x) => { const a = x?.address; return !a || this.cycWatch.some((w) => w.s === a.sheet && a.row >= w.r1 && a.row <= w.r2 && a.col >= w.c1 && a.col <= w.c2); }); }
+  private emit() {
+    this.ver++;
+    if (!this.held) {
+      this.refitDyn();
+      this.memoOk = !!this.lastSet && !this.touchesWatch(this.lastSet);
+      if (this.needIter && !this.skipIter()) this.resolveIter();
+    }
+    this.lastEdit = null; this.lastSet = null; this.noHf = false; this.listeners.forEach((f) => f());
+  }
   /**
    * Mảng động FILTER/UNIQUE: đặt lại kích thước vùng giữ trước của XFIT theo kết quả thật (như Excel tràn đúng số ô).
    * Không ghi vào lịch sử Hoàn tác: hoàn tác/làm lại thao tác gốc thì kích thước lại được đo và đặt lại.
@@ -514,10 +560,14 @@ export class Workbook {
     if (hfOp) {
       const before = this.hfDepth();
       const res = this.around(lazy, () => (opt.batch === false ? hfOp() : this.hf.batch(hfOp)));
-      if (Array.isArray(res)) changes = res;
+      if (Array.isArray(res)) { changes = res; this.noteChanges(res); }
+      this.lastEdit = this.editOnly > 0 && Array.isArray(res) ? res : null;
+      this.lastSet = this.inSet > 0 && Array.isArray(res) ? res : null;
+      this.noHf = false;
       const after = this.hfDepth();
       hfStep = before === null || after === null ? true : after > before || (after === before && after === HISTORY);
     }
+    if (!hfOp) this.noHf = true;
     opt.post?.();
     if (!hfStep && !custom) return changes;
     this.past.push({ hf: hfStep, ...custom, ...(lazy && hfStep ? { lazy: true } : {}) });
@@ -532,7 +582,7 @@ export class Workbook {
     if (man && this.hf.isEvaluationSuspended()) this.resumeCalc();
     this.hf.rebuildAndRecalculate();
     this.fresh = new WeakMap(); this.calcDirty = false;
-    if (man) { this.refitDyn(); if (this.iterate.on) this.resolveIter(); this.hf.suspendEvaluation(); }
+    if (man) { this.refitDyn(); if (this.needIter) this.resolveIter(); this.hf.suspendEvaluation(); }
     this.past = []; this.future = [];
     this.emit();
   }
@@ -543,7 +593,7 @@ export class Workbook {
   undo() {
     const e = this.past.pop();
     if (!e) return false;
-    const un = (x: Entry) => { if (x.parts) { [...x.parts].reverse().forEach(un); return; } x.undo?.(); if (x.hf && this.hf.isThereSomethingToUndo()) this.hf.undo(); };
+    const un = (x: Entry) => { if (x.parts) { [...x.parts].reverse().forEach(un); return; } x.undo?.(); if (x.hf && this.hf.isThereSomethingToUndo()) this.noteChanges(this.hf.undo()); };
     this.around(allLazy(e), () => un(e));
     this.future.push(e);
     this.emit();
@@ -552,7 +602,7 @@ export class Workbook {
   redo() {
     const e = this.future.pop();
     if (!e) return false;
-    const re = (x: Entry) => { if (x.parts) { x.parts.forEach(re); return; } if (x.hf && this.hf.isThereSomethingToRedo()) this.hf.redo(); x.redo?.(); };
+    const re = (x: Entry) => { if (x.parts) { x.parts.forEach(re); return; } if (x.hf && this.hf.isThereSomethingToRedo()) this.noteChanges(this.hf.redo()); x.redo?.(); };
     this.around(allLazy(e), () => re(e));
     this.past.push(e);
     this.emit();
@@ -842,8 +892,36 @@ export class Workbook {
   }
   /** Giá trị khởi đầu (vd giá trị Excel lưu sẵn trong tệp) để hội tụ ngay như Excel */
   setIterSeeds(list: [number, number, number, unknown][]) { for (const [s, r, c, v] of list) this.seeds.set(s + ':' + r + ':' + c, v); this.resolveIter(); }
+  /** sổ đang có tham chiếu vòng (khi không bật Tính lặp vẫn tính ra số như Excel và báo trên thanh trạng thái) */
+  private cycles = false;
+  private cycleHint = false;
+  /** các ô thuộc vòng tham chiếu (khóa "trang:hàng:cột") — cho thanh trạng thái “Tham chiếu Vòng: F14” */
+  circular: string[] = [];
+  private noConv: Map<string, string> | null = null;
+  private cycWatch: { s: number; r1: number; c1: number; r2: number; c2: number }[] = [];
+  /** thay đổi của lần sửa ô gần nhất (null: thao tác khác — luôn tính lại vòng) */
+  private lastEdit: unknown[] | null = null;
+  private editOnly = 0;
+  private inSet = 0;
+  /** sửa ô không chạm vùng các ô vòng đọc tới → bỏ qua tính lại vòng (tệp có vòng vẫn sửa nhanh) */
+  /** thao tác gần nhất không đụng bộ tính (định dạng, độ rộng…): không cần tính lại vòng */
+  private noHf = false;
+  private skipIter(): boolean {
+    if (this.noHf && !this.cycleHint) return true;
+    if (this.iterate.on || this.cycleHint || !this.cycles || !this.lastEdit) return false;
+    for (const ch of this.lastEdit as any[]) {
+      const a = ch?.address; if (!a) return false;
+      if (this.cycWatch.some((w) => w.s === a.sheet && a.row >= w.r1 && a.row <= w.r2 && a.col >= w.c1 && a.col <= w.c2)) return false;
+    }
+    return true;
+  }
+  private noteChanges(ch: unknown) { if (Array.isArray(ch) && ch.some((c: any) => c?.newValue?.type === 'CYCLE')) this.cycleHint = true; }
+  private get needIter() { return this.iterate.on || this.cycles || this.cycleHint; }
   private resolveIter() {
-    if (!this.iterate.on) { this.over.clear(); return; }
+    this.cycleHint = false;
+    // không bật Tính lặp: như Excel khi gặp tham chiếu vòng — vẫn tính ra số (lặp tới khi ổn định) và cảnh báo;
+    // vòng không hội tụ (vd A1 = A1 + 1) thì giữ #CYCLE!
+    const IT = this.iterate.on ? this.iterate : { on: true, count: 100, delta: 0.001 };
     type DC = { s: number; r: number; c: number; k: string; parts: (string | XRef)[] };
     const D: DC[] = [];
     const inD = new Set<string>();
@@ -857,7 +935,9 @@ export class Workbook {
         }
       }
     }
-    if (!D.length) { this.over.clear(); return; }
+    this.circular = D.map((d) => d.k);
+    this.cycles = D.length > 0;
+    if (!D.length) { this.over.clear(); this.noConv = null; return; }
     // ô phụ thuộc vòng lặp nhưng không hiện #CYCLE! (vd. bọc trong IFERROR) cũng phải tính lặp
     {
       const q: any[] = D.map((d) => this.A(d.s, d.r, d.c));
@@ -875,9 +955,27 @@ export class Workbook {
       }
     }
     if (D.length > 20000) { this.over.clear(); return; }
+    // Tính lặp tắt: vòng lần trước không hội tụ, nay vẫn đủ các ô đó với công thức như cũ (chỉ thêm ô phụ thuộc) → vẫn không hội tụ, khỏi tính lại
+    const fsig = (k: string) => { const [s0, r0, c0] = k.split(':').map(Number); return (this.hf as any).__rawFormula?.({ sheet: s0, row: r0, col: c0 }) ?? ''; };
+    // vòng lần trước không hội tụ, lần sửa này chỉ thêm công thức đọc vòng (không chạm ô đầu vào của vòng) → giữ kết quả cũ
+    if (!this.iterate.on && this.noConv && this.memoOk) {
+      const keys = new Set(D.map((d) => d.k));
+      const nc = this.noConv;
+      // ô vòng mới phải đọc trực tiếp ô thuộc vòng không hội tụ (vd =A11*2); vòng mới độc lập thì phải tính
+      const sheetOf0 = (name: string | undefined, s0: number) => (name === undefined ? s0 : this.hf.getSheetId(name));
+      const readsBad = (d: DC) => compileRefs(this.hf.getCellFormula(this.A(d.s, d.r, d.c)) ?? '', (n) => sheetOf0(n, d.s)).some((p) => typeof p !== 'string' && [...nc.keys()].some((k) => { const [s0, r0, c0] = k.split(':').map(Number); return p.s === s0 && r0 >= p.r1 && r0 <= p.r2 && c0 >= p.c1 && c0 <= p.c2; }));
+      const fresh = D.filter((d) => !nc.has(d.k) && !this.over.has(d.k));
+      if ([...nc].every(([k, f]) => keys.has(k) && fsig(k) === f) && fresh.every(readsBad)) {
+        for (const d of fresh) { nc.set(d.k, fsig(d.k)); this.cycWatch.push({ s: d.s, r1: d.r, c1: d.c, r2: d.r, c2: d.c }); }
+        for (const k of nc.keys()) this.over.delete(k);
+        this.circular = D.map((d) => d.k); return;
+      }
+    }
     for (const k of [...this.over.keys()]) if (!inD.has(k)) this.over.delete(k); // quá lớn: giữ #CYCLE! như cũ
     const sheetOf = (name: string | undefined, s: number) => (name === undefined ? s : this.hf.getSheetId(name));
     for (const d of D) d.parts = compileRefs(this.hf.getCellFormula(this.A(d.s, d.r, d.c)) ?? '', (n) => sheetOf(n, d.s));
+    // vùng các ô vòng đọc tới: sửa ô ngoài các vùng này thì không cần tính lại vòng (xem emit)
+    this.cycWatch = [...D.map((d) => ({ s: d.s, r1: d.r, c1: d.c, r2: d.r, c2: d.c })), ...D.flatMap((d) => d.parts.filter((p): p is XRef => typeof p !== 'string').map((p) => ({ s: p.s, r1: p.r1, c1: p.c1, r2: p.r2, c2: p.c2 })))];
     const cur = (s: number, r: number, c: number): unknown => {
       const k = s + ':' + r + ':' + c;
       if (inD.has(k)) return this.over.get(k) ?? this.seeds.get(k) ?? 0;
@@ -897,7 +995,10 @@ export class Workbook {
       return p.r1 === p.r2 ? 'TRANSPOSE(' + arr + ')' : arr;
     }).join('');
     for (const d of D) if (!this.over.has(d.k)) this.over.set(d.k, this.seeds.get(d.k) ?? 0);
-    for (let it = 0; it < Math.max(1, this.iterate.count); it++) {
+    // lặp tới khi ổn định; theo dõi từng ô: ô đã ổn định / ô cứ lớn dần (vòng không hội tụ, vd A10 = A10 + 1 thì không dừng sớm,
+    // A11 = SUM(A1:A11) thì bước nhảy tăng dần → dừng sớm)
+    const dl = new Map<string, number>(), gr = new Map<string, number>();
+    for (let it = 0; it < Math.max(1, IT.count); it++) {
       let change = 0;
       for (const d of D) {
         let v: any;
@@ -905,11 +1006,21 @@ export class Workbook {
         if (Array.isArray(v)) v = v[0]?.[0] ?? null;
         const old = this.over.get(d.k);
         const delta = typeof v === 'number' && typeof old === 'number' ? Math.abs(v - old) : v === old || (v && old && typeof v === 'object' && (v as any).type === (old as any).type) ? 0 : Infinity;
+        const pd = dl.get(d.k);
+        gr.set(d.k, pd !== undefined && delta > pd * 1.0001 && delta >= IT.delta ? (gr.get(d.k) ?? 0) + 1 : 0);
+        dl.set(d.k, delta);
         if (delta > change) change = delta;
         this.over.set(d.k, v);
       }
-      if (change < this.iterate.delta) break;
+      if (change < IT.delta) break;
+      if (!this.iterate.on && it >= 3 && D.every((d) => (dl.get(d.k) ?? 0) < IT.delta || (gr.get(d.k) ?? 0) >= 3)) break;
     }
+    // Tính lặp tắt: chỉ các ô không ổn định (và ô đọc chúng) hiện #CYCLE!; vòng khác vẫn ra số
+    if (!this.iterate.on) {
+      const bad = D.filter((d) => (dl.get(d.k) ?? 0) >= IT.delta);
+      for (const d of bad) this.over.delete(d.k);
+      this.noConv = bad.length ? new Map(bad.map((d) => [d.k, fsig(d.k)])) : null;
+    } else this.noConv = null;
   }
   style(s: number, r: number, c: number): Style { const m = this.meta(s).styles; return m.size ? m.get(key(r, c)) ?? NO_STYLE : NO_STYLE; }
   isFormula(s: number, r: number, c: number) { return this.hf.doesCellHaveFormula(this.A(s, r, c)); }
@@ -956,23 +1067,41 @@ export class Workbook {
     for (const x of ch as any[]) if (x.address && x.address.sheet === s) out.push({ r: x.address.row, c: x.address.col });
     return out;
   }
+  /** ô nằm trong (không phải ô đầu) công thức mảng kiểu cũ: Excel không cho sửa riêng một phần mảng */
+  private inLegacyArray(s: number, r: number, c: number): boolean {
+    if (!this.hf.isCellPartOfArray({ sheet: s, row: r, col: c }) || this.hf.doesCellHaveFormula({ sheet: s, row: r, col: c })) return false;
+    const sp = this.spillRange(s, r, c);
+    return !!sp && /^=XCSE\(/i.test((this.hf as any).__rawFormula({ sheet: s, row: sp.r, col: sp.c }) ?? '');
+  }
   setInput(s: number, r: number, c: number, text: string): Changed[] {
     if (this.meta(s).protect && !this.cellEditable(s, r, c)) this.guard(s, 'edit', { r1: r, c1: c, r2: r, c2: c });
+    if (this.inLegacyArray(s, r, c)) throw new Error('Không thể thay đổi một phần của mảng.');
     const { content, fmt } = normalizeInput(text);
     const k = key(r, c);
     this.meta(s).udf?.delete(k); // sửa ô gọi hàm VBA: bỏ giá trị Excel lưu sẵn
     const st = this.meta(s).styles;
     const old = st.get(k);
     const tx = fmt && !old?.fmt ? new StyleTxn([[st, k, { ...(old ?? {}), fmt }]]) : null;
+    const plain = typeof content !== 'string' || content[0] !== '=';
+    if (plain) this.editOnly++;
+    this.inSet++;
+    try {
     const changes = this.record(
       () => { this.hf.setCellContents(this.A(s, r, c), [[content as RawCellContent]]); },
       tx ? tx.hist : undefined,
       { post: () => tx?.apply() },
     );
     return this.changedOn(s, changes);
+    } finally { if (plain) this.editOnly--; this.inSet--; }
   }
   clear(s: number, g: Range) {
     this.guard(s, 'edit', g);
+    // như Excel: không xóa riêng một phần công thức mảng kiểu cũ
+    if (rangeSize(g) <= 100000) for (let r = g.r1; r <= Math.min(g.r2, this.used(s).rows - 1); r++) for (let c = g.c1; c <= Math.min(g.c2, this.used(s).cols - 1); c++) {
+      if (!this.inLegacyArray(s, r, c)) continue;
+      const sp = this.spillRange(s, r, c)!;
+      if (!(sp.range.r1 >= g.r1 && sp.range.r2 <= g.r2 && sp.range.c1 >= g.c1 && sp.range.c2 <= g.c2)) throw new Error('Không thể thay đổi một phần của mảng.');
+    }
     const u = this.used(s);
     const r2 = Math.min(g.r2, u.rows - 1), c2 = Math.min(g.c2, u.cols - 1);
     if (r2 < g.r1 || c2 < g.c1) return;

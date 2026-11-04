@@ -137,7 +137,7 @@ export function parseStyles(xml: string): XfModel[] {
 }
 
 // ---------- dữ liệu ô ----------
-export interface FastCell { r: number; c: number; s: number; t: string; v: string | null; f: { text: string | null; t?: string; si?: string; ref?: string } | null; inline: string | null }
+export interface FastCell { r: number; c: number; s: number; t: string; v: string | null; f: { text: string | null; t?: string; si?: string; ref?: string } | null; inline: string | null; cm?: string }
 export interface FastRow { r: number; ht?: number; hidden?: boolean; lv?: number; collapsed?: boolean }
 const A1 = /^([A-Z]+)(\d+)$/;
 function a1(ref: string): { r: number; c: number } | null {
@@ -198,7 +198,8 @@ export function takeSheetData(xml: string): { xml: string; cells: FastCell[]; ro
         }
         if (t === 'inlineStr') { const im = /<is>([\s\S]*?)<\/is>/.exec(ci); if (im) inline = textOf(im[1]); }
       }
-      cells.push({ r: p ? p.r : r, c, s: s ? +s : 0, t, v, f, inline });
+      const cm = attr1(ca, 'cm');
+      cells.push({ r: p ? p.r : r, c, s: s ? +s : 0, t, v, f, inline, ...(cm ? { cm } : {}) });
     }
   }
   return { xml: rest, cells, rows };

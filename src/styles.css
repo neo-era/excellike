@@ -703,6 +703,8 @@ html.desktop #backstage .bs-page { padding-top: 40px; }
 .st-calc { color: inherit; font-size: 12px; padding: 0 6px; height: 22px; border-radius: 3px; font-weight: 600; }
 .st-calc:hover { background: var(--hover); }
 .st-calc[hidden] { display: none; }
+.st-circ { font-size: 12px; padding: 0 6px; white-space: nowrap; }
+.st-circ[hidden] { display: none; }
 @media (max-width: 700px) { .st-acc { display: none; } }
 @media (max-width: 600px) { .tabs .pill span { display: none; } .side-pane { width: 80vw; } }
 .bs-tile .thumb.tpl { position: relative; color: var(--accent); background: linear-gradient(var(--surface), var(--surface)) padding-box; }

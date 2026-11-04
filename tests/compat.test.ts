@@ -21,9 +21,20 @@ function cycleBook() {
 }
 
 describe('Tính lặp (Enable iterative calculation)', () => {
-  it('tắt: báo #CYCLE! như Excel khi chưa bật tính lặp', () => {
+  it('tắt: vẫn tính ra số như Excel (anh Lâm chọn 04/11/2026) và báo ô tham chiếu vòng; vòng không hội tụ giữ #CYCLE!', () => {
     const wb = cycleBook();
-    expect(isCycle(wb.value(0, 0, 1))).toBe(true);
+    expect(wb.value(0, 0, 1)).toBe(1111);
+    expect(wb.circular.length).toBeGreaterThan(0);
+    wb.setInput(0, 0, 0, '2000'); // ô đầu vào của vòng → tính lại
+    expect(wb.value(0, 0, 1)).toBe(2222);
+    wb.setInput(0, 9, 9, '1'); // ô ngoài vòng → giữ kết quả
+    expect(wb.value(0, 0, 1)).toBe(2222);
+    wb.setInput(0, 5, 0, '=A6+1');
+    expect(isCycle(wb.value(0, 5, 0))).toBe(true);
+    wb.setInput(0, 5, 0, '5');
+    wb.setInput(0, 0, 2, '7');
+    expect(wb.value(0, 0, 1)).toBe(2007);
+    expect(wb.circular.length).toBe(0);
   });
   it('bật: hội tụ như Excel, cả ô phụ thuộc và vùng chứa ô vòng', () => {
     const wb = cycleBook();

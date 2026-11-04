@@ -129,7 +129,7 @@ describe('Công thức – đối chiếu kết quả Excel', () => {
     expect(txt('A1')).toBe('#DIV/0!');
     expect(txt('A2')).toBe('#NAME?');
     expect(txt('A3')).toBe('#VALUE!');
-    expect(txt('B1')).toBe('#CYCLE!');
+    expect(txt('B1')).toBe('0'); // tham chiếu vòng: như Excel hiện 0 và cảnh báo
   });
 
   it('nhập số kiểu Việt Nam vào ô', () => {

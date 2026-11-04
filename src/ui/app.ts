@@ -383,7 +383,17 @@ export class App {
     this.toast(m === 'manual' ? 'Tính toán Thủ công: sửa ô không tính lại công thức phụ thuộc. Bấm F9 (Tính Ngay) để tính.' : 'Tính toán Tự động: đã tính lại sổ.');
   }
   /** thanh trạng thái: “Tính toán” khi đang Thủ công và còn thay đổi chưa tính (như Excel); bấm vào để tính */
-  updCalc() { const b = document.getElementById('st-calc'); if (b) b.hidden = !(this.wb.calcMode === 'manual' && this.wb.calcDirty); }
+  updCalc() {
+    const b = document.getElementById('st-calc'); if (b) b.hidden = !(this.wb.calcMode === 'manual' && this.wb.calcDirty);
+    // như Excel: “Tham chiếu Vòng: F14” (ô vòng ở trang đang xem) hoặc chỉ “Tham chiếu Vòng”
+    const c = document.getElementById('st-circ');
+    if (c) {
+      const list = this.wb.iterate.on ? [] : this.wb.circular;
+      const here = list.find((k) => +k.split(':')[0] === this.grid.sheet);
+      c.hidden = !list.length;
+      if (list.length) { const [, r, cc] = (here ?? '').split(':').map(Number); c.textContent = here ? `Tham chiếu Vòng: ${toA1(r, cc)}` : 'Tham chiếu Vòng'; }
+    }
+  }
   undo() { if (!this.wb.undo()) this.toast('Không còn thao tác để hoàn tác.'); this.afterHistory(); }
   redo() { if (!this.wb.redo()) this.toast('Không còn thao tác để làm lại.'); this.afterHistory(); }
   private afterHistory() {
@@ -1650,6 +1660,7 @@ export class App {
     this.grid.focusKeys();
   }
   syncSelection() {
+    this.updCalc();
     const g = this.grid.range, s = this.grid.sheet, { ar, ac } = this.grid.sel;
     const nb = $<HTMLInputElement>('#namebox');
     if (document.activeElement !== nb) {
@@ -2112,7 +2123,7 @@ export class App {
     box.className = 'fn-picker';
     box.innerHTML = `<label class="fn-search">${ic('fx', 16)}<input id="fn-q" placeholder="Tìm hàm, ví dụ: tra cứu, SUMIF" aria-label="Tìm hàm"></label><div class="fn-list" role="listbox"></div>`;
     const list = box.querySelector('.fn-list') as HTMLElement;
-    const all = this.wb.hf.getRegisteredFunctionNames().filter((n) => !/^(XOFS\d|XTHISROW|XFIT|XLAMCALL)$/.test(n)).sort();
+    const all = this.wb.hf.getRegisteredFunctionNames().filter((n) => !/^(XOFS\d|XTHISROW|XFIT|XCSE|XLAMCALL)$/.test(n)).sort();
     const render = (q: string) => {
       const qq = q.trim().toLowerCase();
       const names = all.filter((n) => !qq || n.toLowerCase().includes(qq) || (FUNC_INFO[n]?.join(' ').toLowerCase().includes(qq) ?? false));
@@ -3161,7 +3172,7 @@ class CellEditor implements EditHost {
     const m = el.value.startsWith('=') ? /(?:^=|[=(;,+\-*/^&<>:\s])([A-Za-z][A-Za-z0-9.]*)$/.exec(before) : null;
     if (!m) return this.closeAc();
     const q = m[1].toUpperCase();
-    const names = this.wb.hf.getRegisteredFunctionNames().filter((n) => !/^(XOFS\d|XTHISROW|XFIT|XLAMCALL)$/.test(n));
+    const names = this.wb.hf.getRegisteredFunctionNames().filter((n) => !/^(XOFS\d|XTHISROW|XFIT|XCSE|XLAMCALL)$/.test(n));
     const hits = names.filter((n) => n.startsWith(q)).sort((a, b) => (FUNC_INFO[b] ? 1 : 0) - (FUNC_INFO[a] ? 1 : 0) || a.length - b.length || a.localeCompare(b)).slice(0, 8);
     if (!hits.length || (hits.length === 1 && hits[0] === q)) return this.closeAc();
     this.acItems = hits;

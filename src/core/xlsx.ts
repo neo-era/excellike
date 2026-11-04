@@ -522,7 +522,8 @@ export async function readXlsxBook(buf: ArrayBuffer | Uint8Array): Promise<{ boo
       let raw: unknown = null;
       let isText = false;
       if (cl.f?.t === 'array' && cl.f.ref) { const g = parseRange(cl.f.ref); if (g && (g.r2 > g.r1 || g.c2 > g.c1)) spills.push(g); }
-      if (!cl.f && spills.length && spills.some((g) => r >= g.r1 && r <= g.r2 && c >= g.c1 && c <= g.c2)) {
+      // ô thuộc vùng của công thức mảng (Excel ghi <f/> rỗng + giá trị lưu sẵn): để trống cho mảng tràn vào
+      if ((!cl.f || (!cl.f.text && cl.f.t !== 'shared' && cl.f.t !== 'array')) && spills.length && spills.some((g) => r >= g.r1 && r <= g.r2 && c >= g.c1 && c <= g.c2)) {
         const st0 = cl.s ? styleOf(cl.s) : null;
         if (st0) styles.push([r * 16384 + c, st0]);
         continue;
@@ -545,9 +546,11 @@ export async function readXlsxBook(buf: ArrayBuffer | Uint8Array): Promise<{ boo
           }
         }
         // mảng động FILTER/UNIQUE: lấy kích thước tràn Excel đã lưu (ref) làm kích thước giữ trước — mở nhanh, không phải đo lại
-        if (cl.f.t === 'array' && cl.f.ref && typeof raw === 'string' && /(?:FILTER|UNIQUE)\s*\(/i.test(raw)) {
+        if (cl.f.t === 'array' && cl.f.ref && typeof raw === 'string') {
           const g = parseRange(cl.f.ref);
-          if (g) raw = `=XFIT(${g.r2 - g.r1 + 1};${g.c2 - g.c1 + 1};${(raw as string).slice(1)})`;
+          // tệp không đánh dấu mảng động (không có cm): công thức mảng kiểu cũ (Ctrl+Shift+Enter) nhiều ô — vùng cố định như Excel
+          if (g && !cl.cm && (g.r2 > g.r1 || g.c2 > g.c1)) raw = `=XCSE(${g.r2 - g.r1 + 1};${g.c2 - g.c1 + 1};${(raw as string).slice(1)})`;
+          else if (g && cl.cm && /(?:FILTER|UNIQUE)\s*\(/i.test(raw)) raw = `=XFIT(${g.r2 - g.r1 + 1};${g.c2 - g.c1 + 1};${(raw as string).slice(1)})`;
         }
       } else ({ raw, isText } = plainVal(cl));
       // chữ trông như số/công thức/ngày → giữ là chữ (thêm dấu ' như Excel)
@@ -831,12 +834,12 @@ export async function writeXlsx(wb: Workbook, opts: { macro?: boolean } = {}): P
   if (json.sheets.some((sh) => sh.tables?.length)) out = await addTables(out, json.sheets.map((sh) => sh.tables ?? []));
   // mảng động: đánh dấu ô gốc là công thức mảng có tràn (cm="1" + metadata XLDAPR) để Excel không thêm dấu @
   const spillAt = wb.sheetIds().map((id) => {
-    const out2: { a: string; ref: string }[] = [];
+    const out2: { a: string; ref: string; cse?: boolean }[] = [];
     const sh = json.sheets[wb.sheetIds().indexOf(id)];
     sh.cells.forEach((row, r) => row?.forEach((v, c) => {
       if (typeof v !== 'string' || v[0] !== '=') return;
       const sp = wb.spillRange(id, r, c);
-      if (sp && sp.r === r && sp.c === c) out2.push({ a: colName(c) + (r + 1), ref: rangeToA1(sp.range) });
+      if (sp && sp.r === r && sp.c === c) out2.push({ a: colName(c) + (r + 1), ref: rangeToA1(sp.range), cse: /^=XCSE\(/i.test((wb.hf as any).__rawFormula({ sheet: id, row: r, col: c }) ?? '') });
     }));
     return out2;
   });
@@ -937,15 +940,15 @@ async function addSparklines(buf: Uint8Array, wb: Workbook): Promise<Uint8Array>
   }
   return new Uint8Array(await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' }));
 }
-async function addDynamicArrays(buf: Uint8Array, all: { a: string; ref: string }[][]): Promise<Uint8Array> {
+async function addDynamicArrays(buf: Uint8Array, all: { a: string; ref: string; cse?: boolean }[][]): Promise<Uint8Array> {
   const zip = await JSZip.loadAsync(buf);
   for (let i = 0; i < all.length; i++) {
     if (!all[i].length) continue;
     const path = `xl/worksheets/sheet${i + 1}.xml`;
     let xml = await zip.file(path)?.async('string');
     if (!xml) continue;
-    for (const { a, ref } of all[i]) {
-      xml = xml.replace(new RegExp(`<c r="${a}"([^>]*)><f>`), (m0, at: string) => `<c r="${a}"${at.replace(/\scm="\d+"/, '')} cm="1"><f t="array" ref="${ref}">`);
+    for (const { a, ref, cse } of all[i]) {
+      xml = xml.replace(new RegExp(`<c r="${a}"([^>]*)><f>`), (m0, at: string) => `<c r="${a}"${at.replace(/\scm="\d+"/, '')}${cse ? '' : ' cm="1"'}><f t="array" ref="${ref}">`);
     }
     zip.file(path, xml);
   }

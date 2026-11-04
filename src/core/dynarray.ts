@@ -31,6 +31,7 @@ export class DynArrayPlugin extends FunctionPlugin {
     CHOOSEROWS: { method: 'chooserows', sizeOfResultArrayMethod: 'chooseRowsSize', parameters: [{ argumentType: R }, { argumentType: N }], repeatLastArgs: 1, vectorizationForbidden: true },
     TOCOL: { method: 'tocol', sizeOfResultArrayMethod: 'toColSize', parameters: [{ argumentType: R }, { argumentType: N, defaultValue: 0 }, { argumentType: N, defaultValue: 0 }], vectorizationForbidden: true },
     XFIT: { method: 'xfit', sizeOfResultArrayMethod: 'xfitSize', enableArrayArithmeticForArguments: true, parameters: [{ argumentType: N }, { argumentType: N }, { argumentType: R }], vectorizationForbidden: true },
+    XCSE: { method: 'xcse', sizeOfResultArrayMethod: 'xfitSize', enableArrayArithmeticForArguments: true, parameters: [{ argumentType: N }, { argumentType: N }, { argumentType: R }], vectorizationForbidden: true },
     TOROW: { method: 'torow', sizeOfResultArrayMethod: 'toRowSize', parameters: [{ argumentType: R }, { argumentType: N, defaultValue: 0 }, { argumentType: N, defaultValue: 0 }], vectorizationForbidden: true },
   };
   /** XFIT(h; w; biểu_thức): vùng tràn đúng kích thước h×w đã biết (lần tính trước) thay vì kích thước tối đa có thể */
@@ -46,6 +47,19 @@ export class DynArrayPlugin extends FunctionPlugin {
       // tạm thời: cắt/đệm cho vừa vùng đã giữ; sổ tính sẽ đặt lại kích thước rồi tính lại
       const d = v.data as Grid, g: Grid = [];
       for (let i = 0; i < h; i++) { const row: unknown[] = []; for (let j = 0; j < w; j++) row.push(i < ah && j < aw ? d[i][j] : EmptyValue); g.push(row); }
+      return out(g);
+    });
+  }
+  /**
+   * XCSE(h; w; biểu_thức): công thức mảng kiểu cũ (Ctrl+Shift+Enter, tệp không đánh dấu mảng động) — vùng cố định h×w
+   * như Excel: kết quả lớn hơn thì cắt, nhỏ hơn thì phần thừa là #N/A (không tràn, không #SPILL!).
+   */
+  xcse(ast: any, state: any) {
+    return (this as any).runFunction(ast.args, state, (this as any).metadata('XCSE'), (h: number, w: number, v: SimpleRangeValue | CellError) => {
+      if (isErr(v)) return v;
+      const ah = v.height(), aw = v.width(), d = v.data as Grid, g: Grid = [];
+      // một hàng/cột thì Excel lặp lại theo chiều kia
+      for (let i = 0; i < h; i++) { const row: unknown[] = []; for (let j = 0; j < w; j++) { const ii = ah === 1 ? 0 : i, jj = aw === 1 ? 0 : j; row.push(ii < ah && jj < aw ? d[ii][jj] : new CellError(ErrorType.NA)); } g.push(row); }
       return out(g);
     });
   }
@@ -139,4 +153,4 @@ export class DynArrayPlugin extends FunctionPlugin {
 export interface FitMiss { s: number; r: number; c: number; h: number; w: number }
 const FIT = new WeakMap<object, Map<string, FitMiss>>();
 export function fitRegistry(graph: object): Map<string, FitMiss> { let m = FIT.get(graph); if (!m) FIT.set(graph, (m = new Map())); return m; }
-export const DYN_NAMES = ['XFIT', 'FILTER', 'SORTBY', 'TAKE', 'DROP', 'CHOOSECOLS', 'CHOOSEROWS', 'TOCOL', 'TOROW'];
+export const DYN_NAMES = ['XFIT', 'XCSE', 'FILTER', 'SORTBY', 'TAKE', 'DROP', 'CHOOSECOLS', 'CHOOSEROWS', 'TOCOL', 'TOROW'];

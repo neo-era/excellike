@@ -1325,10 +1325,12 @@ export const EN: Record<string, string> = {
   'Màu Gần đây': 'Recent Colors',
   'Thêm vào Vùng In': 'Add to Print Area',
   'Vùng in không hợp lệ (ví dụ: A1:H40 hoặc A1:F20;H1:K10).': 'Invalid print area (for example: A1:H40 or A1:F20;H1:K10).',
+  'Không thể thay đổi một phần của mảng.': "You can't change part of an array.",
 };
 
 /** Mẫu cho chuỗi sinh lúc chạy: {0}, {1}… là phần thay đổi (theo thứ tự xuất hiện). Mẫu cụ thể hơn đặt trước. */
 export const EN_PAT: [string, string][] = [
+  ['Tham chiếu Vòng: {0}', 'Circular References: {0}'],
   ['Tệp có {0} PivotTable — khi lưu sẽ thành bảng giá trị, không làm mới được (trừ PivotTable tạo trong ExcelLike).', 'The file has {0} PivotTable(s) — they will be saved as plain values and can no longer be refreshed (except PivotTables created in ExcelLike).'],
   ['{0}, Sáng hơn {1}%', '{0}, Lighter {1}%'],
   ['{0}, Tối hơn {1}%', '{0}, Darker {1}%'],

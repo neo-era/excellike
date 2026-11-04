@@ -526,6 +526,14 @@ Tiêu chí: `ExcelLike-1.0-tieu-chi.md` (Bước 0 đã qua 2 chuyên gia độc
 - **Kiểm chứng (04/11/2026).** Unit 358/358 (mới: xlsm 12, manual 15 + đo hiệu năng tệp LED, lambda 17, colors 7, printarea 4). Tệp LED thật, chế độ Thủ công: sửa ô nặng trung vị 0,0 ms/p95 0,1 ms (Tự động ~0,8 s), F9 ~0,8 s, 94.125 ô sau F9 trùng Tự động. Giao diện: 1.0 41/41, Đợt 1 39/39, Đợt 2–3 21/21 · 32/32, ngôn ngữ 92/92, điện thoại 32/32, 0.5 120/120, phím 178/178, 0.7 73/73, 0.8–0.9 66/66, máy tính 35/35, bản quyền 22/22; chạy toàn bộ giao diện ở chế độ Thủ công (`?calc=manual`): 0 lỗi JavaScript. Duyệt: nghiệp vụ Excel (có điều kiện, đã áp), rà mã độc lập (vòng 1 không duyệt → vòng 2 duyệt), QA (có điều kiện, đã áp) — chi tiết ở Nhật ký duyệt của `ExcelLike-1.0-tieu-chi.md`.
 - **Hạn chế còn lại:** LAMBDA chưa có tham số tùy chọn `[y]`, truyền thẳng tên hàm, gọi lồng `f(2)(3)`; ô gọi tên LAMBDA luôn tính lại; mở tệp Thủ công thì tính lại ngay; nút macro/ribbon riêng/trang XLM không giữ; ô hàm VBA mất cờ công thức mảng khi lưu; PivotTable từ tệp lưu ra thành bảng giá trị (có báo khi mở). Cần anh thử trên Excel 365 thật: không hiện hộp sửa chữa, Alt+F11 đủ 14 mô-đun, chế độ Thủ công, in nhiều vùng in.
 
+## 6r. Bản 1.0.1 (04/11/2026) — đối chiếu tệp đèn LED V3 do Excel lưu
+
+- Đối chiếu 30.107 ô công thức với giá trị Excel lưu sẵn: TONG HOP DE XUAT 18.369/18.369, Phân bổ theo tuyến 1.747/1.747, TH chủng loại 517/517, BÁO CÁO RÀ SOÁT 129/129, Đã đặt 20-10 25/25, QUATEST 53/54 (N27: Excel chưa tính lại sau khi D27 thêm dấu cách), 24 ô tham chiếu vòng ra cùng số. 6.888 ô ở 6 trang DX PRINT Excel lưu #NAME? (Excel của máy lưu tệp chưa có HSTACK/TOROW); ExcelLike tính ra giá trị.
+- TEXT: plugin riêng — mã định dạng đọc theo vùng Việt Nam như Excel trên Windows tiếng Việt (đổi chỗ “,” “.” rồi dùng bộ định dạng số của ô); giữ lỗi; ô trống = 0; số dạng chữ được định dạng.
+- Công thức mảng kiểu cũ (t="array" không có cm): XCSE(h;w;…) vùng cố định, phần thiếu #N/A, một hàng/cột thì lặp lại; ô `<f/>` rỗng trong vùng bỏ qua khi đọc; ghi lại t="array" không cm; không sửa/xóa riêng một phần mảng.
+- Tham chiếu vòng khi tắt Tính lặp (anh Lâm chọn): lặp tới khi ổn định như Excel, xét theo từng ô; ô không hội tụ hiện #CYCLE!; thanh trạng thái “Tham chiếu Vòng: F14”. Hiệu năng: bỏ qua khi sửa ô ngoài vùng vòng đọc/đổi định dạng; nhớ vòng không hội tụ (200 công thức đọc vòng không hội tụ: 179 ms).
+- Kiểm thử: unit 365/365 (tests/review10.test.ts, compat). Rà mã độc lập 2 vòng.
+
 ## 7. Kiểm chứng cuối theo tiêu chí Bước 0
 
 | # | Tiêu chí | Kết quả |
