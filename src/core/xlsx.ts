@@ -16,6 +16,11 @@ import { MARGIN_PRESETS, normPrint, PAPERS, paperByCode, storePrint, type NPrint
 import type { TableDef, TotalFn } from './tables';
 import type { SheetProtect, PwHash } from './protect';
 import { algOf } from './protect';
+import { HyperFormula } from 'hyperformula';
+import { declScopes } from './lambda';
+import { DEFAULT_INDEXED, DEFAULT_THEME, parseIndexed, parseMru, parseTheme, tintHex, themeSchemeXml, withMru } from './color';
+import { mapIdents } from './names';
+import type { VbaPack } from './workbook';
 
 /** mật khẩu bảo vệ từ thuộc tính XML (pre = '' cho trang/vùng, 'workbook' cho sổ) */
 function pwFromAttrs(a: Record<string, unknown>, pre: '' | 'workbook'): PwHash | undefined {
@@ -43,42 +48,39 @@ const DS_SHEET = '_ExcelLike_DS'; // sheet ẩn chứa danh sách dài của Ki�
 const STD_ERR = new Set(['#NULL!', '#DIV/0!', '#VALUE!', '#REF!', '#NAME?', '#NUM!', '#N/A']);
 
 // ---------- màu ----------
-const THEME = ['FFFFFF', '000000', 'E7E6E6', '44546A', '4472C4', 'ED7D31', 'A5A5A5', 'FFC000', '5B9BD5', '70AD47', '0563C1', '954F72'];
-/** Áp độ sáng (tint) kiểu Excel: theo độ sáng HLS */
-function tint(hex: string, t: number) {
-  let [r, g, b] = [0, 2, 4].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
-  const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
-  let h = 0, s = 0, l = (mx + mn) / 2;
-  if (mx !== mn) {
-    const d = mx - mn;
-    s = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
-    h = mx === r ? (g - b) / d + (g < b ? 6 : 0) : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
-    h /= 6;
-  }
-  l = t < 0 ? l * (1 + t) : l * (1 - t) + t;
-  const f = (p: number, q: number, x: number) => { if (x < 0) x += 1; if (x > 1) x -= 1; return x < 1 / 6 ? p + (q - p) * 6 * x : x < 1 / 2 ? q : x < 2 / 3 ? p + (q - p) * (2 / 3 - x) * 6 : p; };
-  if (s === 0) r = g = b = l;
-  else { const q = l < 0.5 ? l * (1 + s) : l + s - l * s, p = 2 * l - q; r = f(p, q, h + 1 / 3); g = f(p, q, h); b = f(p, q, h - 1 / 3); }
-  return [r, g, b].map((v) => Math.round(v * 255).toString(16).padStart(2, '0')).join('');
-}
+/** màu chủ đề / bảng màu đánh số của tệp đang đọc (theme1.xml, indexedColors) */
+let RD_THEME: string[] = DEFAULT_THEME, RD_IDX: string[] = DEFAULT_INDEXED;
 function colorOf(c: any): string | undefined {
   if (!c) return undefined;
   if (typeof c.argb === 'string') return '#' + c.argb.slice(-6).toLowerCase();
-  if (typeof c.theme === 'number' && THEME[c.theme]) return '#' + (c.tint ? tint(THEME[c.theme], c.tint) : THEME[c.theme]).toLowerCase();
-  if (typeof c.indexed === 'number') { const idx: Record<number, string> = { 8: '000000', 9: 'FFFFFF', 10: 'FF0000', 11: '00FF00', 12: '0000FF', 13: 'FFFF00', 64: '000000' }; return idx[c.indexed] ? '#' + idx[c.indexed].toLowerCase() : undefined; }
+  if (typeof c.theme === 'number' && RD_THEME[c.theme]) return '#' + (c.tint ? tintHex(RD_THEME[c.theme], c.tint) : RD_THEME[c.theme]).toLowerCase();
+  if (typeof c.indexed === 'number') return RD_IDX[c.indexed] ? '#' + RD_IDX[c.indexed].toLowerCase() : undefined;
   return undefined;
 }
 const argb = (h: string) => ({ argb: 'FF' + h.replace('#', '').toUpperCase().padStart(6, '0') });
 
 // ---------- tiền tố hàm mới ----------
-const XLFN = ['XLOOKUP', 'XMATCH', 'IFS', 'SWITCH', 'TEXTJOIN', 'CONCAT', 'MAXIFS', 'MINIFS', 'IFNA', 'STDEV.S', 'STDEV.P', 'VAR.S', 'VAR.P', 'UNIQUE', 'SEQUENCE', 'FILTER', 'SORT', 'SORTBY', 'TAKE', 'DROP', 'CHOOSECOLS', 'CHOOSEROWS', 'TOCOL', 'TOROW', 'VSTACK', 'HSTACK', 'DAYS', 'ISOWEEKNUM', 'CEILING.MATH', 'FLOOR.MATH', 'PERCENTILE.INC', 'PERCENTILE.EXC', 'QUARTILE.INC', 'RANK.EQ', 'RANK.AVG', 'MODE.SNGL', 'NORM.DIST', 'NORM.INV', 'NETWORKDAYS.INTL', 'WORKDAY.INTL', 'COVARIANCE.S', 'COVARIANCE.P', 'BITAND', 'BITOR', 'BITXOR'];
+const XLFN = ['XLOOKUP', 'XMATCH', 'IFS', 'SWITCH', 'TEXTJOIN', 'CONCAT', 'MAXIFS', 'MINIFS', 'IFNA', 'STDEV.S', 'STDEV.P', 'VAR.S', 'VAR.P', 'UNIQUE', 'SEQUENCE', 'FILTER', 'SORT', 'SORTBY', 'TAKE', 'DROP', 'CHOOSECOLS', 'CHOOSEROWS', 'TOCOL', 'TOROW', 'VSTACK', 'HSTACK', 'DAYS', 'ISOWEEKNUM', 'CEILING.MATH', 'FLOOR.MATH', 'PERCENTILE.INC', 'PERCENTILE.EXC', 'QUARTILE.INC', 'RANK.EQ', 'RANK.AVG', 'MODE.SNGL', 'NORM.DIST', 'NORM.INV', 'NETWORKDAYS.INTL', 'WORKDAY.INTL', 'COVARIANCE.S', 'COVARIANCE.P', 'BITAND', 'BITOR', 'BITXOR', 'LET', 'LAMBDA', 'MAP', 'REDUCE', 'SCAN', 'BYROW', 'BYCOL', 'MAKEARRAY', 'ISOMITTED'];
 const XLWS = ['FILTER', 'SORT', 'SORTBY'];
 const fnRe = (names: string[]) => new RegExp(`(^|[^A-Za-z0-9_.])(${names.map((n) => n.replace('.', '\\.')).join('|')})\\(`, 'g');
 const RE_XLFN = fnRe(XLFN), RE_XLWS = fnRe(XLWS);
 function addPrefixes(f: string) {
-  return f.split(/("(?:[^"]|"")*")/).map((p, i) => (i % 2 ? p : p.replace(RE_XLWS, '$1_xlfn._xlws.$2(').replace(RE_XLFN, '$1_xlfn.$2('))).join('');
+  const out = f.split(/("(?:[^"]|"")*")/).map((p, i) => (i % 2 ? p : p.replace(RE_XLWS, '$1_xlfn._xlws.$2(').replace(RE_XLFN, '$1_xlfn.$2('))).join('');
+  return /LET\(|LAMBDA\(/i.test(out) ? paramPrefixes(out) : out;
 }
-const stripPrefixes = (f: string) => f.replace(/_xlfn\._xlws\.|_xlfn\.|_xlws\./g, '');
+/** tên trong LET và tham số LAMBDA ghi kèm tiền tố _xlpm. như Excel (dạng tiếng Anh, dấu phẩy) */
+function paramPrefixes(f: string) {
+  const scopes = declScopes(f, ',');
+  if (!scopes.length) return f;
+  const fns = new Set(HyperFormula.getRegisteredFunctionNames('enGB'));
+  // chỉ gắn _xlpm. trong ngoặc của LET/LAMBDA đã khai báo tên đó (tên vùng trùng chữ bên ngoài giữ nguyên)
+  return mapIdents(f, (tok, next, prev, at) => {
+    const u = tok.toUpperCase();
+    if (prev === '!' || (next === '(' && fns.has(u))) return undefined;
+    return scopes.some((sc) => at > sc.open && at < sc.close && sc.names.has(u)) ? '_xlpm.' + tok : undefined;
+  });
+}
+const stripPrefixes = (f: string) => f.replace(/_xlfn\._xlws\.|_xlfn\.|_xlws\.|_xlpm\./g, '');
 
 const BORDER_IN: Record<string, BorderStyle> = { thin: 'thin', hair: 'thin', medium: 'medium', thick: 'thick', dashed: 'dashed', mediumDashed: 'dashed', dashDot: 'dashed', mediumDashDot: 'dashed', dashDotDot: 'dotted', mediumDashDotDot: 'dotted', slantDashDot: 'dashed', dotted: 'dotted', double: 'double' };
 const OP_IN: Record<string, CFRule['op']> = { greaterThan: 'gt', lessThan: 'lt', greaterThanOrEqual: 'ge', lessThanOrEqual: 'le', equal: 'eq', notEqual: 'ne', between: 'between', notBetween: 'notBetween' };
@@ -198,6 +200,11 @@ export async function readXlsxBook(buf: ArrayBuffer | Uint8Array): Promise<{ boo
   // 1) Tự đọc Kiểm tra dữ liệu (kể cả dạng cột nguyên C:C và dạng mới trong extLst) rồi gỡ khỏi XML,
   //    tránh ExcelJS trải ra từng ô (rất chậm, tốn bộ nhớ)
   const zip = await JSZip.loadAsync(buf);
+  // màu chủ đề + bảng màu đánh số của tệp: màu theo chủ đề (theme="4" tint="0.39") hiện đúng như Excel
+  const fileTheme = parseTheme((await zip.file('xl/theme/theme1.xml')?.async('string')) ?? '');
+  const stylesXml0 = (await zip.file('xl/styles.xml')?.async('string')) ?? '';
+  RD_THEME = fileTheme ?? DEFAULT_THEME; RD_IDX = parseIndexed(stylesXml0) ?? DEFAULT_INDEXED;
+  const fileMru = parseMru(stylesXml0);
   const wbXml = (await zip.file('xl/workbook.xml')?.async('string')) ?? '';
   const relXml = (await zip.file('xl/_rels/workbook.xml.rels')?.async('string')) ?? '';
   const rels = new Map<string, string>();
@@ -220,14 +227,28 @@ export async function readXlsxBook(buf: ArrayBuffer | Uint8Array): Promise<{ boo
   // tính lặp (File → Options → Formulas → Enable iterative calculation)
   const calcTag = /<(?:\w+:)?calcPr\b[^>]*>/.exec(wbXml)?.[0] ?? '';
   const iterOn = /\biterate="(1|true)"/.test(calcTag);
-  const calc = iterOn ? { on: true, count: +(/iterateCount="(\d+)"/.exec(calcTag)?.[1] ?? 100), delta: +(/iterateDelta="([^"]+)"/.exec(calcTag)?.[1] ?? 0.001) || 0.001 } : undefined;
+  const manualCalc = /\bcalcMode="manual"/.test(calcTag);
+  const calc: BookJSON['calc'] = iterOn || manualCalc ? {
+    on: iterOn, count: +(/iterateCount="(\d+)"/.exec(calcTag)?.[1] ?? 100), delta: +(/iterateDelta="([^"]+)"/.exec(calcTag)?.[1] ?? 0.001) || 0.001,
+    ...(manualCalc ? { mode: 'manual' as const, onSave: !/\bcalcOnSave="(0|false)"/.test(calcTag) } : {}),
+  } : undefined;
   const iterVals: [string, number, number, unknown][] = [];
   // tên vùng (definedNames); bỏ các tên hệ thống _xlnm.* (vùng in, lọc…)
   const sheetOrder = [...wbXml.matchAll(/<(?:\w+:)?sheet\b([^>]*)\/?>/g)].map((m) => attrs(m[1]).name);
   const bookNames: NonNullable<BookJSON['names']> = [];
+  const rawNames: string[] = [];
+  const printAreasBy = new Map<string, Range[]>();
   for (const m of wbXml.matchAll(/<(?:\w+:)?definedName\b([^>]*)>([\s\S]*?)<\/(?:\w+:)?definedName>/g)) {
     const a = attrs(m[1]);
+    // vùng in nhiều khối: tự đọc _xlnm.Print_Area (ExcelJS chỉ lấy khối đầu)
+    if (/^_xlnm\.Print_Area$/i.test(a.name ?? '') && a.localSheetId !== undefined) {
+      const list = splitAreas(unesc(m[2]).trim()).map((x) => parseRef(x.replace(/^.*!/, '').replace(/\$/g, ''))).filter(Boolean) as Range[];
+      if (list.length) printAreasBy.set(sheetOrder[+a.localSheetId], list);
+      continue;
+    }
     if (!a.name || /^_xlnm\./i.test(a.name) || /^_FilterDatabase$/i.test(a.name)) continue;
+    // tên lạ của Excel (tham số LAMBDA lưu dạng tên, macro XLM…): giữ nguyên thẻ để ghi lại
+    if (/^_xlpm\./i.test(a.name) || a.xlm !== undefined) { rawNames.push(m[0]); continue; }
     const body = unesc(m[2]).trim();
     if (!body) continue;
     const scope = a.localSheetId !== undefined ? sheetOrder[+a.localSheetId] : undefined;
@@ -285,14 +306,34 @@ export async function readXlsxBook(buf: ArrayBuffer | Uint8Array): Promise<{ boo
     });
     zip.file(rp, y); rezip = true;
   }
+  // macro VBA (.xlsm): giữ nguyên từng byte các phần macro + cách khai báo kiểu nội dung
+  const ctXml = (await zip.file('[Content_Types].xml')?.async('string')) ?? '';
+  let vba: VbaPack | undefined, vbaNote = '';
+  {
+    const parts = Object.keys(zip.files).filter((f) => /^xl\/vbaProject[^/]*\.bin$/i.test(f) || /^xl\/_rels\/vbaProject[^/]*\.bin\.rels$/i.test(f));
+    const main = parts.find((f) => /^xl\/vbaProject\.bin$/i.test(f));
+    const declared = /macroEnabled|vbaProject/i.test(ctXml) || /relationships\/vbaProject"/.test(relXml);
+    if (main && (await zip.file(main)!.async('uint8array')).length > 0) {
+      const files: [string, string][] = [];
+      for (const f of parts) files.push([f, b64(await zip.file(f)!.async('uint8array'))]);
+      const overrides = [...ctXml.matchAll(/<Override\b([^>]*)\/?>/g)].map((x) => attrs(x[1])).filter((o) => /vbaProject/i.test(String(o.PartName))).map((o) => [String(o.PartName), String(o.ContentType)] as [string, string]);
+      vba = { files, ctDefaultBin: /<Default\b[^>]*Extension="bin"[^>]*vbaProject/i.test(ctXml), overrides, wbCodeName: /<workbookPr\b[^>]*\bcodeName="([^"]*)"/.exec(wbXml)?.[1] };
+      vbaNote = ('Tệp có macro VBA — ExcelLike giữ nguyên macro khi lưu (.xlsm) nhưng không chạy macro; ô dùng hàm tự viết bằng VBA hiện giá trị Excel đã lưu (không có thì báo #NAME?). Nút bấm gắn macro (Form/ActiveX), thẻ ribbon riêng và trang macro Excel 4 không được giữ khi lưu.');
+    } else if (declared) vbaNote = ('Tệp khai báo có macro nhưng thiếu phần macro (vbaProject.bin) — sẽ lưu thành sổ thường không có macro.');
+  }
+  const stateBy = new Map<string, string>(), codeBy = new Map<string, string>();
+  const udfBy = new Map<string, [number, number, unknown][]>(), udfNames = new Set<string>();
+  const known = vba ? new Set(HyperFormula.getRegisteredFunctionNames('enGB').map((n) => n.toUpperCase())) : null;
   for (const m of wbXml.matchAll(/<sheet\b([^>]*)\/?>/g)) {
     const a = attrs(m[1]);
+    if (a.state) stateBy.set(a.name, a.state);
     const target = rels.get(a.id);
     if (!target) continue;
     const path = target.startsWith('/') ? target.slice(1) : 'xl/' + target.replace(/^\.\//, '');
     const file = zip.file(path);
     if (!file) continue;
     let xml = await file.async('string');
+    { const cn = /<sheetPr\b[^>]*\bcodeName="([^"]*)"/.exec(xml.slice(0, 4000))?.[1]; if (cn) codeBy.set(a.name, unescXml(cn)); }
     // dữ liệu ô tự đọc (nhanh); ExcelJS chỉ đọc phần còn lại của trang tính
     {
       const t = takeSheetData(xml);
@@ -493,6 +534,16 @@ export async function readXlsxBook(buf: ArrayBuffer | Uint8Array): Promise<{ boo
           else { const m = masters.get('si' + cl.f.si); raw = m ? shiftFormula(m.f, r - m.r, c - m.c) : plainVal(cl).raw; }
         } else if (cl.f.text) raw = toVi('=' + stripPrefixes(cl.f.text));
         else ({ raw, isText } = plainVal(cl));
+        // hàm VBA tự viết (không phải hàm có sẵn): giữ giá trị Excel đã lưu để hiển thị/lưu lại
+        if (known && typeof raw === 'string') {
+          for (const fm of raw.matchAll(/(?<![\w.'!])([A-Za-z_\u00C0-\u1EF9][\w.\u00C0-\u1EF9]*)\s*\(/g)) {
+            if (known.has(fm[1].toUpperCase())) continue;
+            udfNames.add(fm[1]);
+            const pv = plainVal(cl).raw;
+            if (cl.v !== null && pv !== null && pv !== undefined) { const l = udfBy.get(ws.name) ?? []; l.push([r, c, pv]); udfBy.set(ws.name, l); }
+            break;
+          }
+        }
         // mảng động FILTER/UNIQUE: lấy kích thước tràn Excel đã lưu (ref) làm kích thước giữ trước — mở nhanh, không phải đo lại
         if (cl.f.t === 'array' && cl.f.ref && typeof raw === 'string' && /(?:FILTER|UNIQUE)\s*\(/i.test(raw)) {
           const g = parseRange(cl.f.ref);
@@ -547,7 +598,8 @@ export async function readXlsxBook(buf: ArrayBuffer | Uint8Array): Promise<{ boo
     }
     const dv: DVRule[] = [];
     for (const d of dvBySheet.get(ws.name) ?? []) for (const ref of d.sqref.split(/\s+/)) { const g = parseRef(ref); if (g) dv.push(dvRuleIn(d, g)); }
-    const print = printIn(ws);
+    let print = printIn(ws);
+    { const pa = printAreasBy.get(ws.name); if (pa) print = { ...(print ?? storePrint(normPrint(null))), area: pa[0], ...(pa.length > 1 ? { more: pa.slice(1) } : {}) } as PrintSetup; }
     const props2: any = ws.properties ?? {};
     const tc = props2.tabColor?.argb ? '#' + String(props2.tabColor.argb).slice(-6).toLowerCase() : undefined;
     {
@@ -574,7 +626,7 @@ export async function readXlsxBook(buf: ArrayBuffer | Uint8Array): Promise<{ boo
     tbls.forEach((t, i) => { t.id = i + 1 + sheets.reduce((n, x) => n + (x.tables?.length ?? 0), 0); });
     // nút lọc của bảng dùng bộ lọc trang tính khi trang chưa có
     if (!fr) { const t = tbls.find((x) => x.btn && x.header); if (t) fr = { r1: t.r1, c1: t.c1, r2: t.r2 - (t.totals ? 1 : 0), c2: t.c2 }; }
-    sheets.push({ ...(protBy.get(ws.name) ?? {}), sparks: sparksBy.get(ws.name), tables: tbls.length ? tbls : undefined, outline, name: ws.name, cells, styles, colW, rowH, freeze, colDef, rowDef, hiddenRows, hiddenCols, merges, cf, dv, filter: fr ? { range: fr, conds: {} } : null, print, breaks: breaksBySheet.get(ws.name), tabColor: tc, state: (ws as any).state === 'hidden' || (ws as any).state === 'veryHidden' ? 'hidden' : undefined });
+    sheets.push({ ...(protBy.get(ws.name) ?? {}), sparks: sparksBy.get(ws.name), tables: tbls.length ? tbls : undefined, outline, name: ws.name, cells, styles, colW, rowH, freeze, colDef, rowDef, hiddenRows, hiddenCols, merges, cf, dv, filter: fr ? { range: fr, conds: {} } : null, print, breaks: breaksBySheet.get(ws.name), tabColor: tc, state: stateBy.get(ws.name) === 'veryHidden' ? 'veryHidden' : stateBy.get(ws.name) === 'hidden' || (ws as any).state === 'hidden' || (ws as any).state === 'veryHidden' ? 'hidden' : undefined, codeName: codeBy.get(ws.name), udf: udfBy.get(ws.name) });
   });
   if (!sheets.length) throw new Error('Tệp không có trang tính nào.');
   // danh sách dài do app ghi ra sheet ẩn → đưa về danh sách gõ sẵn
@@ -584,6 +636,8 @@ export async function readXlsxBook(buf: ArrayBuffer | Uint8Array): Promise<{ boo
       if (g) { d.list = []; for (let r = g.r1; r <= g.r2; r++) d.list.push(dsValues.get(colName(g.c1) + (r + 1)) ?? ''); delete d.listRef; }
     }
   }
+  if (vbaNote) warnings.push(vbaNote);
+  { const np = Object.keys(zip.files).filter((f) => /^xl\/pivotTables\/pivotTable\d+\.xml$/i.test(f)).length; if (np) warnings.push(`Tệp có ${np} PivotTable — khi lưu sẽ thành bảng giá trị, không làm mới được (trừ PivotTable tạo trong ExcelLike).`); }
   if (images + pics) warnings.push(`Tệp có ${images + pics} hình ảnh định dạng chưa hỗ trợ — sẽ mất nếu lưu đè.`);
   if (unsupportedCharts) warnings.push(`Tệp có ${unsupportedCharts} biểu đồ loại chưa hỗ trợ (tán xạ, radar…) — sẽ mất nếu lưu đè.`);
   if (shapes) warnings.push(`Tệp có ${shapes} hình vẽ nhóm/đặc biệt chưa hỗ trợ (SmartArt, nhóm hình…) — sẽ mất nếu lưu đè.`);
@@ -591,7 +645,8 @@ export async function readXlsxBook(buf: ArrayBuffer | Uint8Array): Promise<{ boo
   if (extLinks.length) warnings.push(`Tệp có liên kết tới ${extLinks.length} tệp khác — dùng giá trị lưu sẵn trong tệp (như Excel khi chưa cập nhật liên kết); liên kết được giữ nguyên khi lưu.`);
   let bookProt: BookJSON['protect'];
   { const wm = /<workbookProtection\b([^>]*)\/?>/.exec(wbXml); if (wm) { const wa = attrs(wm[1]); if (wa.lockStructure === '1' || wa.lockStructure === 'true') { const pw = pwFromAttrs(wa, 'workbook'); bookProt = pw ? { pw } : {}; } } }
-  const book: BookJSON = { protect: bookProt, v: 2, name: 'Sổ tính', sheets, calc, names: bookNames.length ? bookNames : undefined, iterVals: iterVals.length ? iterVals : undefined, ext: extLinks.length ? { links: extLinks, sheets: extSheets } : undefined };
+  if (vba && udfNames.size) vba.udfNames = [...udfNames].slice(0, 200);
+  const book: BookJSON = { vba, protect: bookProt, v: 2, name: 'Sổ tính', sheets, calc, theme: fileTheme && fileTheme.join() !== DEFAULT_THEME.join() ? fileTheme : undefined, mru: fileMru.length ? fileMru : undefined, names: bookNames.length ? bookNames : undefined, rawNames: rawNames.length ? rawNames : undefined, iterVals: iterVals.length ? iterVals : undefined, ext: extLinks.length ? { links: extLinks, sheets: extSheets } : undefined };
   for (const sh of book.sheets) { const raw = chartsBySheet.get(sh.name); if (raw?.length) sh.rawCharts = raw; }
   return { book, warnings };
 }
@@ -697,8 +752,11 @@ function dvRuleIn(d: RawDV, range: Range): DVRule {
   return { ...base, type: 'custom', raw: { type, operator: a.operator, formulae: [d.f1, d.f2].filter((v) => v !== undefined), allowBlank: base.allowBlank, showErrorMessage: a.showErrorMessage !== '0', error: a.error, errorTitle: a.errorTitle, errorStyle: a.errorStyle, showInputMessage: a.showInputMessage === '1', prompt: a.prompt, promptTitle: a.promptTitle } };
 }
 
+const b64 = (u: Uint8Array) => { let out = ''; for (let i = 0; i < u.length; i += 0x8000) out += String.fromCharCode(...u.subarray(i, i + 0x8000)); return btoa(out); };
+const unb64 = (s: string) => Uint8Array.from(atob(s), (ch) => ch.charCodeAt(0));
 // =================== GHI ===================
-export async function writeXlsx(wb: Workbook): Promise<Uint8Array> {
+/** macro: ghi phần macro VBA (.xlsm) — mặc định có khi sổ có macro; false khi Lưu thành .xlsx */
+export async function writeXlsx(wb: Workbook, opts: { macro?: boolean } = {}): Promise<Uint8Array> {
   const x = new ExcelJS.Workbook();
   x.creator = 'ExcelLike';
   x.created = new Date();
@@ -731,7 +789,7 @@ export async function writeXlsx(wb: Workbook): Promise<Uint8Array> {
       const cell = ws.getCell(r + 1, c + 1);
       const v: any = wb.value(id, r, c);
       if (typeof raw === 'string' && raw.startsWith('=') && raw.length > 1) {
-        const formula = addPrefixes(toEn(wb.fileFormula(id, r, c, raw))).slice(1);
+        const formula = addPrefixes(toEn(wb.udfCaseOf(wb.fileFormula(id, r, c, raw)))).slice(1);
         const result = v && typeof v === 'object' ? (STD_ERR.has(v.value) ? { error: v.value } : undefined) : v;
         cell.value = (result === undefined ? { formula } : { formula, result }) as any;
       } else if (v && typeof v === 'object') {
@@ -765,7 +823,8 @@ export async function writeXlsx(wb: Workbook): Promise<Uint8Array> {
   const buf = new Uint8Array(await x.xlsx.writeBuffer() as ArrayBuffer);
   const withCharts = wb.sheetIds().some((id) => wb.meta(id).charts.length);
   let out = withCharts ? await addChartsToZip(buf, wb) : buf;
-  if (wb.extLinks.length || wb.iterate.on || wb.listNames().length) out = await addWorkbookExtras(out, wb);
+  // luôn chạy: còn ghi bộ màu chủ đề (ExcelJS ghi bộ màu Office 2007, khác màu sổ đang dùng)
+  out = await addWorkbookExtras(out, wb);
   if (json.sheets.some((sh) => (sh.styles as [number, Style][]).some(([, st]) => st.ln?.startsWith('#')))) out = await fixLocations(out);
   if (json.sheets.some((sh) => sh.breaks?.cols.length)) out = await addColBreaks(out, json.sheets.map((sh) => sh.breaks?.cols ?? []));
   if (json.sheets.some((sh) => sh.outline?.x.length)) out = await addCollapsed(out, json.sheets.map((sh) => sh.outline?.x ?? []));
@@ -784,7 +843,52 @@ export async function writeXlsx(wb: Workbook): Promise<Uint8Array> {
   if (spillAt.some((x) => x.length)) out = await addDynamicArrays(out, spillAt);
   if (wb.sheetIds().some((id) => wb.meta(id).sparks?.length)) out = await addSparklines(out, wb);
   if (wb.bookProtect || wb.sheetIds().some((id) => wb.meta(id).protect || wb.meta(id).allowRanges?.length)) out = await addProtection(out, wb);
+  const macro = (opts.macro ?? true) && !!wb.vba;
+  if (macro || wb.sheetIds().some((id) => wb.meta(id).veryHidden || wb.meta(id).codeName)) out = await addVba(out, wb, macro);
   return out;
+}
+/** macro VBA + codeName + trang ẩn sâu (ExcelJS không giữ các phần này) */
+async function addVba(buf: Uint8Array, wb: Workbook, macro: boolean): Promise<Uint8Array> {
+  const zip = await JSZip.loadAsync(buf);
+  const ids = wb.sheetIds(), v = wb.vba;
+  let wx = await zip.file('xl/workbook.xml')!.async('string');
+  // trang ẩn sâu
+  ids.forEach((id, i) => {
+    if (!wb.meta(id).veryHidden) return;
+    let k = -1;
+    wx = wx.replace(/<sheet\b[^>]*\/>/g, (tag) => { k++; if (k !== i) return tag; return /\bstate="/.test(tag) ? tag.replace(/\bstate="[^"]*"/, 'state="veryHidden"') : tag.replace(/\s*\/>$/, ' state="veryHidden"/>'); });
+  });
+  // codeName của từng trang (sheetPr là phần tử con đầu tiên của worksheet)
+  for (let i = 0; i < ids.length; i++) {
+    const cn = wb.meta(ids[i]).codeName;
+    if (!cn) continue;
+    const p = `xl/worksheets/sheet${i + 1}.xml`;
+    let x = await zip.file(p)?.async('string');
+    if (!x) continue;
+    if (/<sheetPr\b/.test(x)) x = x.replace(/<sheetPr\b([^>]*?)(\/?)>/, (_m, at: string, sl: string) => `<sheetPr${at.replace(/\scodeName="[^"]*"/, '')} codeName="${xesc(cn)}"${sl}>`);
+    else x = x.replace(/(<worksheet\b[^>]*>)/, `$1<sheetPr codeName="${xesc(cn)}"/>`);
+    zip.file(p, x);
+  }
+  if (macro && v) {
+    for (const [path, data] of v.files) zip.file(path, unb64(data));
+    if (v.wbCodeName) {
+      if (/<workbookPr\b/.test(wx)) wx = wx.replace(/<workbookPr\b([^>]*?)(\/?)>/, (_m, at: string, sl: string) => `<workbookPr${at.replace(/\scodeName="[^"]*"/, '')} codeName="${xesc(v.wbCodeName!)}"${sl}>`);
+      else wx = wx.replace(/(<(?:bookViews|sheets)\b)/, `<workbookPr codeName="${xesc(v.wbCodeName)}"/>$1`);
+    }
+    let rx = await zip.file('xl/_rels/workbook.xml.rels')!.async('string');
+    if (!/relationships\/vbaProject"/.test(rx)) rx = rx.replace('</Relationships>', '<Relationship Id="rIdVbaProject1" Type="http://schemas.microsoft.com/office/2006/relationships/vbaProject" Target="vbaProject.bin"/></Relationships>');
+    zip.file('xl/_rels/workbook.xml.rels', rx);
+    let ct = await zip.file('[Content_Types].xml')!.async('string');
+    ct = ct.replace('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml', 'application/vnd.ms-excel.sheet.macroEnabled.main+xml');
+    const add: string[] = [];
+    if (v.ctDefaultBin && !/Extension="bin"/i.test(ct)) add.push('<Default Extension="bin" ContentType="application/vnd.ms-office.vbaProject"/>');
+    for (const [part, type] of v.overrides) if (!ct.includes(`PartName="${part}"`)) add.push(`<Override PartName="${xesc(part)}" ContentType="${xesc(type)}"/>`);
+    if (!v.ctDefaultBin && !v.overrides.some(([part]) => /\/xl\/vbaProject\.bin$/i.test(part))) add.push('<Override PartName="/xl/vbaProject.bin" ContentType="application/vnd.ms-office.vbaProject"/>');
+    ct = ct.replace('</Types>', add.join('') + '</Types>');
+    zip.file('[Content_Types].xml', ct);
+  }
+  zip.file('xl/workbook.xml', wx);
+  return new Uint8Array(await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' }));
 }
 async function addProtection(buf: Uint8Array, wb: Workbook): Promise<Uint8Array> {
   const zip = await JSZip.loadAsync(buf);
@@ -914,9 +1018,17 @@ async function addTables(buf: Uint8Array, all: TableDef[][]): Promise<Uint8Array
   return new Uint8Array(await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' }));
 }
 
+/** Màu chủ đề của sổ (theme1.xml) và màu gần đây (mruColors trong styles.xml) */
+async function addColors(zip: JSZip, wb: Workbook): Promise<void> {
+  const tf = zip.file('xl/theme/theme1.xml');
+  const tx = tf ? await tf.async('string') : '';
+  if (/<a:clrScheme\b[\s\S]*?<\/a:clrScheme>/.test(tx)) zip.file('xl/theme/theme1.xml', tx.replace(/<a:clrScheme\b[\s\S]*?<\/a:clrScheme>/, () => themeSchemeXml(wb.theme ?? DEFAULT_THEME)));
+  if (wb.mru.length) { const sx = await zip.file('xl/styles.xml')!.async('string'); zip.file('xl/styles.xml', withMru(sx, wb.mru)); }
+}
 /** Ghi lại liên kết ngoài (externalLinks) và chế độ tính lặp vào workbook.xml */
 async function addWorkbookExtras(buf: Uint8Array, wb: Workbook): Promise<Uint8Array> {
   const zip = await JSZip.loadAsync(buf);
+  await addColors(zip, wb);
   let wx = await zip.file('xl/workbook.xml')!.async('string');
   let rx = await zip.file('xl/_rels/workbook.xml.rels')!.async('string');
   let ct = await zip.file('[Content_Types].xml')!.async('string');
@@ -938,21 +1050,28 @@ async function addWorkbookExtras(buf: Uint8Array, wb: Workbook): Promise<Uint8Ar
   }
   // tên vùng (definedNames): giữ các tên _xlnm.* (vùng in…) ExcelJS đã ghi
   const names = wb.listNames();
-  if (names.length) {
+  // vùng in: một tên _xlnm.Print_Area cho mỗi trang, các khối cách nhau dấu phẩy, tham chiếu tuyệt đối
+  wx = wx.replace(/<definedName\b[^>]*name="_xlnm\.Print_Area"[^>]*>[\s\S]*?<\/definedName>/g, '');
+  const areaItems = wb.sheetIds().map((id, i) => {
+    const p = wb.meta(id).print; if (!p?.area) return '';
+    const list = [p.area, ...(p.more ?? [])];
+    return `<definedName name="_xlnm.Print_Area" localSheetId="${i}">${list.map((g) => absArea(wb.sheetName(id), g)).join(',').replace(/&/g, '&amp;').replace(/</g, '&lt;')}</definedName>`;
+  }).join('');
+  if (names.length || wb.rawNames.length || areaItems) {
     const xe = (t: string) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     const order = wb.sheetIds();
     const items = names.map((n) => {
       const local = n.scope !== undefined ? order.indexOf(n.scope) : -1;
       return `<definedName name="${xe(n.name)}"${local >= 0 ? ` localSheetId="${local}"` : ''}${n.comment ? ` comment="${xe(n.comment)}"` : ''}${n.hidden ? ' hidden="1"' : ''}>${xe(addPrefixes(toEn(n.expr)).slice(1))}</definedName>`;
-    }).join('');
+    }).join('') + wb.rawNames.filter((x) => !/\blocalSheetId=/.test(x)).join('') + areaItems; // tên lạ gắn trang: bỏ (số trang có thể đã đổi)
     // thay bằng hàm: công thức có $A$1… không được hiểu thành nhóm $1 của regex
     if (/<\/definedNames>/.test(wx)) wx = wx.replace('</definedNames>', () => items + '</definedNames>');
     else if (/<definedNames\s*\/>/.test(wx)) wx = wx.replace(/<definedNames\s*\/>/, () => `<definedNames>${items}</definedNames>`);
     else wx = wx.replace(/(<\/externalReferences>|<\/sheets>)(?![\s\S]*<\/externalReferences>)/, (m0) => `${m0}<definedNames>${items}</definedNames>`);
   }
-  if (wb.iterate.on) {
-    const it = `iterate="1" iterateCount="${wb.iterate.count}" iterateDelta="${wb.iterate.delta}"`;
-    if (/<calcPr\b/.test(wx)) wx = wx.replace(/<calcPr\b([^>]*?)(\/?)>/, (_m, a, sl) => `<calcPr${a.replace(/\s(iterate|iterateCount|iterateDelta)="[^"]*"/g, '')} ${it}${sl}>`);
+  if (wb.iterate.on || wb.calcMode === 'manual') {
+    const it = [wb.iterate.on ? `iterate="1" iterateCount="${wb.iterate.count}" iterateDelta="${wb.iterate.delta}"` : '', wb.calcMode === 'manual' ? `calcMode="manual"${wb.calcOnSave ? '' : ' calcOnSave="0"'}` : ''].filter(Boolean).join(' ');
+    if (/<calcPr\b/.test(wx)) wx = wx.replace(/<calcPr\b([^>]*?)(\/?)>/, (_m, a, sl) => `<calcPr${a.replace(/\s(iterate|iterateCount|iterateDelta|calcMode|calcOnSave)="[^"]*"/g, '')} ${it}${sl}>`);
     else wx = wx.replace(/(<\/definedNames>|<\/externalReferences>|<\/sheets>)(?![\s\S]*(<\/definedNames>|<\/externalReferences>))/, `$1<calcPr ${it}/>`);
   }
   zip.file('xl/workbook.xml', wx);
@@ -1417,13 +1536,27 @@ function printOut(ws: ExcelJS.Worksheet, ps0: PrintSetup) {
     ...(ps.firstPage ? { firstPageNumber: ps.firstPage } : {}),
     ...(ps.titleRowRange ? { printTitlesRow: `${ps.titleRowRange[0] + 1}:${ps.titleRowRange[1] + 1}` } : {}),
     ...(ps.titleColRange ? { printTitlesColumn: `${colName(ps.titleColRange[0])}:${colName(ps.titleColRange[1])}` } : {}),
-    ...(ps.area ? { printArea: rangeToA1(ps.area) } : {}),
   } as any;
+  delete (ws.pageSetup as any).printArea; // vùng in ghi riêng (một tên _xlnm.Print_Area, nhiều khối)
   if (ps.header || ps.footer || ps.hfFirst || ps.hfEven) (ws as any).headerFooter = {
     ...(ws as any).headerFooter, oddHeader: ps.header || undefined, oddFooter: ps.footer || undefined,
     ...(ps.hfFirst ? { differentFirst: true, firstHeader: ps.hfFirst.header || undefined, firstFooter: ps.hfFirst.footer || undefined } : {}),
     ...(ps.hfEven ? { differentOddEven: true, evenHeader: ps.hfEven.header || undefined, evenFooter: ps.hfEven.footer || undefined } : {}),
   };
+}
+/** tách danh sách khối của Print_Area (dấu phẩy ngoài tên trang trong '…') */
+function splitAreas(t: string): string[] {
+  const out: string[] = []; let cur = '', q = false;
+  for (let i = 0; i < t.length; i++) { const ch = t[i]; if (ch === "'") { if (q && t[i + 1] === "'") { cur += "''"; i++; continue; } q = !q; } if (ch === ',' && !q) { out.push(cur); cur = ''; continue; } cur += ch; }
+  if (cur.trim()) out.push(cur);
+  return out.map((x) => x.trim()).filter(Boolean);
+}
+/** tham chiếu tuyệt đối đủ $ của một khối vùng in */
+function absArea(sheet: string, g: Range): string {
+  const q = quoteSheet(sheet);
+  if (g.r1 === 0 && g.r2 >= MAX_ROWS - 1) return `${q}!$${colName(g.c1)}:$${colName(g.c2)}`;
+  if (g.c1 === 0 && g.c2 >= 16383) return `${q}!$${g.r1 + 1}:$${g.r2 + 1}`;
+  return `${q}!$${colName(g.c1)}$${g.r1 + 1}:$${colName(g.c2)}$${g.r2 + 1}`;
 }
 function colIdx(s: string) { let c = 0; for (const ch of s.toUpperCase()) c = c * 26 + ch.charCodeAt(0) - 64; return c - 1; }
 /** Ngắt trang theo cột (ExcelJS chỉ ghi được ngắt theo hàng) */

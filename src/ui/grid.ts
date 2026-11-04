@@ -416,26 +416,31 @@ export class Grid {
   }
 
   // ---------- Xem trước Ngắt Trang ----------
-  private brk: { key: string; pages: { r1: number; r2: number; c1: number; c2: number; n: number }[]; area: Range | null; manR: Set<number>; manC: Set<number> } | null = null;
+  private brk: { key: string; pages: { r1: number; r2: number; c1: number; c2: number; n: number; a: number }[]; area: Range | null; areas: Range[]; manR: Set<number>; manC: Set<number> } | null = null;
   private breakLayout() {
     const key = this.sheet + ':' + this.wb.ver;
     if (this.brk?.key === key) return this.brk;
     const L = paginate(this.wb, this.sheet, normPrint(this.wb.meta(this.sheet).print));
-    const pages = L.pages.map((p, i) => ({ r1: p.rows[0], r2: p.rows[p.rows.length - 1], c1: p.cols[0], c2: p.cols[p.cols.length - 1], n: i + 1 }));
+    const areas = L.areas ?? (L.area ? [L.area] : []);
+    const inA = (r: number, c: number) => Math.max(0, areas.findIndex((g) => r >= g.r1 && r <= g.r2 && c >= g.c1 && c <= g.c2));
+    const pages = L.pages.map((p, i) => ({ r1: p.rows[0], r2: p.rows[p.rows.length - 1], c1: p.cols[0], c2: p.cols[p.cols.length - 1], n: i + 1, a: inA(p.rows[0], p.cols[0]) }));
     const b = this.wb.meta(this.sheet).breaks;
-    this.brk = { key, pages, area: L.area, manR: new Set(b.rows), manC: new Set(b.cols) };
+    this.brk = { key, pages, area: L.area, areas, manR: new Set(b.rows), manC: new Set(b.cols) };
     return this.brk;
   }
   /** đường ngắt trang gần điểm (x, y) trong Xem trước Ngắt Trang (để kéo) */
   private breakAt(x: number, y: number): { ax: 'r' | 'c'; at: number } | null {
     if (this.view !== 'break') return null;
     const L = this.breakLayout();
-    if (!L.area) return null;
-    const ax1 = this.sx(L.area.c1), ay1 = this.sy(L.area.r1), ax2 = this.sx(L.area.c2) + this.colWpx(L.area.c2), ay2 = this.sy(L.area.r2) + this.rowHpx(L.area.r2);
-    if (x < ax1 || x > ax2 || y < ay1 || y > ay2) return null;
-    for (const p of L.pages) {
-      if (p.r1 !== L.area.r1 && Math.abs(this.sy(p.r1) - y) <= 4) return { ax: 'r', at: p.r1 };
-      if (p.c1 !== L.area.c1 && Math.abs(this.sx(p.c1) - x) <= 4) return { ax: 'c', at: p.c1 };
+    for (let k = 0; k < L.areas.length; k++) {
+      const A = L.areas[k];
+      const ax1 = this.sx(A.c1), ay1 = this.sy(A.r1), ax2 = this.sx(A.c2) + this.colWpx(A.c2), ay2 = this.sy(A.r2) + this.rowHpx(A.r2);
+      if (x < ax1 || x > ax2 || y < ay1 || y > ay2) continue;
+      for (const p of L.pages) {
+        if (p.a !== k) continue;
+        if (p.r1 !== A.r1 && Math.abs(this.sy(p.r1) - y) <= 4) return { ax: 'r', at: p.r1 };
+        if (p.c1 !== A.c1 && Math.abs(this.sx(p.c1) - x) <= 4) return { ax: 'c', at: p.c1 };
+      }
     }
     return null;
   }
@@ -446,9 +451,9 @@ export class Grid {
     // ngoài vùng in: tô xám như Excel
     ctx.save();
     ctx.fillStyle = 'rgba(128,128,128,.28)';
-    if (!L.area) { ctx.fillRect(0, 0, W, H); ctx.restore(); return; }
-    const ax1 = this.sx(L.area.c1), ay1 = this.sy(L.area.r1), ax2 = this.sx(L.area.c2) + this.colWpx(L.area.c2), ay2 = this.sy(L.area.r2) + this.rowHpx(L.area.r2);
-    ctx.beginPath(); ctx.rect(0, 0, W, H); ctx.rect(ax1, ay1, ax2 - ax1, ay2 - ay1); ctx.fill('evenodd');
+    if (!L.areas.length) { ctx.fillRect(0, 0, W, H); ctx.restore(); return; }
+    const box = (A: Range) => { const x1 = this.sx(A.c1), y1 = this.sy(A.r1); return { x1, y1, x2: this.sx(A.c2) + this.colWpx(A.c2), y2: this.sy(A.r2) + this.rowHpx(A.r2) }; };
+    ctx.beginPath(); ctx.rect(0, 0, W, H); for (const A of L.areas) { const b = box(A); ctx.rect(b.x1, b.y1, b.x2 - b.x1, b.y2 - b.y1); } ctx.fill('evenodd');
     // số trang mờ ở giữa mỗi trang
     ctx.font = `600 ${Math.round(44 * z)}px ${UIFONT}`;
     this.lastFont = '';
@@ -461,8 +466,10 @@ export class Grid {
     }
     // đường ngắt: thủ công/biên vùng in nét liền, tự động nét đứt (màu xanh như Excel)
     ctx.strokeStyle = '#1f5fbf'; ctx.lineWidth = 2;
-    ctx.strokeRect(ax1 + 1, ay1 + 1, ax2 - ax1 - 2, ay2 - ay1 - 2);
+    for (const A of L.areas) { const b = box(A); ctx.strokeRect(b.x1 + 1, b.y1 + 1, b.x2 - b.x1 - 2, b.y2 - b.y1 - 2); }
     const dg = this.drag;
+    const first = box(L.areas[0]);
+    const ax1 = first.x1, ay1 = first.y1, ax2 = first.x2, ay2 = first.y2;
     if (dg?.kind === 'brk') {
       // đường đang kéo: nét đậm hơn
       ctx.save(); ctx.lineWidth = 3; ctx.strokeStyle = '#0b3d91'; ctx.setLineDash([]);
@@ -470,10 +477,11 @@ export class Grid {
       if (dg.ax === 'r') { const yy = Math.round(this.sy(dg.to)); ctx.moveTo(ax1, yy); ctx.lineTo(ax2, yy); } else { const xx = Math.round(this.sx(dg.to)); ctx.moveTo(xx, ay1); ctx.lineTo(xx, ay2); }
       ctx.stroke(); ctx.restore();
     }
-    const seenR = new Set<number>(), seenC = new Set<number>();
+    const seen = new Set<string>();
     for (const p of L.pages) {
-      if (p.r1 !== L.area.r1 && !seenR.has(p.r1)) { seenR.add(p.r1); const y = Math.round(this.sy(p.r1)); ctx.setLineDash(L.manR.has(p.r1) ? [] : [6, 4]); ctx.beginPath(); ctx.moveTo(ax1, y); ctx.lineTo(ax2, y); ctx.stroke(); }
-      if (p.c1 !== L.area.c1 && !seenC.has(p.c1)) { seenC.add(p.c1); const x = Math.round(this.sx(p.c1)); ctx.setLineDash(L.manC.has(p.c1) ? [] : [6, 4]); ctx.beginPath(); ctx.moveTo(x, ay1); ctx.lineTo(x, ay2); ctx.stroke(); }
+      const A = L.areas[p.a] ?? L.areas[0], b = box(A);
+      if (p.r1 !== A.r1 && !seen.has(p.a + 'r' + p.r1)) { seen.add(p.a + 'r' + p.r1); const y = Math.round(this.sy(p.r1)); ctx.setLineDash(L.manR.has(p.r1) ? [] : [6, 4]); ctx.beginPath(); ctx.moveTo(b.x1, y); ctx.lineTo(b.x2, y); ctx.stroke(); }
+      if (p.c1 !== A.c1 && !seen.has(p.a + 'c' + p.c1)) { seen.add(p.a + 'c' + p.c1); const x = Math.round(this.sx(p.c1)); ctx.setLineDash(L.manC.has(p.c1) ? [] : [6, 4]); ctx.beginPath(); ctx.moveTo(x, b.y1); ctx.lineTo(x, b.y2); ctx.stroke(); }
     }
     ctx.restore();
   }

@@ -136,7 +136,7 @@ export function pageSetupDialog(app: App, tab: 'page' | 'margins' | 'hf' | 'shee
   queueMicrotask(syncAlt);
   // ---- Trang tính ----
   const areaIn = h('input', { type: 'text', id: 'ps-area', placeholder: 'ví dụ: A1:H40', style: 'height:32px' }) as HTMLInputElement;
-  if (p.area) areaIn.value = `${colName(p.area.c1)}${p.area.r1 + 1}:${colName(p.area.c2)}${p.area.r2 + 1}`;
+  if (p.area) areaIn.value = [p.area, ...p.more].map((g) => `${colName(g.c1)}${g.r1 + 1}:${colName(g.c2)}${g.r2 + 1}`).join(';');
   const rowsIn = h('input', { type: 'text', id: 'ps-rows', placeholder: 'ví dụ: $1:$3', style: 'height:32px' }) as HTMLInputElement;
   if (p.titleRowRange) rowsIn.value = `$${p.titleRowRange[0] + 1}:$${p.titleRowRange[1] + 1}`;
   const colsIn = h('input', { type: 'text', id: 'ps-cols', placeholder: 'ví dụ: $A:$B', style: 'height:32px' }) as HTMLInputElement;
@@ -189,10 +189,15 @@ export function pageSetupDialog(app: App, tab: 'page' | 'margins' | 'hf' | 'shee
     n.gridlines = q('#ps-grid').checked; n.headings = q('#ps-heads').checked;
     n.order = q('input[name=ps-ord]:checked').value as NPrint['order'];
     if (areaIn.value.trim()) {
-      const r = parseSheetRef(wb, areaIn.value.trim(), s);
-      if (!r || r.sheet !== s) { err.textContent = 'Vùng in không hợp lệ (ví dụ: A1:H40).'; return null; }
-      n.area = r.range;
-    } else n.area = null;
+      // nhiều khối: cách nhau dấu ; (vd A1:F20;H1:K10)
+      const list = [];
+      for (const part of areaIn.value.split(/[;,]/).map((x) => x.trim()).filter(Boolean)) {
+        const r = parseSheetRef(wb, part, s);
+        if (!r || r.sheet !== s) { err.textContent = 'Vùng in không hợp lệ (ví dụ: A1:H40 hoặc A1:F20;H1:K10).'; return null; }
+        list.push(r.range);
+      }
+      n.area = list[0]; n.more = list.slice(1);
+    } else { n.area = null; n.more = []; }
     const rr = /^\$?(\d+):\$?(\d+)$/.exec(rowsIn.value.trim()), cc = /^\$?([A-Z]+):\$?([A-Z]+)$/i.exec(colsIn.value.trim());
     if (rowsIn.value.trim() && !rr) { err.textContent = 'Hàng lặp lại phải dạng $1:$2.'; return null; }
     if (colsIn.value.trim() && !cc) { err.textContent = 'Cột lặp lại phải dạng $A:$B.'; return null; }

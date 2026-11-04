@@ -1,8 +1,9 @@
 import { DynamicOffsetPlugin, offsetIn, offsetOut } from './offset';
 import { DEFAULT_ALLOW, type PwHash, type ProtectAllow, type SheetProtect } from './protect';
 import { DynArrayPlugin, DYN_NAMES, fitRegistry } from './dynarray';
+import { LambdaPlugin, LAMBDA_NAMES, patchInterpreter, lamIn, lamOut, callCase, CALC_MSG } from './lambda';
 import { areaRange, type Area, encodeStructured, decodeStructured, tableCellStyle, tableNameError, dataRows, inTable, xtExpr, totalFormula, type TableDef, type TableReg, type TotalFn } from './tables';
-import { encFormulaNames, decFormulaNames, encName, nameError, renameInFormula } from './names';
+import { encFormulaNames, decFormulaNames, encName, nameError, renameInFormula, mapIdents } from './names';
 import { HyperFormula, FunctionPlugin, FunctionArgumentType, CellError, ErrorType } from 'hyperformula';
 import { shiftFormula, fixSheetQuotes, needsQuote, quoteSheet, transposeFormula } from './formula';
 import type { ConfigParams, RawCellContent, SimpleCellAddress } from 'hyperformula';
@@ -56,6 +57,8 @@ export interface PrintSetup {
   orientation: 'portrait' | 'landscape'; paper: PaperName; gridlines: boolean;
   fitWidth?: boolean; titleRows?: number;           // dạng cũ (0.3–0.4)
   margins?: 'normal' | 'narrow' | 'wide' | 'custom'; mg?: Margins; area?: Range | null;
+  /** các khối vùng in sau khối đầu (area), theo thứ tự trong _xlnm.Print_Area */
+  more?: Range[];
   scale?: number; fit?: { w: number; h: number } | null;   // % hoặc vừa w × h trang (0 = tự động)
   titleRowRange?: [number, number] | null; titleColRange?: [number, number] | null;
   headings?: boolean; center?: { h?: boolean; v?: boolean }; firstPage?: number | null; order?: 'down' | 'over';
@@ -82,6 +85,12 @@ export interface SheetMeta {
   breaks: { rows: number[]; cols: number[] };   // ngắt trang thủ công (trước hàng/cột)
   tabColor?: string;
   hidden?: boolean;                              // trang tính ẩn
+  /** ẩn sâu (state="veryHidden"): chỉ VBA mới hiện lại được — không có trong hộp Bỏ ẩn */
+  veryHidden?: boolean;
+  /** tên mã VBA của trang (sheetPr codeName) — mô-đun VBA gắn với trang theo tên này */
+  codeName?: string;
+  /** ô gọi hàm VBA tự viết: giá trị Excel lưu sẵn trong tệp (ExcelLike không chạy VBA) */
+  udf?: Map<number, unknown>;
   /** Nhóm hàng/cột (Dữ liệu ▸ Đại cương); bất biến: mỗi thay đổi tạo đối tượng mới (dễ hoàn tác) */
   outline: Outline;
   /** Bảng (Ctrl+T); bất biến như outline */
@@ -96,6 +105,8 @@ export interface SheetMeta {
   protect?: SheetProtect | null;
   allowRanges?: { title: string; range: Range; pw?: PwHash }[];
 }
+/** phần macro của tệp .xlsm: các tệp (base64) + cách khai báo kiểu nội dung gốc */
+export interface VbaPack { files: [string, string][]; ctDefaultBin: boolean; overrides: [string, string][]; wbCodeName?: string; udfNames?: string[] }
 export interface SparkGroup { type: 'line' | 'column' | 'stacked'; color: string; neg?: string; hi?: boolean; lo?: boolean; first?: boolean; last?: boolean; negPts?: boolean; markers?: boolean; items: { r: number; c: number; src: Ref }[] }
 export interface Scenario { name: string; cells: [number, number][]; values: string[]; comment?: string }
 /** cấp nhóm (1–7) theo hàng/cột; x: các nhóm đang thu gọn, khóa "r|c:cấp:hàng/cột tổng" */
@@ -104,8 +115,10 @@ const NO_OUTLINE: Outline = { r: {}, c: {}, x: [] };
 export type BorderKind = 'all' | 'outer' | 'none' | 'top' | 'bottom' | 'left' | 'right' | 'inner';
 export interface SortKey { col: number; desc?: boolean }
 const COLLATOR = new Intl.Collator('vi', { sensitivity: 'accent' });
-interface Entry { hf: boolean; undo?: () => void; redo?: () => void; parts?: Entry[] }
+interface Entry { hf: boolean; undo?: () => void; redo?: () => void; parts?: Entry[]; lazy?: boolean }
 interface Clip { sheet: number; range: Range; cut: boolean }
+/** bước hoàn tác chỉ gồm các lần sửa ô ở chế độ Thủ công (không thay đổi HyperFormula thì cũng coi là sửa ô) */
+const allLazy = (e: Entry): boolean => (e.parts ? e.parts.every(allLazy) : !e.hf || !!e.lazy);
 export interface Changed { r: number; c: number }
 
 const NO_STYLE: Style = Object.freeze({}) as Style;
@@ -201,11 +214,13 @@ function ensurePlugins() {
   HyperFormula.unregisterFunction('FILTER');
   HyperFormula.registerFunctionPlugin(DynArrayPlugin as any, { enGB: Object.fromEntries(DYN_NAMES.map((n) => [n, n])) } as any);
   HyperFormula.registerFunctionPlugin(TableRowPlugin as any, { enGB: { XTHISROW: 'XTHISROW' } } as any);
+  HyperFormula.registerFunctionPlugin(LambdaPlugin as any, { enGB: Object.fromEntries(LAMBDA_NAMES.map((n) => [n, n])) } as any);
   HyperFormula.registerFunctionPlugin(DynamicOffsetPlugin as any, { enGB: { XOFS3: 'XOFS3', XOFS4: 'XOFS4', XOFS5: 'XOFS5' } } as any);
   // So sánh chuỗi (=, <, >…) trong HyperFormula thử đọc chuỗi thành ngày ở MỖI lần so sánh — rất chậm với FILTER/SUMIF
   // trên vùng lớn. Chuỗi không có chữ số thì không thể là ngày/giờ; chuỗi có số thì nhớ kết quả đọc.
   try {
     const probe: any = HyperFormula.buildEmpty(HF_CONFIG);
+    patchInterpreter(Object.getPrototypeOf(probe._evaluator.interpreter));
     const proto = Object.getPrototypeOf(probe._evaluator.interpreter.arithmeticHelper.dateTimeHelper);
     const orig = proto.dateStringToDateNumber;
     if (orig && !orig.__fast) {
@@ -231,7 +246,7 @@ function ensurePlugins() {
 interface TblCtx { tables: () => TableReg[]; need: (name: string, expr: string) => void; inline?: boolean }
 const fin = (v: string, self: { r: number; c: number } | undefined, sheet: string, ctx?: TblCtx) => {
   if (v[0] !== '=') return v;
-  let x = offsetIn(v, self, sheet);
+  let x = offsetIn(lamIn(v), self, sheet);
   if (ctx && x.includes('[')) x = encodeStructured(x, { tables: ctx.tables(), self: self && { sheet, r: self.r, c: self.c }, need: ctx.need, inline: ctx.inline });
   x = encFormulaNames(x);
   // mảng động có kích thước phụ thuộc dữ liệu (FILTER, UNIQUE): bọc XFIT để bộ tính chỉ giữ đúng vùng tràn thật
@@ -239,8 +254,8 @@ const fin = (v: string, self: { r: number; c: number } | undefined, sheet: strin
   if (self && DYN_SIZE.test(x) && !/^=\s*XFIT\s*\(/i.test(x)) x = '=XFIT(1;1;' + x.slice(1) + ')';
   return x;
 };
-const DYN_SIZE = /(?<![\w.])(?:_xlfn\.)?(?:_xlws\.)?(?:FILTER|UNIQUE)\s*\(/i;
-const NEEDS_FIN = /OFFSET\s*\(|[^\u0000-\u02AF]|\[|FILTER\s*\(|UNIQUE\s*\(/i;
+const DYN_SIZE = /(?<![\w.])(?:_xlfn\.)?(?:_xlws\.)?(?:FILTER|UNIQUE|LET|MAP|SCAN|BYROW|BYCOL|MAKEARRAY|REDUCE|XLAMCALL)\s*\(/i;
+const NEEDS_FIN = /OFFSET\s*\(|[^\u0000-\u02AF]|\[|FILTER\s*\(|UNIQUE\s*\(|LAMBDA\s*\(|LET\s*\(|MAP\s*\(|SCAN\s*\(|BYROW\s*\(|BYCOL\s*\(|MAKEARRAY\s*\(|REDUCE\s*\(/i;
 /** bỏ lớp bọc XFIT khi đưa công thức ra ngoài (thanh công thức, lưu tệp) */
 const unfit = (f: string) => { const m = /^=XFIT\(\s*\d+\s*[;,]\s*\d+\s*[;,]/i.exec(f); return m && f.endsWith(')') ? '=' + f.slice(m[0].length, -1) : f; };
 function mapRows(cells: RawCellContent[][], sheet: string, r0 = 0, c0 = 0, ctx?: TblCtx): RawCellContent[][] {
@@ -250,6 +265,8 @@ function mapRows(cells: RawCellContent[][], sheet: string, r0 = 0, c0 = 0, ctx?:
   return cells.map((row, i) => row && row.map((v, j) => (typeof v === 'string' ? (fin(v, { r: r0 + i, c: c0 + j }, sheet, ctx) as RawCellContent) : v)));
 }
 /** bảng tên hiển thị (tên gốc) theo tên mã hóa viết hoa, gắn vào từng bộ tính */
+let BUILTIN: Set<string> | null = null;
+const isBuiltin = (n: string) => (BUILTIN ??= new Set(HyperFormula.getRegisteredFunctionNames('enGB'))).has(n);
 export const nameDisplay = (hf: HyperFormula): Map<string, string> => ((hf as any).__nameDisp ??= new Map<string, string>());
 /** bảng hiện hành gắn với bộ tính (Workbook gán hàm lấy danh sách) */
 const hfTables = (hf: HyperFormula): TableReg[] => ((hf as any).__tables?.() ?? []);
@@ -269,7 +286,7 @@ function patchOffset(hf: HyperFormula): HyperFormula {
     if (Array.isArray(c)) return set(a, mapRows(c, name, a.row, a.col, ctx));
     return set(a, typeof c === 'string' ? fin(c, { r: a.row, c: a.col }, name, ctx) : c);
   };
-  const out = (f: string, at?: { sheet: number; r: number; c: number }) => decodeStructured(decFormulaNames(offsetOut(unfit(f)), nameDisplay(hf)), hfTables(hf), at);
+  const out = (f: string, at?: { sheet: number; r: number; c: number }) => decodeStructured(decFormulaNames(callCase(offsetOut(lamOut(unfit(f))), mapIdents, nameDisplay(hf), isBuiltin), nameDisplay(hf)), hfTables(hf), at);
   const calc = h.calculateFormula.bind(hf);
   h.calculateFormula = (f: string, sheet: number) => calc(fin(f, undefined, hf.getSheetName(sheet) ?? '', { ...tblCtx(hf), inline: true }), sheet);
   const vf = h.validateFormula.bind(hf);
@@ -309,6 +326,8 @@ function buildHF(sheets?: { name: string; cells: RawCellContent[][] }[], tables:
 }
 
 const key = (r: number, c: number) => r * MAX_COLS + c;
+const CALC_CACHE = new WeakMap<object, unknown>();
+function calcError<T extends object>(v: T): T { let o = CALC_CACHE.get(v) as T | undefined; if (!o) { o = Object.assign(Object.create(Object.getPrototypeOf(v)), v, { value: '#CALC!', type: 'CALC' }) as T; CALC_CACHE.set(v, o); } return o; }
 const unkey = (k: number) => ({ r: Math.floor(k / MAX_COLS), c: k % MAX_COLS });
 const BAD_NAME = /[\\/?*[\]:]/;
 
@@ -323,7 +342,120 @@ export class Workbook {
 
   private constructor(hf: HyperFormula) { this.attach(hf); }
   /** gắn bộ tính + danh sách bảng sống cho lớp dịch tham chiếu có cấu trúc */
-  private attach(hf: HyperFormula) { this.hf = hf; (hf as any).__tables = () => this.tableReg(); }
+  private attach(hf: HyperFormula) { this.hf = hf; (hf as any).__tables = () => this.tableReg(); this.patchManual(hf); }
+
+  // ---------- chế độ tính Thủ công (Công thức ▸ Tùy chọn Tính toán ▸ Thủ công) ----------
+  /** 'manual': bộ tính tạm dừng; sửa ô không tính lại ô phụ thuộc cho tới khi F9 */
+  calcMode: 'auto' | 'manual' = 'auto';
+  /** Tính lại sổ trước khi lưu (chỉ có tác dụng ở chế độ Thủ công) */
+  calcOnSave = true;
+  /** Còn thay đổi chưa tính (thanh trạng thái hiện “Tính toán”) */
+  calcDirty = false;
+  /** Tệp mở ra cần tính toàn bộ ngay (fullCalcOnLoad hoặc thiếu giá trị lưu sẵn) — đã xử lý khi dựng sổ */
+  private lazyDepth = 0;
+  /** giá trị tạm của công thức vừa gõ khi đang Thủ công (công thức tự tính, ô phụ thuộc thì chưa) */
+  private fresh = new WeakMap<object, unknown>();
+  private get held() { return this.calcMode === 'manual' && this.hf.isEvaluationSuspended(); }
+  /**
+   * Khi Thủ công, HyperFormula bị tạm dừng: các hàm đọc giá trị của nó báo lỗi “đang tạm dừng”.
+   * Bọc lại để đọc giá trị đang có trong bộ tính (giá trị cũ của ô phụ thuộc — như Excel),
+   * và batch() không tự bật lại tính toán.
+   */
+  private patchManual(hf: HyperFormula) {
+    const h: any = hf;
+    const wrap = (name: string, fallback?: (e: Error, args: any[]) => unknown) => {
+      const orig = h[name].bind(hf);
+      h[name] = (...args: any[]) => {
+        if (!(this.calcMode === 'manual' && h._evaluationSuspended)) return orig(...args);
+        h._evaluationSuspended = false;
+        try { return orig(...args); }
+        catch (e) { if (fallback && /not computed/i.test((e as Error).message)) return fallback(e as Error, args); throw e; }
+        finally { h._evaluationSuspended = true; }
+      };
+    };
+    const cellOf = (a: SimpleCellAddress) => { try { return h.dependencyGraph.addressMapping.getCell(a); } catch { return undefined; } };
+    wrap('getCellValue', (_e, [a]) => { const v = cellOf(a); return v && this.fresh.has(v) ? this.fresh.get(v) : null; });
+    wrap('getSheetValues', (_e, [id]) => {
+      const d = hf.getSheetDimensions(id);
+      return Array.from({ length: d.height }, (_, r) => Array.from({ length: d.width }, (_, c) => hf.getCellValue({ sheet: id, row: r, col: c })));
+    });
+    wrap('getCellValueDetailedType', () => 'NUMBER_RAW');
+    wrap('getCellValueType', () => 'NUMBER');
+    wrap('getCellValueFormat', () => undefined);
+    wrap('getNamedExpressionValue', () => null);
+    for (const n of ['getCellHyperlink', 'getCellSerialized', 'getSheetSerialized', 'getAllSheetsValues', 'getAllSheetsSerialized', 'getFillRangeData', 'getRangeValues']) if (typeof h[n] === 'function') wrap(n);
+    const ob = h.batch.bind(hf);
+    h.batch = (fn: () => void) => {
+      if (!(this.calcMode === 'manual' && h._evaluationSuspended)) return ob(fn);
+      const cr = h._crudOperations;
+      cr.beginUndoRedoBatchMode();
+      try { fn(); } finally { cr.commitUndoRedoBatchMode(); }
+      return [];
+    };
+  }
+  /** Chạy fn như một lần sửa ô của người dùng: ở chế độ Thủ công không tính lại ô phụ thuộc */
+  lazy<T>(fn: () => T): T { this.lazyDepth++; try { return fn(); } finally { this.lazyDepth--; } }
+  /** Công thức vừa ghi (chưa được tính) tự tính riêng nó từ giá trị đang có, như Excel ở chế độ Thủ công */
+  /** công thức đã tính tạm khi Thủ công: trước khi tính thật phải xóa giá trị tạm để ô phụ thuộc cũng được tính */
+  private freshV = new Set<any>();
+  private freshen() {
+    const h: any = this.hf, g = h.dependencyGraph, evr = h.evaluator;
+    const todo: any[] = [];
+    for (const v of g.graph.getDirtyAndVolatileNodes()) if (v && typeof v.isComputed === 'function' && !v.isComputed()) todo.push(v);
+    let spill = false;
+    // tính đúng tại ô của nó (ROW(), [@Cột]… đúng), theo nhiều lượt để công thức mới đọc được công thức mới khác
+    for (let pass = 0; pass < 4 && todo.length && !spill; pass++) {
+      for (let i = 0; i < todo.length; i++) {
+        const v = todo[i];
+        if (v.array !== undefined) { spill = true; break; } // mảng động vừa gõ: tính ngay để tràn đúng vùng
+        try { evr.recomputeFormulaVertexValue(v); } catch { continue; }
+        this.freshV.add(v);
+        todo.splice(i--, 1);
+      }
+    }
+    if (spill) this.settleNow();
+  }
+  /** bật lại bộ tính; giá trị tạm của công thức vừa gõ bị xóa trước để lần tính thật coi là thay đổi và tính tiếp ô phụ thuộc */
+  private resumeCalc() {
+    for (const v of this.freshV) { if (v.cachedCellValue !== undefined) v.cachedCellValue = undefined; }
+    this.freshV.clear();
+    this.hf.resumeEvaluation();
+  }
+  /** tính phần đang chờ, rồi tạm dừng lại nếu đang Thủ công (không phát sự kiện) */
+  private settleNow() {
+    const h: any = this.hf;
+    if (h._evaluationSuspended) this.resumeCalc();
+    this.fresh = new WeakMap(); this.calcDirty = false;
+    this.refitDyn();
+    if (this.iterate.on) this.resolveIter();
+    if (this.calcMode === 'manual') this.hf.suspendEvaluation();
+  }
+  /** bao quanh một thao tác ghi: Thủ công + sửa ô → chỉ đánh dấu chờ tính; thao tác khác → tính ngay như Tự động */
+  private around<T>(lazy: boolean, fn: () => T): T {
+    if (this.calcMode !== 'manual') return fn();
+    if (lazy) { const r = fn(); this.calcDirty = true; this.freshen(); return r; }
+    if (this.hf.isEvaluationSuspended()) this.resumeCalc();
+    try { return fn(); } finally { this.settleNow(); }
+  }
+  setCalcMode(m: 'auto' | 'manual') {
+    if (m === this.calcMode) return;
+    if (m === 'manual') { this.calcMode = 'manual'; if (!this.hf.isEvaluationSuspended()) this.hf.suspendEvaluation(); this.calcDirty = false; }
+    else { this.calcMode = 'auto'; this.settleNow(); }
+    this.ver++; this.listeners.forEach((f) => f());
+  }
+  /** F9 / Shift+F9: tính các công thức đã đổi và ô phụ thuộc; giữ lịch sử Hoàn tác */
+  calcNow() { if (!this.hf.isEvaluationSuspended()) this.hf.suspendEvaluation(); this.settleNow(); this.ver++; this.listeners.forEach((f) => f()); }
+  /** tên LAMBDA: bộ tính không theo dõi lời gọi hàm qua tên (NhanDoi(4)) → tính lại mọi công thức khi tên đổi */
+  private lamNamesChanged(fx: string, any = false) {
+    if (!any && !/LAMBDA\s*\(/i.test(fx)) return;
+    if (!any || /LAMBDA\s*\(/i.test(fx) || this.listNames().some((n) => /LAMBDA\s*\(/i.test(n.expr))) { this.markAllDirty(); if (this.calcMode === 'manual') this.calcDirty = true; else this.calcNow(); }
+  }
+  /** Ctrl+Alt+F9: tính lại mọi công thức (kể cả ô không đổi); giữ lịch sử Hoàn tác */
+  calcAll() { this.markAllDirty(); this.calcNow(); }
+  private markAllDirty() {
+    const g: any = (this.hf as any).dependencyGraph;
+    for (const v of g.graph.getNodes()) if (v && typeof v.isComputed === 'function') g.graph.markNodeAsDirty(v);
+  }
 
   static create(): Workbook {
     const wb = new Workbook(buildHF());
@@ -337,7 +469,7 @@ export class Workbook {
   onChange(f: () => void) { this.listeners.add(f); return () => this.listeners.delete(f); }
   /** Tăng mỗi khi sổ thay đổi — dùng làm khóa bộ nhớ đệm (CF) */
   ver = 0;
-  private emit() { this.ver++; this.refitDyn(); if (this.iterate.on) this.resolveIter(); this.listeners.forEach((f) => f()); }
+  private emit() { this.ver++; if (!this.held) { this.refitDyn(); if (this.iterate.on) this.resolveIter(); } this.listeners.forEach((f) => f()); }
   /**
    * Mảng động FILTER/UNIQUE: đặt lại kích thước vùng giữ trước của XFIT theo kết quả thật (như Excel tràn đúng số ô).
    * Không ghi vào lịch sử Hoàn tác: hoàn tác/làm lại thao tác gốc thì kích thước lại được đo và đặt lại.
@@ -378,16 +510,17 @@ export class Workbook {
   private record(hfOp: (() => unknown) | null, custom?: { undo: () => void; redo: () => void }, opt: { batch?: boolean; post?: () => void } = {}): unknown[] {
     let hfStep = false;
     let changes: unknown[] = [];
+    const lazy = this.lazyDepth > 0 && this.calcMode === 'manual';
     if (hfOp) {
       const before = this.hfDepth();
-      const res = opt.batch === false ? hfOp() : this.hf.batch(hfOp);
+      const res = this.around(lazy, () => (opt.batch === false ? hfOp() : this.hf.batch(hfOp)));
       if (Array.isArray(res)) changes = res;
       const after = this.hfDepth();
       hfStep = before === null || after === null ? true : after > before || (after === before && after === HISTORY);
     }
     opt.post?.();
     if (!hfStep && !custom) return changes;
-    this.past.push({ hf: hfStep, ...custom });
+    this.past.push({ hf: hfStep, ...custom, ...(lazy && hfStep ? { lazy: true } : {}) });
     if (this.past.length > HISTORY) this.past.shift();
     this.future = [];
     this.emit();
@@ -395,7 +528,11 @@ export class Workbook {
   }
   /** Tính lại toàn bộ (F9). HyperFormula xóa lịch sử của nó khi dựng lại nên lịch sử chung cũng phải làm mới. */
   recalc() {
+    const man = this.calcMode === 'manual';
+    if (man && this.hf.isEvaluationSuspended()) this.resumeCalc();
     this.hf.rebuildAndRecalculate();
+    this.fresh = new WeakMap(); this.calcDirty = false;
+    if (man) { this.refitDyn(); if (this.iterate.on) this.resolveIter(); this.hf.suspendEvaluation(); }
     this.past = []; this.future = [];
     this.emit();
   }
@@ -407,7 +544,7 @@ export class Workbook {
     const e = this.past.pop();
     if (!e) return false;
     const un = (x: Entry) => { if (x.parts) { [...x.parts].reverse().forEach(un); return; } x.undo?.(); if (x.hf && this.hf.isThereSomethingToUndo()) this.hf.undo(); };
-    un(e);
+    this.around(allLazy(e), () => un(e));
     this.future.push(e);
     this.emit();
     return true;
@@ -416,7 +553,7 @@ export class Workbook {
     const e = this.future.pop();
     if (!e) return false;
     const re = (x: Entry) => { if (x.parts) { x.parts.forEach(re); return; } if (x.hf && this.hf.isThereSomethingToRedo()) this.hf.redo(); x.redo?.(); };
-    re(e);
+    this.around(allLazy(e), () => re(e));
     this.past.push(e);
     this.emit();
     return true;
@@ -435,10 +572,27 @@ export class Workbook {
   /** Các trang tính đang hiện (thẻ sheet) */
   visibleSheetIds(): number[] { return this.sheetIds().filter((id) => !this.meta(id).hidden); }
   isSheetHidden(id: number) { return !!this.meta(id).hidden; }
+  /** trang có thể Bỏ ẩn từ giao diện (trang ẩn thường; trang ẩn sâu thì không, như Excel) */
+  unhideableSheetIds() { return this.sheetIds().filter((i) => this.meta(i).hidden && !this.meta(i).veryHidden); }
+  /** gói macro VBA của tệp .xlsm (giữ nguyên từng byte để lưu lại) */
+  vba: VbaPack | null = null;
+  hasMacros() { return !!this.vba; }
+  /** tên hàm VBA tự viết hiện đúng chữ hoa/thường như trong tệp (bộ tính đổi tên hàm thành chữ hoa) */
+  /** tên hàm VBA tự viết giữ đúng chữ hoa/thường như trong tệp (bộ tính viết hoa hết) */
+  udfCaseOf(f: string) { return this.vba?.udfNames?.length ? this.udfCase(f) : f; }
+  private udfCase(f: string) { let o = f; for (const n of this.vba!.udfNames!) o = o.replace(new RegExp(`(?<![\\w.])${n.replace(/[.]/g, '\\.')}(?=\\s*\\()`, 'gi'), n); return o; }
   /** Mọi sheet trong bộ tính, kể cả sheet đệm liên kết ngoài */
   allSheetIds(): number[] { return this.hf.getSheetNames().map((n) => this.hf.getSheetId(n)!); }
   /** Liên kết sang tệp khác (giữ nguyên phần XML để ghi lại khi lưu .xlsx) */
   extLinks: ExtLink[] = [];
+  /** tên Excel không dùng được trong bộ tính (vd _xlpm.ltb_H1 xlm="1"): giữ nguyên thẻ definedName để ghi lại */
+  rawNames: string[] = [];
+  /** màu chủ đề của sổ (12 màu theo chỉ số Excel, không #) — null: bộ màu Office mặc định */
+  theme: string[] | null = null;
+  /** Màu Gần đây (tối đa 10, có #) */
+  mru: string[] = [];
+  /** thêm một màu vào Màu Gần đây (như Excel: màu chọn từ Màu Khác…) */
+  addRecentColor(c: string) { const u = c.toUpperCase(); this.mru = [u, ...this.mru.filter((x) => x.toUpperCase() !== u)].slice(0, 10); }
   sheetName(id: number) { return this.hf.getSheetName(id)!; }
   meta(id: number): SheetMeta {
     let m = this.metas.get(id);
@@ -665,6 +819,10 @@ export class Workbook {
   private A(s: number, r: number, c: number): SimpleCellAddress { return { sheet: s, row: r, col: c }; }
   value(s: number, r: number, c: number) {
     const v = this.hf.getCellValue(this.A(s, r, c));
+    // #CALC! (LAMBDA không được gọi…): HyperFormula không có loại lỗi này
+    if (v && typeof v === 'object' && (v as { message?: string }).message === CALC_MSG) return calcError(v);
+    // hàm VBA tự viết (#NAME?): dùng giá trị Excel đã lưu trong tệp
+    if (v && typeof v === 'object' && (v as { type?: string }).type === 'NAME') { const u = this.meta(s).udf; if (u?.size) { const o = u.get(key(r, c)); if (o !== undefined) return o as typeof v; } }
     // như Excel: công thức trả về ô trống thì hiện 0 (=A1 khi A1 trống)
     // tính lặp: ô thuộc vòng tham chiếu (hoặc phụ thuộc vào nó) lấy giá trị đã hội tụ
     if (this.over.size) { const o = this.over.get(s + ':' + r + ':' + c); if (o !== undefined) return (o === null ? 0 : o) as typeof v; }
@@ -779,7 +937,7 @@ export class Workbook {
   rawText(s: number, r: number, c: number): string {
     const a = this.A(s, r, c);
     const f = this.hf.getCellFormula(a);
-    if (f !== undefined) return this.outF(f);
+    if (f !== undefined) { const o = this.outF(f); return this.vba?.udfNames?.length ? this.udfCase(o) : o; }
     const raw = this.hf.getCellSerialized(a);
     if (typeof raw === 'string') return raw;
     // ô nằm trong vùng tràn của mảng động: không có nội dung riêng (như Excel)
@@ -802,6 +960,7 @@ export class Workbook {
     if (this.meta(s).protect && !this.cellEditable(s, r, c)) this.guard(s, 'edit', { r1: r, c1: c, r2: r, c2: c });
     const { content, fmt } = normalizeInput(text);
     const k = key(r, c);
+    this.meta(s).udf?.delete(k); // sửa ô gọi hàm VBA: bỏ giá trị Excel lưu sẵn
     const st = this.meta(s).styles;
     const old = st.get(k);
     const tx = fmt && !old?.fmt ? new StyleTxn([[st, k, { ...(old ?? {}), fmt }]]) : null;
@@ -2025,6 +2184,8 @@ export class Workbook {
   // ---------- Phân tích Giả định, Lọc Nâng cao, Hợp nhất (0.9) ----------
   /** thử giá trị tạm trên bộ tính rồi hoàn lại hết (không ghi lịch sử) */
   private trial<T>(fn: (set: (s: number, r: number, c: number, v: RawCellContent) => void) => T): T {
+    // Thủ công: các bước thử cần bộ tính chạy (như Excel tính khi Tìm Mục tiêu/Bảng Dữ liệu)
+    if (this.calcMode === 'manual' && this.hf.isEvaluationSuspended()) return this.around(false, () => this.trial(fn));
     // tạm bỏ giới hạn lịch sử của bộ tính để các bước thử không đẩy mất lịch sử của người dùng,
     // rồi hoàn lại đúng số bước đã thử (về đúng giá trị gốc)
     const ur = (this.hf as unknown as { _crudOperations?: { undoRedo?: { undoLimit: number; undoStack: unknown[] } } })._crudOperations?.undoRedo;
@@ -2636,6 +2797,7 @@ export class Workbook {
     const { enc, fx } = this.nameExpr(name, expr, scope);
     nameDisplay(this.hf).set(enc.toUpperCase(), name.trim());
     this.record(() => this.hf.addNamedExpression(enc, fx, scope, comment ? { comment } : undefined));
+    this.lamNamesChanged(fx);
   }
   /** Sửa tên (đổi tên, phạm vi, tham chiếu, chú thích); đổi tên thì công thức đang dùng tên cũ được cập nhật như Excel */
   updateName(oldName: string, oldScope: number | undefined, d: { name: string; expr: string; scope?: number; comment?: string }) {
@@ -2648,17 +2810,20 @@ export class Workbook {
     const { enc, fx } = this.nameExpr(d.name, d.expr, renamed ? d.scope : cur.scope);
     const opts = d.comment ? { comment: d.comment } : undefined;
     this.group(() => {
-      if (!renamed) { nameDisplay(this.hf).set(enc.toUpperCase(), d.name.trim()); this.record(() => this.hf.changeNamedExpression(enc, fx, cur.scope, opts)); return; }
+      if (!renamed) { nameDisplay(this.hf).set(enc.toUpperCase(), d.name.trim()); this.record(() => this.hf.changeNamedExpression(enc, fx, cur.scope, opts)); this.lamNamesChanged(fx, true); return; }
       nameDisplay(this.hf).set(enc.toUpperCase(), d.name.trim());
       this.record(() => this.hf.addNamedExpression(enc, fx, d.scope, opts));
+      this.lamNamesChanged(fx, true);
       if (d.name.trim().toUpperCase() !== cur.name.toUpperCase()) this.renameRefs(cur.name, d.name.trim());
       this.record(() => this.hf.removeNamedExpression(encName(cur.name), cur.scope));
+    this.lamNamesChanged('', true);
     });
   }
   deleteName(name: string, scope?: number) {
     const cur = this.findName(name, scope);
     if (!cur) return;
     this.record(() => this.hf.removeNamedExpression(encName(cur.name), cur.scope));
+    this.lamNamesChanged('', true);
   }
   /** cập nhật mọi công thức đang dùng tên cũ */
   private renameRefs(oldName: string, newName: string) {
@@ -3085,10 +3250,13 @@ export class Workbook {
     return {
       v: 1,
       name: this.name,
-      calc: this.iterate.on ? { ...this.iterate } : undefined,
+      calc: this.iterate.on || this.calcMode === 'manual' ? { ...this.iterate, ...(this.calcMode === 'manual' ? { mode: 'manual' as const, onSave: this.calcOnSave } : {}) } : undefined,
       iterVals: iterVals.length ? iterVals : undefined,
       protect: this.bookProtect ?? undefined,
+      vba: this.vba ?? undefined,
       names: (() => { const l = this.listNames().map((n) => ({ name: n.name, expr: n.expr, scope: n.scope !== undefined ? this.sheetName(n.scope) : undefined, comment: n.comment, hidden: n.hidden })); return l.length ? l : undefined; })(),
+      rawNames: this.rawNames.length ? this.rawNames : undefined,
+      theme: this.theme ?? undefined, mru: this.mru.length ? this.mru : undefined,
       ext: this.extLinks.length || ext.length ? { links: this.extLinks, sheets: ext.map((id) => ({ name: this.sheetName(id), cells: this.hf.getSheetSerialized(id) })) } : undefined,
       sheets: this.sheetIds().map((id) => {
         const m = this.meta(id);
@@ -3113,7 +3281,9 @@ export class Workbook {
           protect: m.protect ?? undefined, allowRanges: m.allowRanges?.length ? m.allowRanges : undefined,
           sparks: m.sparks?.length ? m.sparks.map((g) => ({ ...g, items: g.items.map((x) => ({ ...x, src: { sheetName: this.sheetName(x.src.sheet), range: x.src.range } as any })) })) : undefined,
           tabColor: m.tabColor,
-          state: m.hidden ? 'hidden' : undefined,
+          state: m.veryHidden ? 'veryHidden' : m.hidden ? 'hidden' : undefined,
+          codeName: m.codeName,
+          udf: m.udf?.size ? [...m.udf].map(([k, v]) => [Math.floor(k / MAX_COLS), k % MAX_COLS, v]) : undefined,
           merges: m.merges,
           cf: m.cf,
           dv: m.dv,
@@ -3130,7 +3300,10 @@ export class Workbook {
     const wb = new Workbook(buildHF([...d.sheets, ...(d.ext?.sheets ?? [])].map((x) => ({ name: x.name, cells: x.cells as RawCellContent[][] })), pre));
     wb.name = d.name || 'Sổ tính';
     wb.extLinks = d.ext?.links ?? [];
+    wb.rawNames = d.rawNames ?? [];
+    wb.theme = d.theme ?? null; wb.mru = d.mru ?? [];
     wb.bookProtect = d.protect ?? null;
+    wb.vba = d.vba ?? null;
     const ids = d.sheets.map((x) => wb.hf.getSheetId(x.name)!);
     d.sheets.forEach((sh, i) => {
       const m = wb.meta(ids[i]);
@@ -3145,7 +3318,10 @@ export class Workbook {
       if (sh.protect) m.protect = { ...sh.protect, allow: { ...DEFAULT_ALLOW, ...sh.protect.allow } };
       if (sh.allowRanges?.length) m.allowRanges = sh.allowRanges;
       if (sh.tabColor) m.tabColor = sh.tabColor;
-      if (sh.state === 'hidden') m.hidden = true;
+      if (sh.state === 'hidden' || sh.state === 'veryHidden') m.hidden = true;
+      if (sh.state === 'veryHidden') m.veryHidden = true;
+      if (sh.codeName) m.codeName = sh.codeName;
+      if (sh.udf?.length) m.udf = new Map(sh.udf.map(([r, c, v]) => [key(r, c), v]));
       m.rowH.load((sh.rowH ?? []) as [number, number][], sh.hiddenRows ?? []);
       m.freeze = sh.freeze ?? { rows: 0, cols: 0 };
       m.merges = sh.merges ?? [];
@@ -3180,16 +3356,20 @@ export class Workbook {
       }
       wb.hf.resumeEvaluation();
     }
+    // tên LAMBDA được thêm sau khi ô đã tính: lời gọi NhanDoi(…) không có quan hệ phụ thuộc → tính lại mọi công thức
+    if ((d.names ?? []).some((n) => /LAMBDA\s*\(/i.test(n.expr))) { wb.markAllDirty(); wb.hf.suspendEvaluation(); wb.hf.resumeEvaluation(); }
     wb.refitDyn();
     wb.hf.clearUndoStack();
     if (d.calc) wb.iterate = { on: !!d.calc.on, count: d.calc.count ?? 100, delta: d.calc.delta ?? 0.001 };
     for (const [n, r, c, v] of d.iterVals ?? []) { const id = wb.hf.getSheetId(n); if (id !== undefined) wb.seeds.set(id + ':' + r + ':' + c, v); }
     wb.resolveIter();
+    // chế độ Thủ công: sổ đã được tính toàn bộ khi dựng (như Excel tính khi mở tệp cần tính), rồi mới tạm dừng
+    if (d.calc?.mode === 'manual') { wb.calcOnSave = d.calc.onSave ?? true; wb.setCalcMode('manual'); }
     return wb;
   }
   /** Nạp nhanh một bảng lớn (dùng cho nhập dữ liệu, đo hiệu năng) – không ghi lịch sử */
   loadSheet(s: number, rows: RawCellContent[][]) {
-    this.hf.setSheetContent(s, rows);
+    this.around(false, () => this.hf.setSheetContent(s, rows));
     this.hf.clearUndoStack();
     this.past = []; this.future = [];
     this.emit();
@@ -3204,7 +3384,7 @@ function colLetters(c: number) {
 export interface SheetJSON {
   name: string; cells: unknown[][]; styles: unknown[]; colW?: [number, number][]; rowH?: [number, number][];
   freeze?: { rows: number; cols: number }; colDef?: number; rowDef?: number; hiddenRows?: number[];
-  hiddenCols?: number[]; breaks?: { rows: number[]; cols: number[] }; tabColor?: string; state?: 'hidden';
+  hiddenCols?: number[]; breaks?: { rows: number[]; cols: number[] }; tabColor?: string; state?: 'hidden' | 'veryHidden'; codeName?: string; udf?: [number, number, unknown][];
   merges?: Range[]; cf?: CFRule[]; dv?: DVRule[]; filter?: SheetFilter | null;
   charts?: unknown[]; pivots?: unknown[]; print?: PrintSetup | null;
   outline?: Outline;
@@ -3225,11 +3405,16 @@ export interface BookJSON {
   v: number; name: string; sheets: SheetJSON[];
   /** tên vùng: scope là tên trang tính (không có = cả sổ) */
   names?: { name: string; expr: string; scope?: string; comment?: string; hidden?: boolean }[];
-  calc?: { on: boolean; count?: number; delta?: number };
+  calc?: { on: boolean; count?: number; delta?: number; mode?: 'manual'; onSave?: boolean };
+  rawNames?: string[];
+  theme?: string[];
+  mru?: string[];
   iterVals?: [string, number, number, unknown][];
   ext?: { links: ExtLink[]; sheets: { name: string; cells: unknown[][] }[] };
   /** Bảo vệ Sổ làm việc (cấu trúc) */
   protect?: { pw?: PwHash };
+  /** macro VBA (.xlsm) */
+  vba?: VbaPack;
 }
 /** Sheet đệm giá trị của liên kết ngoài: tên dạng “[1]Tên sheet” (tên sheet thường không được có dấu [ ]) */
 export const isExtName = (n: string) => /^\[\d+\]/.test(n);
@@ -3320,6 +3505,12 @@ function shiftAll(m: SheetMeta, ax: 'r' | 'c', pt: (x: number) => number, span: 
     return ax === 'r' ? { ...g, r1: x.a, r2: x.b } : { ...g, c1: x.a, c2: x.b };
   };
   m.merges = m.merges.map(mv).filter((g): g is Range => !!g && !(g.r1 === g.r2 && g.c1 === g.c2));
+  // giá trị lưu sẵn của ô gọi hàm VBA dời theo ô
+  if (m.udf?.size) {
+    const nu = new Map<number, unknown>();
+    for (const [k, v] of m.udf) { const { r, c } = unkey(k); const x = pt(ax === 'r' ? r : c); if (x >= 0) nu.set(ax === 'r' ? key(x, c) : key(r, x), v); }
+    m.udf = nu;
+  }
   m.cf = m.cf.map((x) => { const g = mv(x.range); return g ? { ...x, range: g } : null; }).filter(Boolean) as CFRule[];
   m.dv = m.dv.map((x) => { const g = mv(x.range); return g ? { ...x, range: g } : null; }).filter(Boolean) as DVRule[];
   m.charts = m.charts.map((ch) => {
@@ -3344,9 +3535,11 @@ function shiftAll(m: SheetMeta, ax: 'r' | 'c', pt: (x: number) => number, span: 
     if (t) { const x = span(t[0], t[1]); m.print = { ...m.print, [key2]: x ? [x.a, x.b] : null }; }
   }
   if (m.print?.area) {
-    const g = mv(m.print.area);
+    // mọi khối vùng in dời theo; khối bị xóa hết thì bỏ
+    const list = [m.print.area, ...(m.print.more ?? [])].map((x) => mv(x)).filter(Boolean) as Range[];
     const pr = { ...m.print };
-    if (g) pr.area = g; else delete pr.area;
+    if (list.length) pr.area = list[0]; else delete pr.area;
+    if (list.length > 1) pr.more = list.slice(1); else delete pr.more;
     m.print = pr;
   }
   {
@@ -3413,15 +3606,16 @@ function remapStyles(m: Map<number, Style>, f: (r: number, c: number) => { r: nu
 // Bảng định dạng của mỗi sheet luôn là MỘT đối tượng Map cố định (chỉ sửa tại chỗ),
 // để các mục hoàn tác giữ tham chiếu tới nó không bị "lạc" sang bản cũ.
 function setAll(m: Map<number, Style>, src: Map<number, Style>) { if (m === src) return; m.clear(); src.forEach((v, k) => m.set(k, v)); }
-type MetaSnap = { advHidden?: number[]; scenarios?: Scenario[]; protect?: SheetProtect | null; allowRanges?: { title: string; range: Range; pw?: PwHash }[]; sparks?: SparkGroup[]; tables?: TableDef[]; outline?: Outline; styles: Map<number, Style>; colW: [number, number][]; rowH: [number, number][]; hidden: number[]; colHidden: number[]; freeze: { rows: number; cols: number }; merges: Range[]; cf: CFRule[]; dv: DVRule[]; filter: SheetFilter | null; charts: Chart[]; pivots: PivotDef[]; print: PrintSetup | null; breaks: { rows: number[]; cols: number[] }; tabColor?: string; sheetHidden?: boolean };
+type MetaSnap = { advHidden?: number[]; scenarios?: Scenario[]; protect?: SheetProtect | null; allowRanges?: { title: string; range: Range; pw?: PwHash }[]; sparks?: SparkGroup[]; tables?: TableDef[]; outline?: Outline; styles: Map<number, Style>; colW: [number, number][]; rowH: [number, number][]; hidden: number[]; colHidden: number[]; freeze: { rows: number; cols: number }; merges: Range[]; cf: CFRule[]; dv: DVRule[]; filter: SheetFilter | null; charts: Chart[]; pivots: PivotDef[]; print: PrintSetup | null; breaks: { rows: number[]; cols: number[] }; tabColor?: string; sheetHidden?: boolean; udf?: Map<number, unknown> };
 function snapMeta(m: SheetMeta): MetaSnap {
-  return { styles: new Map(m.styles), colW: m.colW.entries(), rowH: m.rowH.entries(), hidden: m.rowH.hidden(), colHidden: m.colW.hidden(), freeze: { ...m.freeze }, merges: m.merges, cf: m.cf, dv: m.dv, filter: m.filter ? JSON.parse(JSON.stringify(m.filter)) : null, charts: m.charts, pivots: m.pivots, print: m.print, breaks: { rows: [...m.breaks.rows], cols: [...m.breaks.cols] }, tabColor: m.tabColor, sheetHidden: m.hidden, outline: m.outline, tables: m.tables, sparks: m.sparks, protect: m.protect, allowRanges: m.allowRanges, advHidden: m.advHidden, scenarios: m.scenarios };
+  return { styles: new Map(m.styles), colW: m.colW.entries(), rowH: m.rowH.entries(), hidden: m.rowH.hidden(), colHidden: m.colW.hidden(), freeze: { ...m.freeze }, merges: m.merges, cf: m.cf, dv: m.dv, filter: m.filter ? JSON.parse(JSON.stringify(m.filter)) : null, charts: m.charts, pivots: m.pivots, print: m.print, breaks: { rows: [...m.breaks.rows], cols: [...m.breaks.cols] }, tabColor: m.tabColor, sheetHidden: m.hidden, outline: m.outline, tables: m.tables, sparks: m.sparks, protect: m.protect, allowRanges: m.allowRanges, advHidden: m.advHidden, scenarios: m.scenarios, udf: m.udf };
 }
 function restoreMeta(m: SheetMeta, s: MetaSnap) {
   setAll(m.styles, new Map(s.styles)); m.colW.load(s.colW, s.colHidden ?? []); m.rowH.load(s.rowH, s.hidden); m.freeze = { ...s.freeze };
   m.merges = s.merges; m.cf = s.cf; m.dv = s.dv; m.filter = s.filter ? JSON.parse(JSON.stringify(s.filter)) : null;
   m.charts = s.charts ?? []; m.pivots = s.pivots ?? []; m.print = s.print ?? null; m.outline = s.outline ?? NO_OUTLINE; m.tables = s.tables ?? []; m.sparks = s.sparks; m.protect = s.protect; m.allowRanges = s.allowRanges; m.advHidden = s.advHidden; m.scenarios = s.scenarios;
   m.breaks = { rows: [...(s.breaks?.rows ?? [])], cols: [...(s.breaks?.cols ?? [])] }; m.tabColor = s.tabColor; m.hidden = s.sheetHidden;
+  if (s.udf !== undefined) m.udf = s.udf;
 }
 
 /** Một nhóm thay đổi định dạng: chỉ lưu các ô bị đổi (trước/sau), không chép cả bảng */

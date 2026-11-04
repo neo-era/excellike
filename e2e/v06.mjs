@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 const { chromium } = createRequire(import.meta.url)('playwright');
 
-const PORT = 4178, APP_URL = `http://localhost:${PORT}/`;
+const PORT = 4178, APP_URL = `http://localhost:${PORT}/${process.env.XL_Q ?? ""}`;
 const OUT = new URL('./shots/', import.meta.url).pathname;
 mkdirSync(OUT, { recursive: true });
 const srv = spawn('npx', ['vite', 'preview', '--port', String(PORT), '--strictPort'], { stdio: 'pipe', detached: true });
@@ -216,6 +216,7 @@ T.fxTall = async () => { await fresh(); await focusGrid(); await K('Control+Shif
 T.cancel = async () => { await fresh([['A1', 'giữ']]); await goto('A1'); await page.keyboard.type('mới'); await K('Escape'); return [(await val('A1')) === 'giữ']; };
 T.calcAll = async () => { await fresh([['A1', '=RAND()']]); await focusGrid(); const a = await val('A1'); await K('F9'); const b = await val('A1'); return [a !== b, 'F9 tính lại']; };
 T.calcSheet = async () => { await fresh([['A1', '=RAND()']]); await focusGrid(); const a = await val('A1'); await K('Shift+F9'); return [a !== (await val('A1'))]; };
+T.calcRebuild = async () => { await fresh([['A1', '=RAND()']]); await focusGrid(); const a = await val('A1'); await K('Control+Alt+Shift+F9'); await wait(120); if (await page.locator('.dlg').count()) await page.click('.dlg-foot .btn.primary'); await wait(80); return [a !== (await val('A1')), 'Ctrl+Shift+Alt+F9 dựng lại & tính']; };
 T.calcFull = async () => { await fresh([['A1', '=RAND()']]); await focusGrid(); const a = await val('A1'); await K('Control+Alt+F9'); return [a !== (await val('A1'))]; };
 T.fArgs = async () => { await fresh([['A1', '2'], ['A2', '3']]); await goto('B1'); await page.keyboard.type('=SUM('); await K('Control+a'); await wait(80); const o = await dlgOpen('Đối số Hàm'); await page.fill('.fa input >> nth=0', 'A1:A2'); await page.dispatchEvent('.fa input >> nth=0', 'input'); const res = await page.textContent('#fa-res'); await page.click('.dlg-foot .primary'); await wait(40); await K('Enter'); return [o && (await val('B1')) === 5 && /5/.test(res), res]; };
 T.fArgNames = async () => { await fresh(); await goto('B1'); await page.keyboard.type('=ROUND'); await K('Control+Shift+a'); const t = await X(() => document.querySelector('.cell-editor').value); await K('Escape'); return [t === '=ROUND(số;số_chữ_số)', t]; };

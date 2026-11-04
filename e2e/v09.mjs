@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 const { chromium } = createRequire(import.meta.url)('playwright');
-const PORT = 4183, URL0 = `http://localhost:${PORT}/`;
+const PORT = 4183, URL0 = `http://localhost:${PORT}/${process.env.XL_Q ?? ""}`;
 const OUT = new URL('./shots/', import.meta.url).pathname;
 mkdirSync(OUT, { recursive: true });
 const srv = spawn('npx', ['vite', 'preview', '--port', String(PORT), '--strictPort'], { stdio: 'pipe', detached: true });

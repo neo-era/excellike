@@ -1,6 +1,7 @@
 import { MAX_COLS, MAX_ROWS, parseRange, rangeToA1, toA1, type Range } from '../core/address';
 import { quoteSheet, shiftFormula } from '../core/formula';
 import { Workbook, type Style } from '../core/workbook';
+import { DEFAULT_THEME, paletteTints, tintHex } from '../core/color';
 import { Grid, ptPx, type EditHost } from './grid';
 import { ic } from './icons';
 import { FUNC_INFO } from './funcs';
@@ -27,7 +28,7 @@ import { toggleSheetProtect, toggleBookProtect, allowRangesDialog } from './prot
 import { NoteLayer } from './notes-ui';
 import { nameManager, nameDialog, createFromSelection, pasteNameDialog, selRef } from './names-ui';
 import { pageSetupDialog } from './pagesetup';
-import { normPrint, storePrint } from '../core/paginate';
+import { addPrintArea, normPrint, storePrint } from '../core/paginate';
 
 export { closeMenu, openPopover, showMenu };
 const $ = <T extends HTMLElement = HTMLElement>(sel: string, root: ParentNode = document) => root.querySelector(sel) as T;
@@ -48,24 +49,23 @@ import type { PasteOpts } from '../core/workbook';
 const pad2 = (n: number) => String(n).padStart(2, '0');
 const needsApos = (v: string) => /^[=+\-'\d.,]/.test(v) || /^(true|false)$/i.test(v);
 
-// ---- bảng màu như Excel: Màu Chủ đề (Office) + sắc độ, Màu Chuẩn ----
-const THEME = ['#FFFFFF', '#000000', '#E7E6E6', '#44546A', '#4472C4', '#ED7D31', '#A5A5A5', '#FFC000', '#5B9BD5', '#70AD47'];
+// ---- bảng màu như Excel: Màu Chủ đề (của sổ) + sắc độ, Màu Chuẩn, Màu Gần đây ----
 const STANDARD = ['#C00000', '#FF0000', '#FFC000', '#FFFF00', '#92D050', '#00B050', '#00B0F0', '#0070C0', '#002060', '#7030A0'];
-function shade(hex: string, t: number) {
-  const n = parseInt(hex.slice(1), 16), c = [n >> 16, (n >> 8) & 255, n & 255];
-  const f = (v: number) => Math.round(t >= 0 ? v + (255 - v) * t : v * (1 + t));
-  return '#' + c.map((v) => f(v).toString(16).padStart(2, '0')).join('').toUpperCase();
-}
-const TINTS: Record<number, number[]> = { 0: [-0.05, -0.15, -0.25, -0.35, -0.5], 1: [0.5, 0.35, 0.25, 0.15, 0.05] };
-const tintsOf = (i: number) => (TINTS[i] ?? [0.8, 0.6, 0.4, -0.25, -0.5]);
+/** sổ đang mở (màu chủ đề, màu gần đây) cho bảng chọn màu */
+let paletteBook: Workbook | null = null;
 /** Bảng chọn màu kiểu Excel */
 export function colorPalette(onPick: (c: string | undefined) => void, noneLabel: string): HTMLElement {
   const box = document.createElement('div');
   box.className = 'palette';
-  const sw = (c: string) => `<button class="sw" style="--sw:${c}" data-c="${c}" title="${c}" aria-label="${c}"></button>`;
-  let html = `<button class="pl-none" data-c="">${noneLabel}</button><h4>Màu Chủ đề</h4><div class="pl-grid">${THEME.map(sw).join('')}</div><div class="pl-grid tints">`;
-  for (let k = 0; k < 5; k++) html += THEME.map((c, i) => sw(shade(c, tintsOf(i)[k]))).join('');
-  html += `</div><h4>Màu Chuẩn</h4><div class="pl-grid">${STANDARD.map(sw).join('')}</div><label class="pl-more">${ic('palette', 16)}<span>Màu Khác…</span><input type="color" aria-label="Màu khác"></label>`;
+  const theme = (paletteBook?.theme ?? DEFAULT_THEME).slice(0, 10).map((c) => '#' + c.toUpperCase());
+  const sw = (c: string, title = c) => `<button class="sw" style="--sw:${c}" data-c="${c}" title="${title}" aria-label="${title}"></button>`;
+  const pct = (t: number) => (t > 0 ? `Sáng hơn ${Math.round(t * 100)}%` : `Tối hơn ${Math.round(-t * 100)}%`);
+  let html = `<button class="pl-none" data-c="">${noneLabel}</button><h4>Màu Chủ đề</h4><div class="pl-grid">${theme.map((c) => sw(c)).join('')}</div><div class="pl-grid tints">`;
+  for (let k = 0; k < 5; k++) html += theme.map((c) => { const t = paletteTints(c)[k]; return sw('#' + tintHex(c.slice(1), t), `${c}, ${pct(t)}`); }).join('');
+  html += `</div><h4>Màu Chuẩn</h4><div class="pl-grid">${STANDARD.map((c) => sw(c)).join('')}</div>`;
+  const mru = paletteBook?.mru ?? [];
+  if (mru.length) html += `<h4>Màu Gần đây</h4><div class="pl-grid">${mru.map((c) => sw(c)).join('')}</div>`;
+  html += `<label class="pl-more">${ic('palette', 16)}<span>Màu Khác…</span><input type="color" aria-label="Màu khác"></label>`;
   box.innerHTML = html;
   box.onclick = (e) => {
     const b = (e.target as HTMLElement).closest('button');
@@ -73,7 +73,7 @@ export function colorPalette(onPick: (c: string | undefined) => void, noneLabel:
     closeMenu();
     onPick(b.dataset.c || undefined);
   };
-  (box.querySelector('input[type=color]') as HTMLInputElement).onchange = (e) => { closeMenu(); onPick((e.target as HTMLInputElement).value); };
+  (box.querySelector('input[type=color]') as HTMLInputElement).onchange = (e) => { closeMenu(); const c = (e.target as HTMLInputElement).value.toUpperCase(); paletteBook?.addRecentColor(c); onPick(c); };
   return box;
 }
 
@@ -150,7 +150,7 @@ export class App {
   private installEvt: any = null;
 
   constructor(wb: Workbook, bookId: string) {
-    this.wb = wb;
+    this.wb = wb; paletteBook = wb;
     this.bookId = bookId;
     this.mount();
   }
@@ -244,7 +244,9 @@ export class App {
   }
   private dirtySave = false;
   /** Ctrl+S: đang mở tệp .xlsx có quyền ghi → lưu đè tệp; không thì lưu trong app */
-  save() { if (this.fileHandle && /\.xlsx$/i.test(this.fileName)) this.saveXlsx(false); else this.saveNow(true); }
+  save() { if (this.fileHandle && this.bookFileOk()) this.saveXlsx(false); else this.saveNow(true); }
+  /** tệp đang mở ghi lại được đúng định dạng: .xlsx, hoặc .xlsm khi sổ còn macro (không ghi sổ thường vào tên .xlsm) */
+  private bookFileOk(name = this.fileName) { return /\.xlsx$/i.test(name) || (/\.xlsm$/i.test(name) && this.wb.hasMacros()); }
 
   // ---------- thanh tiêu đề: Tự động lưu, QAT, tên tệp ----------
   private qatAll(): { q: string; icon: string; label: string; act: () => void; kbd?: string; def?: boolean }[] {
@@ -324,7 +326,7 @@ export class App {
   // Tự động lưu: ghi thẳng vào tệp .xlsx đang mở (cần tệp có quyền ghi: bản Windows hoặc Chrome/Edge)
   // bật/tắt riêng cho từng sổ (như Excel), không lan sang tệp mở sau
   private get autoKey() { return 'xl-autosave:' + this.bookId; }
-  private get autoSave() { return lsGet(this.autoKey) === '1' && !!this.fileHandle && /\.xlsx$/i.test(this.fileName); }
+  private get autoSave() { return lsGet(this.autoKey) === '1' && !!this.fileHandle && this.bookFileOk(); }
   private updateAutoSave() {
     const on = this.autoSave, as = $('#autosave');
     as.setAttribute('aria-checked', String(on));
@@ -333,7 +335,7 @@ export class App {
   }
   private async toggleAutoSave() {
     if (this.autoSave) { lsSet(this.autoKey, '0'); this.updateAutoSave(); return; }
-    if (!(this.fileHandle && /\.xlsx$/i.test(this.fileName))) {
+    if (!(this.fileHandle && this.bookFileOk())) {
       this.toast('Để Tự động lưu, hãy lưu sổ thành tệp .xlsx trên máy trước.');
       if (!(await this.saveXlsx(true)) || !this.fileHandle) { this.updateAutoSave(); return; }
     }
@@ -360,7 +362,28 @@ export class App {
     await this.saveXlsx(false, true);
     if (this.fileDirty) this.scheduleAuto();
   }
-  recalc() { this.wb.recalc(); this.grid.invalidate(); this.toast('Đã tính lại toàn bộ sổ tính. Lịch sử hoàn tác được làm mới.'); }
+  /** Ctrl+Shift+Alt+F9: dựng lại quan hệ phụ thuộc rồi tính tất cả — mất lịch sử Hoàn tác nên hỏi trước */
+  recalc(sure = false) {
+    if (!sure && this.wb.canUndo()) {
+      openDialog('Dựng lại và Tính tất cả', h('p', {}, 'Dựng lại toàn bộ quan hệ phụ thuộc rồi tính lại mọi công thức. Thao tác này xóa lịch sử Hoàn tác. Chỉ cần khi nghi kết quả sai; thông thường dùng F9 (Tính Ngay) hoặc Ctrl+Alt+F9 (Tính tất cả).'), [
+        { label: 'Hủy', act: () => {} }, { label: 'Dựng lại', kind: 'primary', act: () => this.recalc(true) },
+      ], () => this.grid.focusKeys());
+      return;
+    }
+    this.wb.recalc(); this.grid.invalidate(); this.toast('Đã tính lại toàn bộ sổ tính. Lịch sử hoàn tác được làm mới.');
+  }
+  /** F9 / Shift+F9: Tính Ngay (giữ lịch sử Hoàn tác) */
+  calcNow() { this.wb.calcNow(); this.grid.invalidate(); this.syncSelection(); }
+  /** Ctrl+Alt+F9: tính mọi công thức, kể cả ô không đổi (giữ lịch sử Hoàn tác) */
+  calcAll() { this.wb.calcAll(); this.grid.invalidate(); this.syncSelection(); }
+  setCalcMode(m: 'auto' | 'manual') {
+    if (m === this.wb.calcMode) return;
+    if (m === 'manual') this.wb.calcOnSave = true; // như Excel: chuyển sang Thủ công thì “Tính lại sổ trước khi lưu” mặc định bật
+    this.wb.setCalcMode(m); this.grid.invalidate(); this.ribbon.refresh(); this.updCalc(); this.syncSelection();
+    this.toast(m === 'manual' ? 'Tính toán Thủ công: sửa ô không tính lại công thức phụ thuộc. Bấm F9 (Tính Ngay) để tính.' : 'Tính toán Tự động: đã tính lại sổ.');
+  }
+  /** thanh trạng thái: “Tính toán” khi đang Thủ công và còn thay đổi chưa tính (như Excel); bấm vào để tính */
+  updCalc() { const b = document.getElementById('st-calc'); if (b) b.hidden = !(this.wb.calcMode === 'manual' && this.wb.calcDirty); }
   undo() { if (!this.wb.undo()) this.toast('Không còn thao tác để hoàn tác.'); this.afterHistory(); }
   redo() { if (!this.wb.redo()) this.toast('Không còn thao tác để làm lại.'); this.afterHistory(); }
   private afterHistory() {
@@ -568,6 +591,8 @@ export class App {
     const SHRINK: Record<string, number> = { macros: 0.3, views: 0.7, zoom: 0.75, show: 0.8, addins: 0.5, dtypes: 0.5, controls: 0.5, ink: 0.5, lang: 0.5, changes: 0.6, perf: 0.7, sheetview: 0.5, styles: 1, cells: 2, edit: 3, number: 4, align: 5, clip: 6 };
     const G = (id: string, label: string, icon: string, items: Item[], launch?: Group['launch']): Group => ({ id, label, icon, items, launch, shrink: SHRINK[id], hideFirst: HIDE_FIRST.has(id) });
     const ps = () => normPrint(this.wb.meta(s()).print);
+    // chọn cả hàng/cột: chỉ lấy phần có dữ liệu; nới theo ô gộp
+    const clampArea = (g: Range): Range => (g.r2 >= MAX_ROWS - 1 || g.c2 >= MAX_COLS - 1 ? this.wb.expandToMerges(s(), { ...g, r2: Math.min(g.r2, Math.max(0, this.wb.used(s()).rows - 1)), c2: Math.min(g.c2, Math.max(0, this.wb.used(s()).cols - 1)) }) : g);
     const setPs = (p: Partial<ReturnType<typeof normPrint>>) => this.safe(() => { this.wb.setPrint(s(), storePrint({ ...ps(), ...p })); });
     const pst = (o: PasteOpts) => () => this.pasteSpecialRun(o);
     const home: Tab = { id: 'home', label: 'Trang đầu', kt: 'H', groups: [
@@ -764,8 +789,9 @@ export class App {
         B('big', 'pl-orient', 'orientation', 'Hướng', { kt: 'O', drop: this.menuAt(() => [{ label: 'Dọc', check: ps().orientation === 'portrait', act: () => setPs({ orientation: 'portrait' }) }, { label: 'Ngang', check: ps().orientation === 'landscape', act: () => setPs({ orientation: 'landscape' }) }]) }),
         B('big', 'pl-size', 'paperSize', 'Kích thước', { kt: 'SZ', drop: this.menuAt(() => [...(['A4', 'A3', 'A5', 'B4', 'B5', 'Letter', 'Legal', 'Tabloid'] as const).map((p) => ({ label: p, check: ps().paper === p, act: () => setPs({ paper: p }) }) as MenuItem), 'sep', { label: 'Thêm Kích thước Giấy…', act: () => this.pageSetup('page') }]) }),
         B('big', 'pl-area', 'printArea', 'Vùng In', { kt: 'R', drop: this.menuAt(() => [
-          { label: 'Đặt Vùng In', act: () => setPs({ area: this.grid.range.r2 >= MAX_ROWS - 1 || this.grid.range.c2 >= MAX_COLS - 1 ? this.wb.expandToMerges(s(), { ...this.grid.range, r2: Math.min(this.grid.range.r2, Math.max(0, this.wb.used(s()).rows - 1)), c2: Math.min(this.grid.range.c2, Math.max(0, this.wb.used(s()).cols - 1)) }) : this.grid.range }) },
-          { label: 'Xóa Vùng In', act: () => setPs({ area: null }) },
+          { label: 'Đặt Vùng In', act: () => { const l = this.grid.ranges().map((g) => clampArea(g)); setPs({ area: l[0], more: l.slice(1) }); } },
+          { label: 'Thêm vào Vùng In', disabled: !ps().area, act: () => { let l = ps().area ? [ps().area!, ...ps().more] : []; for (const g of this.grid.ranges()) l = addPrintArea(l, clampArea(g)); setPs({ area: l[0], more: l.slice(1) }); } },
+          { label: 'Xóa Vùng In', act: () => setPs({ area: null, more: [] }) },
         ]) }),
         B('big', 'pl-breaks', 'breaks', 'Ngắt', { kt: 'B', drop: this.menuAt(() => [
           { label: 'Chèn Ngắt Trang', act: () => this.safe(() => this.wb.insertPageBreak(s(), this.grid.sel.ar, this.grid.sel.ac)) },
@@ -819,10 +845,14 @@ export class App {
         B('big', 'watch', 'watch', 'Cửa sổ Theo dõi', { kt: 'W', act: () => (this.watch ??= new WatchWindow(this)).toggle(), on: () => !!this.watch?.open }),
       ]),
       G('calc', 'Tính toán', 'calcOpts', [
-        B('big', 'calc-opt', 'calcOpts', 'Tùy chọn Tính toán', { kt: 'X', drop: this.menuAt(() => [{ label: 'Tự động', check: true, act: () => {} }, { label: 'Thủ công', act: () => this.later('Tính toán Thủ công', '1.x') }]) }),
+        B('big', 'calc-opt', 'calcOpts', 'Tùy chọn Tính toán', { kt: 'X', drop: this.menuAt(() => [
+          { label: 'Tự động', check: this.wb.calcMode === 'auto', act: () => this.setCalcMode('auto') },
+          { label: 'Thủ công', check: this.wb.calcMode === 'manual', act: () => this.setCalcMode('manual') },
+          { label: 'Tính lại sổ trước khi lưu', check: this.wb.calcMode === 'manual' && this.wb.calcOnSave, disabled: this.wb.calcMode !== 'manual', act: () => { this.wb.calcOnSave = !this.wb.calcOnSave; this.fileDirty = true; } },
+        ]) }),
         col(
-          B('sm', 'recalc', 'calc', 'Tính Ngay', { kt: 'B', kbd: 'F9', act: () => this.recalc() }),
-          B('sm', 'recalc-s', 'calcSheet', 'Tính Trang tính', { kt: 'J', kbd: 'Shift+F9', act: () => this.recalc() }),
+          B('sm', 'recalc', 'calc', 'Tính Ngay', { kt: 'B', kbd: 'F9', act: () => this.calcNow() }),
+          B('sm', 'recalc-s', 'calcSheet', 'Tính Trang tính', { kt: 'J', kbd: 'Shift+F9', act: () => this.calcNow() }),
         ),
       ]),
     ] };
@@ -1162,7 +1192,7 @@ export class App {
     const s = this.grid.sheet, { ar, ac } = this.grid.sel;
     const items = this.wb.dvList(s, ar, ac);
     if (!items.length) { this.toast('Danh sách trống.'); return; }
-    showMenu(items.map((v) => ({ label: v, act: () => { this.safe(() => this.wb.setInput(s, ar, ac, v)); this.syncSelection(); this.grid.focusKeys(); } })), x - 180, y + 8);
+    showMenu(items.map((v) => ({ label: v, act: () => { this.safe(() => this.wb.lazy(() => this.wb.setInput(s, ar, ac, v))); this.syncSelection(); this.grid.focusKeys(); } })), x - 180, y + 8);
   }
   private dvDlg() {
     const s = this.grid.sheet;
@@ -1228,10 +1258,25 @@ export class App {
       if (this.ed.isEditing()) this.ed.commit(0, 0);
       const ver = this.wb.ver;
       const { writeXlsx } = await import('../core/xlsx');
-      const bytes = await writeXlsx(this.wb);
-      const name = (this.fileName && /\.xlsx$/i.test(this.fileName) ? this.fileName : this.wb.name + '.xlsx');
-      const res = await saveBytes(bytes, name, 'xlsx', asNew || !/\.xlsx$/i.test(this.fileName) ? undefined : this.fileHandle);
+      // Thủ công + “Tính lại sổ trước khi lưu”: tính phần đang chờ để tệp lưu đúng giá trị
+      if (this.wb.calcMode === 'manual' && this.wb.calcOnSave && this.wb.calcDirty) { this.wb.calcNow(); this.grid.invalidate(); }
+      const name0 = this.fileName && this.bookFileOk() ? this.fileName : this.wb.name + (this.wb.hasMacros() ? '.xlsm' : '.xlsx');
+      // tệp đích đuôi .xlsx không bao giờ chứa macro
+      const macro = this.wb.hasMacros() && !/\.xlsx$/i.test(name0) || (asNew && this.wb.hasMacros());
+      const name = macro && /\.xlsx$/i.test(name0) ? name0.replace(/\.xlsx$/i, '.xlsm') : name0;
+      const bytes = await writeXlsx(this.wb, { macro });
+      // sổ có macro mà chọn lưu .xlsx: như Excel, báo macro sẽ bị bỏ
+      const plain = () => new Promise<Uint8Array | null>((resolve) => {
+        let go = false;
+        openDialog('Lưu thành sổ không có macro?', h('p', {}, 'Sổ làm việc có macro VBA. Lưu thành tệp .xlsx sẽ bỏ toàn bộ macro (tệp .xlsx không chứa được macro). Muốn giữ macro, chọn kiểu “Sổ làm việc Excel có Macro (.xlsm)”.'), [
+          { label: 'Hủy', act: () => resolve(null) },
+          { label: 'Lưu không có macro', kind: 'primary', act: () => { go = true; writeXlsx(this.wb, { macro: false }).then(resolve, () => resolve(null)); } },
+        ], () => { if (!go) resolve(null); });
+      });
+      const res = await saveBytes(bytes, name, macro ? 'xlsm' : 'xlsx', asNew || !this.bookFileOk() ? undefined : this.fileHandle, plain);
       if (!res) return false;
+      // đã lưu thành .xlsx không macro: sổ đang mở cũng không còn macro (khớp với tệp trên máy)
+      if (res.plain || (!macro && this.wb.hasMacros())) this.wb.vba = null;
       if (res.handle) {
         const renamed = (res.handle.name ?? name) !== this.fileName;
         this.fileHandle = res.handle; this.fileName = res.handle.name ?? name;
@@ -1269,7 +1314,7 @@ export class App {
       await this.saveNow(false);
       if (!(this.fileDirty && this.fileName)) { d.closeOk(); return; }
       d.closePending();
-      const xlsx = /\.xlsx$/i.test(this.fileName);
+      const xlsx = this.bookFileOk();
       const body = h('p', {}, xlsx
         ? `Sổ tính có thay đổi chưa lưu vào tệp “${this.fileName}”. Bản nháp vẫn được giữ trong app, nhưng tệp trên máy sẽ chưa có các thay đổi này.`
         : `Sổ tính mở từ “${this.fileName}” có thay đổi chưa lưu ra tệp. Chọn Lưu để lưu thành tệp .xlsx mới (tệp gốc không bị ghi đè). Bản nháp vẫn được giữ trong app.`);
@@ -1305,10 +1350,10 @@ export class App {
   delRows() { const { at, n } = this.rows(); this.safe(() => this.wb.deleteRows(this.grid.sheet, at, n)); }
   insCols() { const { at, n } = this.cols(); this.safe(() => this.wb.insertCols(this.grid.sheet, at, n)); }
   delCols() { const { at, n } = this.cols(); this.safe(() => this.wb.deleteCols(this.grid.sheet, at, n)); }
-  clearSel() { const areas = this.grid.ranges(), sheets = this.sheetsTarget(); this.safe(() => this.wb.group(() => { for (const sh of sheets) this.wb.withHeaders(sh, () => { for (const a of areas) this.wb.clear(sh, a); }); })); this.lastAct = () => this.clearSel(); }
+  clearSel() { const areas = this.grid.ranges(), sheets = this.sheetsTarget(); this.safe(() => this.wb.group(() => { for (const sh of sheets) this.wb.withHeaders(sh, () => { for (const a of areas) this.wb.lazy(() => this.wb.clear(sh, a)); }); })); this.lastAct = () => this.clearSel(); }
   autoSum(fn = 'SUM') {
     const { ar, ac } = this.grid.sel;
-    const f = this.wb.autoSum(this.grid.sheet, ar, ac, fn);
+    const f = this.wb.lazy(() => this.wb.autoSum(this.grid.sheet, ar, ac, fn));
     if (f === `=${fn}()`) this.ed.begin(`=${fn}(`, 'enter');
     else this.syncSelection();
   }
@@ -1349,7 +1394,7 @@ export class App {
     this.safe(() => {
       let g: Range | null;
       if (this.wb.clip && (text === null || normalizeNL(text) === normalizeNL(this.lastCopyText))) g = this.wb.withHeaders(this.grid.sheet, () => this.wb.paste(this.grid.sheet, ar, ac));
-      else if (text) g = this.wb.withHeaders(this.grid.sheet, () => this.wb.pasteText(this.grid.sheet, ar, ac, text));
+      else if (text) g = this.wb.withHeaders(this.grid.sheet, () => this.wb.lazy(() => this.wb.pasteText(this.grid.sheet, ar, ac, text)));
       else g = null;
       if (g) this.grid.selectRange(g);
     });
@@ -1413,7 +1458,7 @@ export class App {
   }
   private sigOf() { return this.wb.sheetIds().map((i) => i + ':' + this.wb.sheetName(i) + ':' + (this.wb.meta(i).hidden ? 'h' : '') + ':' + (this.wb.meta(i).tabColor ?? '')).join('|'); }
   private sheetMenu(id: number, x: number, y: number) {
-    const hidden = this.wb.sheetIds().filter((i) => this.wb.isSheetHidden(i));
+    const hidden = this.wb.unhideableSheetIds();
     showMenu([
       { label: 'Chèn…', icon: 'sheet', act: () => this.addSheet() },
       { label: 'Xóa', icon: 'trash', act: () => this.removeSheet(id) },
@@ -1437,7 +1482,7 @@ export class App {
     });
   }
   unhideSheetDlg() {
-    const hidden = this.wb.sheetIds().filter((i) => this.wb.isSheetHidden(i));
+    const hidden = this.wb.unhideableSheetIds();
     if (!hidden.length) { this.toast('Không có trang tính nào đang ẩn.'); return; }
     const list = h('select', { size: String(Math.min(8, Math.max(3, hidden.length))), 'aria-label': 'Trang tính đang ẩn' }) as HTMLSelectElement;
     for (const i of hidden) list.append(h('option', { value: String(i) }, this.wb.sheetName(i)));
@@ -1466,9 +1511,15 @@ export class App {
       } },
     ], () => this.grid.focusKeys());
   }
-  removeSheet(id: number) {
+  removeSheet(id: number, sure = false) {
     const n = this.wb.sheetName(id);
     if (this.wb.visibleSheetIds().length <= 1 && !this.wb.isSheetHidden(id)) { this.toast('Sổ làm việc phải còn ít nhất một trang tính hiển thị.', 'err'); return; }
+    if (!sure && this.wb.hasMacros() && this.wb.meta(id).codeName) {
+      openDialog('Xóa trang tính', h('p', {}, `Macro VBA trong sổ có thể tham chiếu tới trang tính “${n}” (${this.wb.meta(id).codeName}). Xóa trang này có thể làm macro chạy lỗi trong Excel. Vẫn xóa?`), [
+        { label: 'Hủy', act: () => {} }, { label: 'Xóa', kind: 'primary', act: () => this.removeSheet(id, true) },
+      ], () => this.grid.focusKeys());
+      return;
+    }
     this.safe(() => {
       this.wb.removeSheet(id);
       if (id === this.grid.sheet) this.grid.setSheet(this.wb.visibleSheetIds()[0]);
@@ -1512,6 +1563,7 @@ export class App {
     $('#sheet-prev').onclick = () => this.stepSheet(-1);
     $('#sheet-next').onclick = () => this.stepSheet(1);
     $('#st-acc').onclick = () => this.checkAccessibility();
+    $('#st-calc').onclick = () => this.calcNow();
     $('#sheet-add').onclick = () => this.addSheet();
     document.querySelectorAll<HTMLElement>('#views [data-view]').forEach((b) => { b.onclick = () => this.setView(b.dataset.view as 'normal'); });
     $('#status').oncontextmenu = (e) => {
@@ -1736,6 +1788,7 @@ export class App {
   // ---------- thay đổi & lưu ----------
   private bookChanging = false;
   private onBookChange() {
+    this.updCalc();
     this.navFill();
     this.fileDirty = true;
     this.renderSheetsIfNeeded();
@@ -1948,7 +2001,7 @@ export class App {
     const vals = [...set].filter(Boolean).sort((a, b) => a.localeCompare(b, 'vi'));
     if (!vals.length) { this.toast('Không có giá trị nào ở các ô liền kề trong cột.'); return; }
     const p = this.grid.cellRectM(ar, ac), b = this.grid.scroller.getBoundingClientRect();
-    showMenu(vals.slice(0, 200).map((v) => ({ label: v, act: () => { this.safe(() => this.wb.setInput(s, ar, ac, v)); this.syncSelection(); this.grid.focusKeys(); } })), b.left + p.x, b.top + p.y + p.h);
+    showMenu(vals.slice(0, 200).map((v) => ({ label: v, act: () => { this.safe(() => this.wb.lazy(() => this.wb.setInput(s, ar, ac, v))); this.syncSelection(); this.grid.focusKeys(); } })), b.left + p.x, b.top + p.y + p.h);
   }
 
   // ---------- cài đặt PWA ----------
@@ -2059,7 +2112,7 @@ export class App {
     box.className = 'fn-picker';
     box.innerHTML = `<label class="fn-search">${ic('fx', 16)}<input id="fn-q" placeholder="Tìm hàm, ví dụ: tra cứu, SUMIF" aria-label="Tìm hàm"></label><div class="fn-list" role="listbox"></div>`;
     const list = box.querySelector('.fn-list') as HTMLElement;
-    const all = this.wb.hf.getRegisteredFunctionNames().filter((n) => !/^(XOFS\d|XTHISROW)$/.test(n)).sort();
+    const all = this.wb.hf.getRegisteredFunctionNames().filter((n) => !/^(XOFS\d|XTHISROW|XFIT|XLAMCALL)$/.test(n)).sort();
     const render = (q: string) => {
       const qq = q.trim().toLowerCase();
       const names = all.filter((n) => !qq || n.toLowerCase().includes(qq) || (FUNC_INFO[n]?.join(' ').toLowerCase().includes(qq) ?? false));
@@ -2497,7 +2550,9 @@ export class App {
       case 'fillDown': this.act(() => this.fillDir('down')); return true;
       case 'fillRight': this.act(() => this.fillDir('right')); return true;
       case 'autoSum': this.autoSum(); return true;
-      case 'calcSheet': case 'calcFull': this.recalc(); return true;
+      case 'calcSheet': this.calcNow(); return true;
+      case 'calcFull': this.calcAll(); return true;
+      case 'calcRebuild': this.recalc(); return true;
       case 'chartHere': this.insertChart(); return true;
       case 'chartSheet': this.chartSheet(); return true;
       case 'refresh': case 'refreshAll': this.refreshPivots(id === 'refresh' ? s : null); return true;
@@ -2519,7 +2574,7 @@ export class App {
       case 'groupSel': groupSel(this); return true;
       case 'ungroupSel': ungroupSel(this); return true;
       case 'createNames': createFromSelection(this); return true;
-      case 'calcAll': this.recalc(); return true;
+      case 'calcAll': this.calcNow(); return true;
       case 'editBar': this.ed.begin(null, 'edit', false, 'bar'); return true;
     }
     return false;
@@ -2642,7 +2697,7 @@ export class App {
   writeInput(r: number, c: number, v: string) {
     const list = this.sheetsTarget();
     let grew = false;
-    this.wb.group(() => { for (const sh of list) { this.wb.setInput(sh, r, c, v); if (this.wb.afterEdit(sh, r, c)) grew = true; } });
+    this.wb.group(() => { for (const sh of list) { this.wb.lazy(() => this.wb.setInput(sh, r, c, v)); if (this.wb.afterEdit(sh, r, c)) grew = true; } });
     if (grew) { this.grid.invalidate(); this.syncTableTab(); }
   }
   /** Truy tìm Ô Tiền lệ / Phụ thuộc: mỗi lần bấm thêm một cấp (như Excel) */
@@ -3106,7 +3161,7 @@ class CellEditor implements EditHost {
     const m = el.value.startsWith('=') ? /(?:^=|[=(;,+\-*/^&<>:\s])([A-Za-z][A-Za-z0-9.]*)$/.exec(before) : null;
     if (!m) return this.closeAc();
     const q = m[1].toUpperCase();
-    const names = this.wb.hf.getRegisteredFunctionNames().filter((n) => !/^(XOFS\d|XTHISROW)$/.test(n));
+    const names = this.wb.hf.getRegisteredFunctionNames().filter((n) => !/^(XOFS\d|XTHISROW|XFIT|XLAMCALL)$/.test(n));
     const hits = names.filter((n) => n.startsWith(q)).sort((a, b) => (FUNC_INFO[b] ? 1 : 0) - (FUNC_INFO[a] ? 1 : 0) || a.length - b.length || a.localeCompare(b)).slice(0, 8);
     if (!hits.length || (hits.length === 1 && hits[0] === q)) return this.closeAc();
     this.acItems = hits;
@@ -3361,7 +3416,7 @@ class CellEditor implements EditHost {
       case 'Delete': done(); app.clearSel(); return;
       case 'Backspace': done(); this.begin('', 'enter'); return;
       case 'F2': done(); this.begin(null, 'edit'); return;
-      case 'F9': done(); app.recalc(); return;
+      case 'F9': done(); app.calcNow(); return;
       case 'Escape': done(); if (app.wb.clip) { app.wb.clip = null; g.invalidate(); } return;
     }
     if (k === '=' && e.altKey) { done(); app.autoSum(); return; }

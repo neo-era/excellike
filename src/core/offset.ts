@@ -81,8 +81,10 @@ export function offsetIn(f: string, self?: { r: number; c: number }, selfSheet =
   return mapCalls(f, /^OFFSET$/i, (_fn, raw) => {
     const args = raw.map((a) => offsetIn('=' + a, self, selfSheet).slice(1));
     if (args.length < 3 || args.length > 5) return null;
-    if (args.slice(1).every((a) => a.trim() === '' || NUM.test(a))) return null; // HyperFormula tự xử lý
     const ref = parseRef(args[0]);
+    // gốc là tên LET / tham số LAMBDA (gắn với tham chiếu): tính lúc chạy (hàm biến động nên luôn được tính lại)
+    if (!ref && /^[A-Za-z_\\À-￿][\w.\\À-￿]*$/.test(args[0].trim()) && !/^(TRUE|FALSE)$/i.test(args[0].trim())) return `XOFS${args.length}(${args.join(';')};${args[0].trim()})`;
+    if (args.slice(1).every((a) => a.trim() === '' || NUM.test(a))) return null; // HyperFormula tự xử lý
     if (!ref) return null;
     // khung bao: ô gốc + các vùng cùng sheet trong đối số
     const b: Box = { ...ref.box };

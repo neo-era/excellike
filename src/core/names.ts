@@ -26,7 +26,7 @@ export function decName(name: string): string {
  * Duyệt các định danh (identifier) ngoài chuỗi "…" và tên trang tính '…' của công thức.
  * f(token, start, nextChar) trả về chuỗi thay thế (hoặc undefined để giữ nguyên).
  */
-export function mapIdents(formula: string, f: (tok: string, next: string, prev: string) => string | undefined): string {
+export function mapIdents(formula: string, f: (tok: string, next: string, prev: string, at: number) => string | undefined): string {
   let out = '', i = 0;
   const n = formula.length;
   while (i < n) {
@@ -41,7 +41,7 @@ export function mapIdents(formula: string, f: (tok: string, next: string, prev: 
       let j = i + 1;
       while (j < n && ID_CHAR.test(formula[j])) j++;
       const tok = formula.slice(i, j);
-      const r = f(tok, formula[j] ?? '', formula[i - 1] ?? '');
+      const r = f(tok, formula[j] ?? '', formula[i - 1] ?? '', i);
       out += r === undefined ? tok : r;
       i = j; continue;
     }

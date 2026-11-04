@@ -1,2 +1,2 @@
 // Phiên bản hiển thị trong app
-export const VERSION = '0.9.2';
+export const VERSION = '1.0.0';

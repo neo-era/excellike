@@ -442,6 +442,90 @@ Review độc lập Đợt 4: 1 lỗi nặng (Esc ở hộp thoại hỏi lưu l
 
 **Kiểm thử:** unit 264/264; giao diện 0.7 73/73; phím tắt 174/174; i18n 92/92 (English không sót chữ Việt); 0.5 120/120; Đợt 1–3, điện thoại, máy tính 35/35, bản quyền 22/22, Key Manager 32/32; mở tệp lớn 3,0 s.
 
+## 6m. Bản 0.9.0 (31/10/2026) — 0.8 In ấn hồ sơ + 0.9 Phân tích (gộp một bản)
+
+**0.8 – In ấn hồ sơ:**
+- **Dạng xem Bố trí Trang:** trang giấy thật (shadow DOM, dùng chung bộ dựng trang của In), thước ngang/dọc theo lề, bấm vùng trái/giữa/phải của đầu/chân trang để sửa ngay trên trang; nhấp đúp vào ô thì về dạng Thường và sửa ô đó.
+- **Kéo đường ngắt trang** trong Xem trước Ngắt Trang (`movePageBreak`, hoàn tác được).
+- **Trang đầu khác / Trang chẵn-lẻ khác** (`hfFirst`, `hfEven`), co theo tài liệu, căn theo lề; đọc/ghi `differentFirst`/`differentOddEven` trong .xlsx.
+- **Ảnh trong đầu/chân trang** (`&G`, `hfImg`).
+
+**0.9 – Phân tích:**
+- **Kiểm định công thức:** Đánh giá Công thức từng bước (`evalsteps.ts`: thay tham chiếu → giá trị, tính lời gọi hàm trong cùng trước), Kiểm tra Lỗi (tam giác xanh, nút ⚠ và Alt+Shift+F10: Trợ giúp/Hiện bước tính/Bỏ qua lỗi/Chuyển thành Số/Sửa trên thanh công thức; hộp thoại duyệt lỗi toàn trang; bật/tắt trong Tùy chọn), Cửa sổ Theo dõi.
+- **Phân tích Giả định:** Tìm Mục tiêu (Newton + chia đôi trên `trial`, không để lại vết hoàn tác), Bảng Dữ liệu 1 và 2 biến, Trình quản lý Kịch bản (Hiện, Tóm tắt ra trang mới), Trang tính Dự báo (FORECAST.LINEAR + khoảng tin cậy T.INV.2T·STEYX + biểu đồ đường).
+- **Dữ liệu:** Lọc Nâng cao (vùng điều kiện VÀ theo hàng / HOẶC giữa các hàng, tại chỗ hoặc sao chép tới, bản ghi duy nhất; Xóa lọc chỉ hiện lại hàng do lọc nâng cao ẩn), Hợp nhất (Tổng/Đếm/TB/Max/Min/Tích, theo vị trí hoặc nhãn).
+- **Biểu đồ:** Phân tán (XY), Kết hợp (cột + đường, trục phụ), tiêu đề trục, lưới, 4 bộ màu, tô/viền vùng biểu đồ; tab ngữ cảnh Thiết kế Biểu đồ / Định dạng; PivotChart từ PivotTable. Đọc/ghi .xlsx: `c:scatterChart`, nhiều nhóm biểu đồ + trục phụ, `c:title` của trục.
+- **Biểu đồ thu nhỏ (Sparklines):** Đường/Cột/Thắng-Thua, đánh dấu điểm cao/thấp/âm/đầu/cuối, màu; tab ngữ cảnh; ghi `x14:sparklineGroups` trong extLst.
+- **Đối tượng:** Ảnh (PNG/JPEG/GIF; SVG/WebP đổi sang PNG), 12 Hình dạng, Hộp Văn bản, Biểu tượng, Văn bản Thay thế; Đưa lên/xuống, Ngăn Lựa chọn; tab Định dạng Ảnh/Hình. Đọc/ghi `xdr:pic` + `xl/media`, `xdr:sp`.
+- **Hộp kiểm trong ô**, **Ký hiệu**.
+- **Bảo vệ:** Bảo vệ Trang tính (mật khẩu băm SHA-512 + muối + 100.000 vòng như Excel; đọc được cả mật khẩu 16-bit cũ), 15 quyền cho phép, Cho phép Sửa Vùng, ẩn công thức ô `hid`; Bảo vệ Sổ làm việc (cấu trúc). Các thao tác sửa đều đi qua `guard` trong Workbook. Đọc/ghi `sheetProtection`, `protectedRanges`, `workbookProtection`.
+- **Chính tả (F7):** nspell + từ điển hunspell tiếng Việt và English (nạp khi cần), Bỏ qua/Thêm vào Từ điển/Thay đổi (Tất cả).
+- **Kéo viền vùng chọn:** di chuyển (công thức tham chiếu đi theo), Ctrl = sao chép, Shift = chèn ô (`dragCells`, một bước hoàn tác, không đụng bảng tạm của người dùng).
+- Mọi chữ mới có bản English (i18n quét thêm 17 hộp thoại/ngăn và 4 tab ngữ cảnh, 0 chữ sót).
+
+**Không làm, lý do:**
+- *Ngoài phạm vi:* SmartArt, WordArt, Phương trình, Dòng Chữ ký, Đối tượng OLE, Ảnh chụp màn hình (cần thành phần Office/hệ điều hành riêng).
+- *Chuyển sang 1.x:* Tách cửa sổ (cần nhiều khung lưới độc lập — tạm dùng Cố định Ngăn), Cửa sổ Mới/Xếp cạnh nhau, Slicer/Timeline (cần PivotTable “sống”), Chủ đề/Ảnh nền, Căn/Nhóm/Xoay đối tượng, đường xu hướng, Thác nước/Radar/Histogram, PivotTable Đề xuất, tính toán Thủ công.
+
+**Rà soát độc lập:** 12 nhóm lỗi, đã sửa:
+- một số đường sửa bỏ qua bảo vệ trang: dán chữ từ ngoài, cắt từ ô khóa, Chèn/Xóa ô, Dán Đặc biệt, viền, chổi định dạng, ẩn hàng/cột, ghi chú, định dạng có điều kiện, Loại trùng, Văn bản thành Cột, Bảng Dữ liệu, Sắp xếp ô khóa, bỏ khóa ô qua Định dạng Ô, sửa Vùng Cho phép khi đang bảo vệ;
+- bước thử của Tìm Mục tiêu/Bảng Dữ liệu tràn giới hạn 300 bước hoàn tác của bộ tính → ô nhập sai giá trị, mất lịch sử;
+- Shift+kéo chồng lên vùng nguồn làm mất dữ liệu; bước giữa chừng bị chặn thì nay hoàn lại hết;
+- xóa trang nguồn của biểu đồ thu nhỏ làm không lưu được .xlsx; vùng nguồn dời sai trang;
+- Vùng Cho phép, hàng ẩn do Lọc Nâng cao, ô kịch bản không dời khi chèn/xóa hàng-cột;
+- mở .xlsx làm yếu bảo vệ: mật khẩu SHA-256/SHA-1, mật khẩu từng vùng, số vòng quá lớn (treo);
+- công thức ẩn lộ ở Đánh giá Công thức, Kiểm tra Lỗi, Cửa sổ Theo dõi;
+- trang lớn: Chính tả dựng mảng mọi ô, Lọc Nâng cao/Hợp nhất chạy cả cột, biểu đồ thu nhỏ đọc cả cột mỗi khung hình;
+- tạo lần hai “Dự báo”, “Tóm tắt Kịch bản”, “Biểu đồ” báo trùng tên trang;
+- Đánh giá Công thức: ô trống trong phép ghép hiện “0”, hàm ROW/OFFSET bị thay tham chiếu;
+- biểu đồ kết hợp đọc lại đảo trục chính/phụ; ảnh BMP/WebP mất khi lưu.
+
+**Hạn chế còn lại:**
+- Bảng Dữ liệu ghi giá trị tĩnh (Excel dùng hàm TABLE tự tính lại).
+- Dự báo dùng xu hướng tuyến tính, không phải làm trơn hàm mũ ETS như Excel.
+- Ảnh đầu trang (&G), định dạng hộp kiểm và kịch bản chưa ghi vào .xlsx (hộp kiểm vẫn lưu giá trị TRUE/FALSE).
+- Cho phép Sửa Vùng chưa đặt được mật khẩu riêng từng vùng (vùng có mật khẩu từ tệp Excel được giữ nguyên và coi như vẫn khóa); quyền “chọn ô khóa/không khóa” lưu được nhưng chưa chặn việc chọn ô.
+- Điều kiện ngày trong Lọc Nâng cao (vd >01/01/2024) so sánh như chữ.
+- Tách cửa sổ chưa có (dùng Cố định Ngăn).
+- Từ điển tiếng Việt hunspell-vi theo giấy phép GPLv3 (đóng kèm như tệp dữ liệu riêng, có tệp giấy phép); từ điển English theo giấy phép SCOWL (tự do); thư viện nspell MIT.
+**Kiểm thử:** unit 297/297; giao diện 0.8–0.9 66/66; 0.7 73/73; phím tắt 177/177 (thêm F7, Alt+Shift+F10, Shift+kéo); i18n 92/92 (0 chữ Việt sót ở English, quét thêm 17 hộp thoại/ngăn + 4 tab ngữ cảnh); 0.5 120/120; Đợt 1–3 39/39 · 21/21 · 32/32; điện thoại 32/32; máy tính 35/35; bản quyền 22/22; Key Manager 32/32; mở tệp lớn 4,9 s (đo khi máy đang chạy song song kiểm thử khác).
+
+## 6n. Bản 0.9.1 (31/10/2026) — sửa mở tệp xuất từ phần mềm khác
+
+- Lỗi: tệp `Export_2.xlsx` (xuất từ hệ thống quản lý trụ đèn) viết thuộc tính có khoảng trắng quanh dấu bằng (`r:id ="rId1"`). Bộ đọc thuộc tính chỉ nhận `tên="giá trị"` nên không tìm thấy trang tính → mở ra sổ trống, người dùng tưởng app đang mở chậm.
+- Sửa: `attrs` (xlsx.ts), `attrsOf`/`attr1` (xlsxfast.ts) chấp nhận khoảng trắng quanh `=` và nháy đơn; `attr1` vẫn giữ đường nhanh `indexOf`, chỉ dùng biểu thức chính quy (lưu sẵn) khi không thấy dạng chuẩn.
+- Kết quả: tệp 5.620 hàng × 19 cột mở ~1,5 s, mở lại ~0,7 s. Thêm test `xlsx-spaces.test.ts`.
+
+## 6o. Key Manager bản iPhone (01/11/2026)
+
+- Cùng giao diện và cùng API `window.km` với bản Windows; lớp dữ liệu `km.js` thay cho tiến trình Electron: IndexedDB (`db`, `db.bak`, `signing`, `lastBackup`), khóa ký mã hóa AES-GCM-256 bằng khóa dẫn xuất PBKDF2-SHA256 310.000 vòng từ mật khẩu; khi mở khóa chỉ giữ CryptoKey không xuất được trong bộ nhớ. Tự khóa sau 10 phút không thao tác hoặc rời app quá 2 phút.
+- `lic.js`: định dạng key như `license.cjs`; Ed25519 tất định nên cùng dữ liệu cho ra đúng cùng một key với bản Windows (đã kiểm bằng test đối chiếu).
+- Giao diện điện thoại: thanh trên + thanh tab dưới (safe-area), sổ key dạng thẻ, ngăn chi tiết trượt từ dưới, chữ ô nhập 16px (không tự phóng to), màn ngang dùng cùng bố cục; nút "Gửi cho khách…" dùng bảng Chia sẻ của iOS.
+- PWA: manifest, biểu tượng 192/512/maskable/apple-touch, service worker riêng phạm vi `/keymgr/` (mạng trước, mất mạng dùng bản lưu); SW của ExcelLike web bỏ qua `/keymgr/`.
+- Dải số: iPhone ≥ 100001; Key Manager Windows 1.0.1 tính số kế tiếp chỉ từ key < 100001.
+- Kiểm thử `e2e/keymgr-web.mjs` 28/28: key iPhone được bản Windows chấp nhận (dùng mọi máy/gắn máy), mã máy sai bị từ chối, thu hồi, kiểm tra key, sao lưu/khôi phục sổ Windows, khóa/mở/đổi mật khẩu, khóa ký không lưu dạng thô, dọc/ngang/360×640/tối không tràn, mất mạng vẫn mở và cấp key.
+- Hạn chế: cần iOS 17+ (Ed25519 trong WebCrypto); sổ key lưu riêng từng thiết bị, đồng bộ bằng tệp sao lưu; chưa chạy thử trên iPhone thật.
+
+## 6p. Bản 0.9.2 (03/11/2026) — mảng động tràn đúng kích thước, tăng tốc mở tệp nặng
+
+- Vấn đề (tệp `TONG_HOP_DE_XUAT_DEN_LED…xlsm`, 11 trang, ~12.000 công thức, ~1.000 công thức `TOROW(FILTER(HSTACK(…)))`): HyperFormula phải biết kích thước mảng trước khi tính, nên FILTER giữ trước vùng tối đa (946 hàng → TOROW 1.892 cột). Hậu quả: #SPILL! giả khi bên cạnh có dữ liệu và mở tệp 22 s (HyperFormula dọn vùng tràn bị chặn từng ô).
+- Cách làm: lớp vá bọc công thức có FILTER/UNIQUE thành `XFIT(h;w;…)`; XFIT giữ đúng h×w, khi kết quả thật khác thì ghi vào sổ chờ (`fitRegistry`), `Workbook.refitDyn()` (chạy trong `emit` và sau khi mở sổ) đặt lại h×w. Việc đặt lại không vào lịch sử Hoàn tác (tạm nâng giới hạn, chặn xóa ngăn Làm lại, rồi cắt bước vừa thêm). Khi mở .xlsx, h×w lấy từ `ref` Excel lưu nên thường không phải đo lại. Thanh công thức, lưu tệp, Đánh giá Công thức đều bỏ lớp XFIT (`unfit` trong `out`).
+- Tăng tốc: so sánh chuỗi không đọc chuỗi không có chữ số thành ngày (+ nhớ kết quả), `accentSensitive: true` (như Excel, “Bến Nghé” ≠ “Ben Nghe”), `useColumnIndex: true` cho dò tìm.
+- Kết quả tệp trên: mở ~9 s (trước 22 s); sửa một ô dữ liệu nguồn ~1,2 s (tính lại ~1.000 FILTER). Còn lại khác Excel: hàm VBA `NoiChuoiDuyNhat` báo #NAME? (ExcelLike không chạy macro; thay được bằng `=TEXTJOIN(", ";TRUE;UNIQUE(TRIM(AB9:AF9);TRUE))`), các ô SUMIF/SUMIFS có vùng chứa chính nó là tham chiếu vòng thật (Excel cũng cảnh báo).
+- Kiểm thử: `tests/dynfit.test.ts` (tràn đúng kích thước, co/giãn khi dữ liệu đổi, hoàn tác/làm lại, TOROW(FILTER(HSTACK)), nếu_rỗng, lưu/mở .xlsx không lộ XFIT); unit 303/303; giao diện 0.7 73/73, 0.8–0.9 66/66, phím 177/177, 0.5 120/120, Đợt 2–3 21/21 · 32/32, điện thoại 32/32, máy tính 35/35, Key Manager iPhone 28/28. Bài đo khung hình cuộn (p95 < 33 ms) không đạt trên máy kiểm thử hôm nay ở cả bản cũ lẫn bản mới (máy chậm hơn), không do thay đổi này.
+
+## 6q. Bản 1.0.0 (04/11/2026) — giữ macro .xlsm, Tính toán Thủ công, LET/LAMBDA, bảng màu, vùng in nhiều khối
+
+Tiêu chí: `ExcelLike-1.0-tieu-chi.md` (Bước 0 đã qua 2 chuyên gia độc lập).
+
+- **A. Giữ macro .xlsm.** Đọc: giữ nguyên từng byte `xl/vbaProject*.bin` (+ `.rels`, chữ ký), kiểu nội dung (Default/Override như tệp gốc), `codeName` của sổ và từng trang, trang `veryHidden`; ô gọi hàm VBA (tên không có trong bộ tính) giữ giá trị Excel lưu sẵn (`<v>`) — không có thì #NAME?. Ghi (`addVba`): main `macroEnabled`, quan hệ `vbaProject`, `codeName` đi theo trang khi đổi tên/di chuyển, trang sao chép không mang `codeName`. Lưu: sổ có macro gợi ý `.xlsm`; chọn `.xlsx` → hộp “Lưu thành sổ không có macro?” rồi ghi bản bỏ macro và sổ đang mở cũng bỏ macro. Bỏ ẩn không liệt kê trang `veryHidden`; xóa trang có `codeName` khi sổ có macro → hỏi lại.
+- **B. Tính toán Thủ công.** HyperFormula bị tạm dừng (`suspendEvaluation`) suốt chế độ Thủ công; các hàm đọc giá trị được bọc để đọc giá trị đang có (giá trị cũ của ô phụ thuộc) thay vì báo lỗi; `batch()` không tự bật lại tính toán. Các lần sửa ô của người dùng (`wb.lazy`: gõ, Delete, dán chữ, Tổng Tự động, chọn danh sách thả xuống) chỉ đánh dấu chờ tính; công thức vừa gõ tự tính riêng nó (giá trị tạm theo đỉnh đồ thị, không ghi vào bộ tính để F9 vẫn tính ô phụ thuộc); mảng động vừa gõ thì tính ngay. Mọi thao tác khác (chèn/xóa hàng cột, sắp xếp, dán vùng, Tìm Mục tiêu…) tính ngay rồi tạm dừng lại. F9/Shift+F9 = `calcNow` (giữ Hoàn tác), Ctrl+Alt+F9 = đánh dấu mọi công thức rồi tính, Ctrl+Shift+Alt+F9 = dựng lại (hỏi trước, mất Hoàn tác). Thanh trạng thái “Tính toán” (bấm để tính). Lưu: “Tính lại sổ trước khi lưu” (mặc định bật), ghi `calcPr calcMode="manual"` (+ `calcOnSave="0"`); mở tệp Thủ công thì tính toàn bộ khi dựng sổ rồi mới tạm dừng.
+- **C1. LET/LAMBDA.** `src/core/lambda.ts`: tên LET/tham số LAMBDA là “tên vùng” trong cây cú pháp; bộ thông dịch được vá để tra môi trường cục bộ trước (không tạo tên toàn cục). Bộ tính riêng `ev()` cho thân LAMBDA (IF lười, gọi đuôi bằng vòng lặp) → đệ quy 1.000 tầng tính được, quá 5.000 hoặc tràn ngăn xếp → #NUM!. Gọi ngay `LAMBDA(x;x+1)(5)` ↔ `XLAMCALL(…)` (lớp viết lại vào/ra). Tên LAMBDA trong Trình Quản lý Tên gọi được (`NhanDoi(4)`); đổi định nghĩa → tính lại mọi công thức. #CALC! (LAMBDA không gọi) hiện đúng chữ. Tệp: `_xlfn.LET/LAMBDA/MAP…`, tên tham số `_xlpm.`; tên lạ `_xlpm.*`/`xlm` giữ nguyên thẻ.
+- **C2. Bảng màu.** `src/core/color.ts`: màu chủ đề đọc từ `theme1.xml` (srgbClr/sysClr), bảng màu đánh số tùy biến, sắc độ HLS (ECMA-376); bảng chọn màu dùng màu chủ đề của sổ, 5 sắc độ theo độ sáng như Office, Màu Gần đây (≤ 10, đọc/ghi `mruColors`); lưu lại giữ bộ màu chủ đề.
+- **C3. Vùng in nhiều khối.** Tự đọc/ghi một `_xlnm.Print_Area` cho mỗi trang (khối cách dấu phẩy, đủ `$`), bỏ cách ExcelJS (chỉ đọc khối đầu). Đặt Vùng In theo vùng chọn nhiều khối; Thêm vào Vùng In nới khối liền kề, còn lại thêm khối mới. Mỗi khối bắt đầu trang mới theo thứ tự; khối lớn tự chia trang; Xem trước Ngắt Trang vẽ mọi khối; chèn/xóa hàng cột dời các khối.
+- **Kiểm chứng (04/11/2026).** Unit 358/358 (mới: xlsm 12, manual 15 + đo hiệu năng tệp LED, lambda 17, colors 7, printarea 4). Tệp LED thật, chế độ Thủ công: sửa ô nặng trung vị 0,0 ms/p95 0,1 ms (Tự động ~0,8 s), F9 ~0,8 s, 94.125 ô sau F9 trùng Tự động. Giao diện: 1.0 41/41, Đợt 1 39/39, Đợt 2–3 21/21 · 32/32, ngôn ngữ 92/92, điện thoại 32/32, 0.5 120/120, phím 178/178, 0.7 73/73, 0.8–0.9 66/66, máy tính 35/35, bản quyền 22/22; chạy toàn bộ giao diện ở chế độ Thủ công (`?calc=manual`): 0 lỗi JavaScript. Duyệt: nghiệp vụ Excel (có điều kiện, đã áp), rà mã độc lập (vòng 1 không duyệt → vòng 2 duyệt), QA (có điều kiện, đã áp) — chi tiết ở Nhật ký duyệt của `ExcelLike-1.0-tieu-chi.md`.
+- **Hạn chế còn lại:** LAMBDA chưa có tham số tùy chọn `[y]`, truyền thẳng tên hàm, gọi lồng `f(2)(3)`; ô gọi tên LAMBDA luôn tính lại; mở tệp Thủ công thì tính lại ngay; nút macro/ribbon riêng/trang XLM không giữ; ô hàm VBA mất cờ công thức mảng khi lưu; PivotTable từ tệp lưu ra thành bảng giá trị (có báo khi mở). Cần anh thử trên Excel 365 thật: không hiện hộp sửa chữa, Alt+F11 đủ 14 mô-đun, chế độ Thủ công, in nhiều vùng in.
+
 ## 7. Kiểm chứng cuối theo tiêu chí Bước 0
 
 | # | Tiêu chí | Kết quả |

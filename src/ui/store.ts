@@ -23,7 +23,11 @@ async function tx<T>(mode: IDBTransactionMode, f: (s: IDBObjectStore) => IDBRequ
     t.onabort = () => { db.close(); rej(t.error ?? new Error('Ghi dữ liệu bị huỷ (có thể đầy bộ nhớ).')); };
   });
 }
-export const saveBook = (b: BookRec) => tx('readwrite', (s) => s.put(b));
+/** handle tệp không sao chép được vào IndexedDB (trình duyệt cũ…): vẫn lưu sổ, chỉ bỏ handle */
+export const saveBook = (b: BookRec) => tx('readwrite', (s) => s.put(b)).catch((e) => {
+  if ((e as Error)?.name === 'DataCloneError' && b.handle) return tx('readwrite', (s) => s.put({ ...b, handle: undefined }));
+  throw e;
+});
 export const loadBook = (id: string) => tx<BookRec | undefined>('readonly', (s) => s.get(id));
 export const deleteBook = (id: string) => tx('readwrite', (s) => s.delete(id));
 export async function listBooks(): Promise<BookRec[]> {

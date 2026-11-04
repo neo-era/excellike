@@ -341,7 +341,7 @@ ipcMain.handle('xl:startup-file', async () => {
 ipcMain.handle('xl:open-dialog', async () => {
   let p = TEST.XL_TEST_OPEN;
   if (!p) {
-    const r = await dialog.showOpenDialog(win, { title: 'Mở tệp', properties: ['openFile'], filters: [{ name: 'Excel hoặc CSV', extensions: ['xlsx', 'csv', 'txt'] }, { name: 'Mọi tệp', extensions: ['*'] }] });
+    const r = await dialog.showOpenDialog(win, { title: 'Mở tệp', properties: ['openFile'], filters: [{ name: 'Excel hoặc CSV', extensions: ['xlsx', 'xlsm', 'csv', 'txt'] }, { name: 'Mọi tệp', extensions: ['*'] }] });
     if (r.canceled || !r.filePaths[0]) return null;
     p = r.filePaths[0];
   }
@@ -376,13 +376,16 @@ ipcMain.handle('xl:save', async (_e, { path: p, name, kind, data, saveAs }) => {
   if (!target) {
     target = TEST.XL_TEST_SAVE;
     if (!target) {
-      const ext = kind === 'csv' ? 'csv' : 'xlsx';
       const safeName = String(name || 'So tinh').replace(/[\\/:*?"<>|]/g, '_');
-      const r = await dialog.showSaveDialog(win, { title: 'Lưu thành', defaultPath: p ? path.join(path.dirname(p), safeName) : safeName, filters: [ext === 'csv' ? { name: 'CSV', extensions: ['csv'] } : { name: 'Sổ tính Excel', extensions: ['xlsx'] }] });
+      const XLSM = { name: 'Sổ làm việc Excel có Macro', extensions: ['xlsm'] }, XLSX = { name: 'Sổ tính Excel', extensions: ['xlsx'] };
+      const filters = kind === 'csv' ? [{ name: 'CSV', extensions: ['csv'] }] : kind === 'xlsm' ? [XLSM, XLSX] : [XLSX];
+      const r = await dialog.showSaveDialog(win, { title: 'Lưu thành', defaultPath: p ? path.join(path.dirname(p), safeName) : safeName, filters });
       if (r.canceled || !r.filePath) return null;
       target = r.filePath;
     }
   }
+  // sổ có macro nhưng người dùng chọn đuôi .xlsx: báo lại để ứng dụng tạo bản không macro (không ghi bản .xlsm sai đuôi)
+  if (kind === 'xlsm' && /\.xlsx$/i.test(target)) { allow(target); return { path: target, name: path.basename(target), plain: true }; }
   await serial(target, () => writeAtomic(target, data));
   allow(target);
   return { path: target, name: path.basename(target) };

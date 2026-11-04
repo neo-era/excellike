@@ -58,6 +58,8 @@ async function boot() {
   if (safe) app.toast('Đang ở chế độ an toàn: lần mở trước bị lỗi nên ExcelLike mở sổ trống, giao diện tiếng Việt. Sổ cũ vẫn ở Tệp ▸ Mở.', 'err');
   if (rec && !failed) { app.fileHandle = rec.handle ?? null; app.fileName = rec.fileName ?? ''; app.fileDirty = !!rec.fileDirty; }
   if (failed) app.toast('Không mở được sổ tính lần trước nên đã mở sổ mới. Bản cũ vẫn được giữ trong Tệp → Mở…', 'err');
+  // kiểm thử: ?calc=manual chạy toàn bộ giao diện ở chế độ Tính toán Thủ công
+  if (/[?&]calc=manual\b/.test(location.search)) app.wb.setCalcMode('manual');
   (window as any).__xl = app;
   (window as any).__XLWorkbook = Workbook;
   (window as any).__xlKeys = KEYMAP;

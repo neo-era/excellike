@@ -38,6 +38,7 @@ export interface NPrint extends PrintSetup {
   header: string;
   footer: string;
   area: Range | null;
+  more: Range[];
   hfFirst: { header: string; footer: string } | null;
   hfEven: { header: string; footer: string } | null;
   hfImg: Record<string, string>;
@@ -56,6 +57,7 @@ export function normPrint(ps: PrintSetup | null | undefined): NPrint {
     margins: preset,
     mg: { ...mg },
     area: p.area ?? null,
+    more: p.area ? p.more ?? [] : [],
     scale: Math.max(10, Math.min(400, Math.round(p.scale ?? 100))),
     fit,
     titleRowRange: tr ?? null,
@@ -81,6 +83,7 @@ export function hfFor(p: NPrint, idx: number, num: number): { header: string; fo
 export function storePrint(p: NPrint): PrintSetup {
   const o: any = { ...p };
   delete o.fitWidth; delete o.titleRows;
+  if (!o.more?.length) delete o.more;
   return o;
 }
 
@@ -91,9 +94,24 @@ export interface Layout {
   paper: { w: number; h: number; wmm: number; hmm: number };
   avail: { w: number; h: number };
   area: Range | null;
+  /** vùng in nhiều khối: các khối theo thứ tự in (mỗi khối bắt đầu trang mới) */
+  areas?: Range[];
   setup: NPrint;
 }
 
+/**
+ * Thêm vào Vùng In (như Excel): khối mới liền kề một khối cũ (cùng hàng hoặc cùng cột, sát cạnh) thì nới khối cũ;
+ * nằm trọn trong khối cũ thì giữ nguyên; còn lại thành khối mới ở cuối.
+ */
+export function addPrintArea(list: Range[], g: Range): Range[] {
+  const out = list.map((x) => ({ ...x }));
+  for (const a of out) {
+    if (g.r1 >= a.r1 && g.r2 <= a.r2 && g.c1 >= a.c1 && g.c2 <= a.c2) return out;
+    if (a.r1 === g.r1 && a.r2 === g.r2 && (a.c2 + 1 === g.c1 || g.c2 + 1 === a.c1)) { a.c1 = Math.min(a.c1, g.c1); a.c2 = Math.max(a.c2, g.c2); return out; }
+    if (a.c1 === g.c1 && a.c2 === g.c2 && (a.r2 + 1 === g.r1 || g.r2 + 1 === a.r1)) { a.r1 = Math.min(a.r1, g.r1); a.r2 = Math.max(a.r2, g.r2); return out; }
+  }
+  return [...out, { ...g }];
+}
 export function paperSize(p: NPrint) {
   const [a, b] = PAPERS[p.paper].mm;
   const [wmm, hmm] = p.orientation === 'landscape' ? [b, a] : [a, b];
@@ -130,6 +148,16 @@ function split(items: number[], size: (i: number) => number, cap: (first: number
 
 export function paginate(wb: Workbook, s: number, setup: NPrint, opts: { range?: Range } = {}): Layout {
   const ps = normPrint(setup);
+  // vùng in nhiều khối (như Excel): mỗi khối in riêng, bắt đầu trang mới, theo thứ tự trong Print_Area
+  if (!opts.range && ps.area && ps.more.length) {
+    const one = (g: Range, p: NPrint) => paginate(wb, s, { ...p, more: [] }, { range: g });
+    let parts = [ps.area, ...ps.more].map((g) => one(g, ps));
+    const sc = Math.min(...parts.map((x) => x.scale));
+    // “Vừa trang”: dùng chung một tỷ lệ (nhỏ nhất) cho mọi khối
+    if (ps.fit && parts.some((x) => x.scale !== sc)) parts = [ps.area, ...ps.more].map((g) => one(g, { ...ps, fit: null, scale: Math.round(sc * 100) }));
+    const pages = parts.flatMap((x) => x.pages).map((pg, i) => ({ ...pg, index: i }));
+    return { ...parts[0], pages, scale: parts[0].scale, area: parts[0].area, areas: parts.map((x) => x.area!).filter(Boolean), setup: ps };
+  }
   const m = wb.meta(s);
   const paper = paperSize(ps);
   const avail = { w: paper.w - (ps.mg.l + ps.mg.r) * PX_IN, h: paper.h - (ps.mg.t + ps.mg.b) * PX_IN };

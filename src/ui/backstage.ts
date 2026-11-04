@@ -202,7 +202,7 @@ export class Backstage {
         const r = await saveBytes(app.wb.exportCSV(s, d), `${app.wb.name} - ${app.wb.sheetName(s)}.csv`, 'csv');
         if (r) { this.close(); app.toast(`Đã xuất CSV trang tính “${app.wb.sheetName(s)}”.`, 'ok'); }
       };
-      if (page === 'saveas') c.append(cmd('download', 'Sổ làm việc Excel (*.xlsx)', 'Chọn nơi lưu và tên tệp', () => { this.close(); app.saveXlsx(true); }, 'xlsx'));
+      if (page === 'saveas') c.append(cmd('download', app.wb.hasMacros() ? 'Sổ làm việc Excel có Macro (*.xlsm)' : 'Sổ làm việc Excel (*.xlsx)', 'Chọn nơi lưu và tên tệp', () => { this.close(); app.saveXlsx(true); }, 'xlsx'));
       c.append(
         cmd('pdf', 'Tạo Tài liệu PDF', 'Giữ nguyên bố cục trang in (khổ giấy, lề, đầu/chân trang)', () => this.show('print'), 'pdf'),
         cmd('csvFile', 'CSV UTF-8 (phân tách bằng dấu chấm phẩy)', 'Trang tính hiện hoạt — Excel tiếng Việt', csv(';'), 'csv1'),

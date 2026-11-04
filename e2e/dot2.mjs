@@ -4,7 +4,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 const { chromium } = createRequire(import.meta.url)('playwright');
 
-const PORT = 4175, APP_URL = `http://localhost:${PORT}/`;
+const PORT = 4175, APP_URL = `http://localhost:${PORT}/${process.env.XL_Q ?? ""}`;
 const OUT = new URL('./shots/', import.meta.url).pathname;
 const FIX = new URL('../tests/fixtures/mau.xlsx', import.meta.url).pathname;
 mkdirSync(OUT, { recursive: true });
