@@ -4,7 +4,7 @@ import { DynArrayPlugin, DYN_NAMES, fitRegistry } from './dynarray';
 import { LambdaPlugin, LAMBDA_NAMES, patchInterpreter, lamIn, lamOut, callCase, CALC_MSG } from './lambda';
 import { areaRange, type Area, encodeStructured, decodeStructured, tableCellStyle, tableNameError, dataRows, inTable, xtExpr, totalFormula, type TableDef, type TableReg, type TotalFn } from './tables';
 import { encFormulaNames, decFormulaNames, encName, nameError, renameInFormula, mapIdents } from './names';
-import { HyperFormula, FunctionPlugin, FunctionArgumentType, CellError, ErrorType } from 'hyperformula';
+import { HyperFormula, FunctionPlugin, FunctionArgumentType, CellError, ErrorType, SimpleRangeValue } from 'hyperformula';
 import { shiftFormula, fixSheetQuotes, needsQuote, quoteSheet, transposeFormula } from './formula';
 import type { ConfigParams, RawCellContent, SimpleCellAddress } from 'hyperformula';
 import { MAX_COLS, MAX_ROWS, type Range, rangeSize, toA1 } from './address';
@@ -191,6 +191,45 @@ class ExcelTextPlugin extends FunctionPlugin {
     });
   }
 }
+/** TREND / GROWTH (hồi quy tuyến tính / hàm mũ một biến như Excel) — HyperFormula chưa có */
+class TrendPlugin extends FunctionPlugin {
+  static implementedFunctions = {
+    TREND: { method: 'trend', parameters: [{ argumentType: FunctionArgumentType.RANGE }, { argumentType: FunctionArgumentType.RANGE, optionalArg: true }, { argumentType: FunctionArgumentType.RANGE, optionalArg: true }, { argumentType: FunctionArgumentType.BOOLEAN, defaultValue: true }], vectorizationForbidden: true },
+    GROWTH: { method: 'growth', parameters: [{ argumentType: FunctionArgumentType.RANGE }, { argumentType: FunctionArgumentType.RANGE, optionalArg: true }, { argumentType: FunctionArgumentType.RANGE, optionalArg: true }, { argumentType: FunctionArgumentType.BOOLEAN, defaultValue: true }], vectorizationForbidden: true },
+  };
+  private fit(ast: any, state: any, name: string, exp: boolean) {
+    return (this as any).runFunction(ast.args, state, (this as any).metadata(name), (ky: any, kx: any, nx: any, cst: boolean) => {
+      const flat = (r: any): unknown[] => (r ? (r.data as unknown[][]).flat() : []);
+      const num = (v: unknown) => (typeof v === 'number' ? v : v && typeof v === 'object' && typeof (v as any).val === 'number' ? (v as any).val : NaN);
+      const ys0 = flat(ky);
+      for (const v of ys0) if (v instanceof CellError) return v;
+      const ys = ys0.map(num);
+      const xs = kx ? flat(kx).map(num) : ys.map((_, i) => i + 1);
+      if (xs.length !== ys.length || ys.some((v) => Number.isNaN(v)) || xs.some((v) => Number.isNaN(v))) return new CellError(ErrorType.VALUE);
+      if (exp && ys.some((v) => v <= 0)) return new CellError(ErrorType.NUM);
+      const Y = exp ? ys.map(Math.log) : ys;
+      const n = xs.length;
+      let m: number, b: number;
+      if (cst) {
+        const mx = xs.reduce((a, v) => a + v, 0) / n, my = Y.reduce((a, v) => a + v, 0) / n;
+        let sxx = 0, sxy = 0;
+        for (let i = 0; i < n; i++) { sxx += (xs[i] - mx) ** 2; sxy += (xs[i] - mx) * (Y[i] - my); }
+        m = sxx === 0 ? 0 : sxy / sxx; b = my - m * mx;
+      } else {
+        let sxx = 0, sxy = 0;
+        for (let i = 0; i < n; i++) { sxx += xs[i] * xs[i]; sxy += xs[i] * Y[i]; }
+        m = sxx === 0 ? 0 : sxy / sxx; b = 0;
+      }
+      const f = (x: number) => (exp ? Math.exp(m * x + b) : m * x + b);
+      const src = nx ?? kx;
+      if (!src) return SimpleRangeValue.onlyValues(ys.map((_, i) => [f(i + 1)]) as any);
+      const g = (src.data as unknown[][]).map((row) => row.map((v) => { const x = num(v); return Number.isNaN(x) ? new CellError(ErrorType.VALUE) : f(x); }));
+      return g.length === 1 && g[0].length === 1 ? g[0][0] : SimpleRangeValue.onlyValues(g as any);
+    });
+  }
+  trend(ast: any, state: any) { return this.fit(ast, state, 'TREND', false); }
+  growth(ast: any, state: any) { return this.fit(ast, state, 'GROWTH', true); }
+}
 /** XTHISROW(ô): giá trị ô cùng hàng của cột bảng — mã nội bộ của [@Cột] */
 class TableRowPlugin extends FunctionPlugin {
   static implementedFunctions = { XTHISROW: { method: 'xthisrow', parameters: [{ argumentType: FunctionArgumentType.SCALAR }] } };
@@ -243,6 +282,7 @@ function ensurePlugins() {
   HyperFormula.unregisterFunction('MOD');
   HyperFormula.registerFunctionPlugin(ExcelIntPlugin as any, { enGB: { INT: 'INT', MOD: 'MOD' } } as any);
   HyperFormula.registerFunctionPlugin(ExcelForecastPlugin as any, { enGB: { FORECAST: 'FORECAST', 'FORECAST.LINEAR': 'FORECAST.LINEAR', INTERCEPT: 'INTERCEPT' } } as any);
+  HyperFormula.registerFunctionPlugin(TrendPlugin as any, { enGB: { TREND: 'TREND', GROWTH: 'GROWTH' } } as any);
   HyperFormula.unregisterFunction('TEXT');
   HyperFormula.registerFunctionPlugin(ExcelTextPlugin as any, { enGB: { TEXT: 'TEXT' } } as any);
   HyperFormula.unregisterFunction('FILTER');
@@ -3588,7 +3628,8 @@ function lit(v: unknown, inArray = false): string {
   if (typeof v === 'boolean') return inArray ? (v ? 'TRUE' : 'FALSE') : v ? 'TRUE()' : 'FALSE()';
   if (typeof v === 'string') return '"' + v.replace(/"/g, '""') + '"';
   const e = (v as any)?.value;
-  return typeof e === 'string' && e.startsWith('#') && !inArray ? e : '0';
+  // lỗi (trừ #CYCLE!) đưa nguyên vào hằng mảng/biểu thức để SUM… lan lỗi như Excel
+  return typeof e === 'string' && e.startsWith('#') && e !== '#CYCLE!' ? e : '0';
 }
 
 function newMeta(): SheetMeta {

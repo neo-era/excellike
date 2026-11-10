@@ -534,6 +534,14 @@ Tiêu chí: `ExcelLike-1.0-tieu-chi.md` (Bước 0 đã qua 2 chuyên gia độc
 - Tham chiếu vòng khi tắt Tính lặp (anh Lâm chọn): lặp tới khi ổn định như Excel, xét theo từng ô; ô không hội tụ hiện #CYCLE!; thanh trạng thái “Tham chiếu Vòng: F14”. Hiệu năng: bỏ qua khi sửa ô ngoài vùng vòng đọc/đổi định dạng; nhớ vòng không hội tụ (200 công thức đọc vòng không hội tụ: 179 ms).
 - Kiểm thử: unit 365/365 (tests/review10.test.ts, compat). Rà mã độc lập 2 vòng.
 
+## 6s. Bản 1.0.2 (10/11/2026) — đối chiếu tệp TMĐT CT1 (21.10.2026-v6)
+
+- Tệp lưu bằng openpyxl nhưng còn giá trị Excel lưu sẵn: 1.765 ô công thức. Trước khi sửa lệch 384 ô (chuỗi lỗi bắt nguồn từ TREND không có và INDEX một hàng); sau khi sửa khớp 1.746, lệch 19: 17 ô TREND ở trang ẩn Sheet1 Excel lưu #VALUE! (giá trị lưu sẵn cũ — cùng công thức ở trang TT38 Excel ra số), TT38!O18 (TREND với hai giá trị x bằng nhau — ExcelLike lấy trung bình y), THKP I24 (liên kết ngoài: Excel lưu #NAME?, ExcelLike hiện giá trị trong bộ nhớ đệm liên kết). Mở 1,6 s, lưu 1,6 s, lưu rồi mở lại không đổi ô nào.
+- TREND/GROWTH: hồi quy tuyến tính/hàm mũ một biến (const TRUE/FALSE), new_x là số hoặc vùng.
+- INDEX(vùng một hàng; n): đổi thành INDEX(vùng; 1; n) lúc tính (HyperFormula hiểu n là số hàng).
+- Vòng tham chiếu: ô lỗi (trừ #CYCLE!) được đưa nguyên vào hằng mảng khi lặp → SUM… ra lỗi như Excel.
+- Phát hiện trong tệp: TT38!P18 (Công trình giao thông) `=HLOOKUP($P$15;$D$15:$N$20;3;TRUE())` lấy hàng 3 (Công trình công nghiệp), trong khi Q18 lấy hàng 4 — nghi gõ nhầm (nên là 4).
+
 ## 7. Kiểm chứng cuối theo tiêu chí Bước 0
 
 | # | Tiêu chí | Kết quả |

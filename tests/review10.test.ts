@@ -95,4 +95,19 @@ describe('Đối chiếu tệp đèn LED do Excel lưu (04/11/2026)', () => {
     expect(() => w2.clear(s2, { r1: 0, c1: 5, r2: 0, c2: 6 })).toThrow(/một phần của mảng/);
     expect(() => w2.clear(s2, { r1: 0, c1: 4, r2: 0, c2: 6 })).not.toThrow();
   });
+  it('tệp TMĐT CT1 (10/11/2026): TREND, GROWTH; INDEX(vùng một hàng; n) lấy cột thứ n; lỗi trong vòng tham chiếu vẫn lan qua SUM', () => {
+    const wb = Workbook.create(); const s = wb.sheetIds()[0];
+    const t = (f: string) => { wb.setInput(s, 9, 9, f); const v: any = wb.value(s, 9, 9); return v && typeof v === 'object' ? v.value : v; };
+    wb.setInput(s, 0, 0, '10'); wb.setInput(s, 0, 1, '20'); wb.setInput(s, 1, 0, '0,036'); wb.setInput(s, 1, 1, '0,032');
+    expect(t('=ROUND(TREND(A2:B2;A1:B1;15);5)')).toBe(0.034);
+    expect(t('=TREND({2;4;6};{1;2;3};5)')).toBe(10);
+    expect(Math.round((t('=GROWTH({2;4;8};{1;2;3};4)') as number) * 1e6) / 1e6).toBe(16);
+    expect(t('=TREND(A2:B2;A1:B1;"x")')).toBe('#VALUE!');
+    wb.setInput(s, 2, 0, '10'); wb.setInput(s, 2, 1, '20'); wb.setInput(s, 2, 2, '50');
+    expect(t('=INDEX(A3:C3;2)')).toBe(20);
+    expect(t('=INDEX(A3:C3;1;3)')).toBe(50);
+    // vòng tham chiếu có ô lỗi: tổng ra lỗi như Excel
+    wb.setInput(s, 4, 0, '=#REF!+#REF!'); wb.setInput(s, 5, 0, '=A7'); wb.setInput(s, 6, 0, '=SUM(A5:A6)+0*A6');
+    expect(t('=A7')).toBe('#REF!');
+  });
 });

@@ -163,6 +163,16 @@ export function patchInterpreter(proto: any) {
       if (CUR) { const b = look(ast.expressionName); if (b instanceof Ref) return this.evaluateAst(b.ast, state); if (b !== undefined) return fin(b); }
     } else if (ast.type === 'FUNCTION_CALL') {
       const n: string = ast.procedureName;
+      // INDEX(vùng một hàng; n): Excel hiểu n là số cột (HyperFormula hiểu là số hàng → #NUM!)
+      if (n === 'INDEX' && ast.args?.length === 2) {
+        const g = ast.args[0];
+        if (g?.type === 'CELL_RANGE' && g.start && g.end) {
+          try {
+            const fa = state.formulaAddress, a1 = g.start.toSimpleCellAddress(fa), a2 = g.end.toSimpleCellAddress(fa);
+            if (a1.row === a2.row && a1.col !== a2.col) return orig.call(this, { ...ast, args: [g, { type: 'NUMBER', value: 1 }, ast.args[1]] }, state);
+          } catch { /* để bộ tính xử lý */ }
+        }
+      }
       // ISREF của HyperFormula chỉ nhận lỗi #REF!: làm như Excel — TRUE khi đối số là tham chiếu
       if (n === 'ISREF' && ast.args?.length === 1) {
         let x = subst(ast).args[0]; while (x?.type === 'PARENTHESIS') x = x.expression;
