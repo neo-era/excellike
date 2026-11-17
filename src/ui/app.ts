@@ -205,7 +205,12 @@ export class App {
       if (u0.rows === 0 && this.wb.sheetIds().length === 1) try { const n = applyTemplate(this.wb, this.grid.sheet, tpl); if (n) { this.wb.clearHistory(); this.updateTitle(); this.grid.layout(); this.scheduleSave(); } } catch (e) { this.toast('Không tạo được từ mẫu: ' + (e as Error).message, 'err'); }
     }
     const warn = sessionStorage.getItem('xl-warn');
-    if (warn) { sessionStorage.removeItem('xl-warn'); setTimeout(() => this.toast('Lưu ý khi mở tệp: ' + warn, 'err'), 400); }
+    if (warn) {
+      sessionStorage.removeItem('xl-warn');
+      // chỉ tô đỏ khi có vấn đề thật (hỏng, thiếu); tin "tệp .xls sẽ lưu thành .xlsx" là thông tin; để lâu, có nút Đóng
+      const bad = /CẢNH BÁO|chưa được nhập|không được giữ|Không đọc được|hỏng|bỏ qua|không hỗ trợ/i.test(warn);
+      setTimeout(() => this.toast((bad ? 'Lưu ý khi mở tệp: ' : '') + warn, bad ? 'err' : '', { label: 'Đóng', act: () => {} }, 15000), 400);
+    }
     this.wb.onChange(() => this.onBookChange());
     this.backstage = new Backstage(this);
     this.ribbon = new Ribbon(this.ribbonHost(), $('#ribbon'));
@@ -2988,7 +2993,7 @@ export class App {
   }
 
   // ---------- thông báo ----------
-  toast(msg: string, kind: 'ok' | 'err' | '' = '', action?: { label: string; act: () => void }) {
+  toast(msg: string, kind: 'ok' | 'err' | '' = '', action?: { label: string; act: () => void }, ms?: number) {
     const t = document.createElement('div');
     t.className = 'toast ' + kind;
     t.setAttribute('role', kind === 'err' ? 'alert' : 'status');
@@ -3001,8 +3006,9 @@ export class App {
       t.appendChild(b);
     }
     $('#toasts').appendChild(t);
-    setTimeout(() => t.classList.add('out'), action ? 5500 : 3200);
-    setTimeout(() => t.remove(), action ? 6000 : 3700);
+    const life = ms ?? (action ? 5500 : 3200);
+    setTimeout(() => t.classList.add('out'), life);
+    setTimeout(() => t.remove(), life + 500);
   }
 }
 

@@ -43,6 +43,7 @@ interface SheetFmt {
   name: string; ixfe: Map<number, number>; grid: boolean; zeros: boolean; rtl: boolean; frozen?: { x: number; y: number; top: number; left: number }; zoom?: number;
   defColW?: number; stdW?: number; defRowH?: number; setup?: { paper: number; scale: number; fitW: number; fitH: number; portrait?: boolean; valid: boolean; start?: number };
   zeroRows: number[];
+  calc: { iterate?: boolean; count?: number; delta?: number; manual?: boolean };
   cols: { c1: number; c2: number; w: number; hidden: boolean; level: number }[];
   fit: boolean; hc: boolean; vc: boolean; header?: string; footer?: string; hBreaks: number[]; vBreaks: number[]; tab?: number; drawings: boolean; cf: boolean; dv: boolean;
 }
@@ -88,7 +89,7 @@ export function parseBiffFormats(stream: Uint8Array) {
         if (depth === 1 && p > 0) { sheetBofs++; if (u16(2) !== 0x10) nonWs.add(p); }
         if (u16(2) === 0x10 && depth === 1) {
           const b = bounds.find((x) => x.pos === p);
-          if (b) { cur = { name: b.name, ixfe: new Map(), grid: true, zeros: true, rtl: false, zeroRows: [], cols: [], fit: false, hc: false, vc: false, hBreaks: [], vBreaks: [], drawings: false, cf: false, dv: false }; sheets.set(p, cur); }
+          if (b) { cur = { name: b.name, ixfe: new Map(), grid: true, zeros: true, rtl: false, zeroRows: [], calc: {}, cols: [], fit: false, hc: false, vc: false, hBreaks: [], vBreaks: [], drawings: false, cf: false, dv: false }; sheets.set(p, cur); }
         }
         break;
       }
@@ -222,6 +223,11 @@ function sheetRec(sh: SheetFmt, t: number, len: number, d: DataView, s: number, 
     case 0x41: { if (sh.frozen) sh.frozen = { x: u16(0), y: u16(2), top: u16(4), left: u16(6) }; else sh.frozen = { x: u16(0), y: u16(2), top: u16(4), left: u16(6), split: true } as any; break; } // Pane
     case 0xA0: { const a = u16(0), b = u16(2); if (b) sh.zoom = Math.round((a / b) * 100); break; } // Scl
     case 0x55: sh.defColW = u16(0); break;
+    // thiết lập tính toán (Excel ghi lặp lại ở mỗi trang): tính lặp, số lần, sai số, chế độ tính
+    case 0x11: sh.calc.iterate = !!u16(0); break; // ITERATION
+    case 0x0C: sh.calc.count = u16(0); break; // CALCCOUNT
+    case 0x10: if (len >= 8) sh.calc.delta = d.getFloat64(s, true); break; // DELTA
+    case 0x0D: sh.calc.manual = u16(0) === 0; break; // CALCMODE: 0 thủ công
     case 0x208: if (len >= 16 && ((u16(6) & 0x7fff) === 0 || (u16(12) & 0x20))) sh.zeroRows.push(u16(0)); break; // Row: cao 0 / ẩn
     case 0x7D: { const g = u16(8); sh.cols.push({ c1: u16(0), c2: Math.min(u16(2), 16383), w: u16(4) / 256, hidden: !!(g & 1), level: (g >> 8) & 7 }); break; } // ColInfo
     case 0x99: sh.stdW = u16(0) / 256; break;
@@ -456,7 +462,10 @@ export async function xlsToXlsx(buf: ArrayBuffer | Uint8Array): Promise<{ data: 
     defs.push(`<definedName name="${xe(nm)}"${n.Sheet !== undefined ? ` localSheetId="${n.Sheet}"` : ''}${n.Hidden ? ' hidden="1"' : ''}>${xe(ref)}</definedName>`);
   }
   const ext = [...usedBooks.keys()]; // đã theo thứ tự [1], [2]…
-  if (defs.length || ext.length) {
+  // Excel ghi cùng thiết lập ở mọi trang; lấy trang có bật tính lặp nếu có
+  const calc = fmt.sheets.find((x) => x.calc.iterate)?.calc ?? fmt.sheets.find((x) => x.calc.manual !== undefined)?.calc ?? {};
+  const calcAttr = [calc.iterate ? `iterate="1" iterateCount="${calc.count || 100}" iterateDelta="${calc.delta && isFinite(calc.delta) ? calc.delta : 0.001}"` : '', calc.manual ? 'calcMode="manual"' : ''].filter(Boolean).join(' ');
+  if (defs.length || ext.length || calcAttr) {
     const z = await JSZip.loadAsync(data);
     let wx = await z.file('xl/workbook.xml')!.async('string');
     let rx = await z.file('xl/_rels/workbook.xml.rels')!.async('string');
@@ -484,6 +493,7 @@ export async function xlsToXlsx(buf: ArrayBuffer | Uint8Array): Promise<{ data: 
     });
     const tail = (refs ? `<externalReferences>${refs}</externalReferences>` : '') + (defs.length ? `<definedNames>${defs.join('')}</definedNames>` : '');
     wx = wx.replace('</sheets>', () => `</sheets>${tail}`);
+    if (calcAttr) wx = /<calcPr\b/.test(wx) ? wx.replace(/<calcPr\b([^>]*?)(\/?)>/, (_m, a, sl) => `<calcPr${a} ${calcAttr}${sl}>`) : wx.replace('</workbook>', () => `<calcPr calcId="191029" ${calcAttr}/></workbook>`);
     if (!/xmlns:r=/.test(wx)) wx = wx.replace('<workbook ', '<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" ');
     z.file('xl/workbook.xml', wx); z.file('xl/_rels/workbook.xml.rels', rx); z.file('[Content_Types].xml', ct);
     data = await z.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });

@@ -158,6 +158,23 @@ describe('Mở tệp Excel 97–2003 (.xls)', () => {
     expect(Date.now() - t).toBeLessThan(60000);
     expect(process.memoryUsage().heapUsed).toBeLessThan(1.5e9);
   }, 120000);
+  it('giữ chế độ Tính lặp (ITERATION, CALCCOUNT, DELTA) của tệp .xls; lưu .xlsx ghi iterate="1"', async () => {
+    const b = patchStream(BASIC(), (s) => {
+      const d = new DataView(s.buffer, s.byteOffset, s.byteLength);
+      let p = 0, lastEof = -1;
+      while (p + 4 <= s.length) { const t = d.getUint16(p, true), l = d.getUint16(p + 2, true); if (t === 0x0A) lastEof = p; p += 4 + l; }
+      const f = new Uint8Array(new Float64Array([0.0005]).buffer);
+      const recs = [...rec(0x11, [1, 0]), ...rec(0x0C, [50, 0]), ...rec(0x10, [...f])];
+      const out = new Uint8Array(s.length + recs.length);
+      out.set(s.subarray(0, lastEof)); out.set(recs, lastEof); out.set(s.subarray(lastEof), lastEof + recs.length);
+      return out;
+    });
+    const { wb } = await open(b);
+    expect(wb.iterate).toMatchObject({ on: true, count: 50, delta: 0.0005 });
+    const JSZip = (await import('jszip')).default;
+    const wx = await (await JSZip.loadAsync(await writeXlsx(wb))).file('xl/workbook.xml')!.async('string');
+    expect(wx).toMatch(/<calcPr[^>]*iterate="1"/);
+  });
   it('.xlsx đặt mật khẩu (OLE2 EncryptedPackage) báo đúng là có mật khẩu', async () => {
     const cfb: any = XLSX.CFB.utils.cfb_new();
     XLSX.CFB.utils.cfb_add(cfb, 'EncryptionInfo', new Uint8Array(64));

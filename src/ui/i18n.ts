@@ -43,6 +43,8 @@ export function tr(s: string): string {
       break;
     }
   }
+  // nhiều dòng (danh sách lưu ý khi mở tệp…): dịch từng dòng
+  if (out === undefined && core.includes('\n')) { const parts = core.split('\n'), t = parts.map(tr); if (t.some((x, i) => x !== parts[i])) out = t.join('\n'); }
   // dòng ghép nhiều mục bằng “ · ” (cờ thanh trạng thái…): dịch từng mục
   if (out === undefined && core.includes(' · ')) { const parts = core.split(' · '), t = parts.map(tr); if (t.some((x, i) => x !== parts[i])) out = t.join(' · '); }
   return out === undefined ? s : m[1] + out + m[3];
