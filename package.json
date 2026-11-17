@@ -1,6 +1,6 @@
 {
   "name": "excellike",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,10 +8,10 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "e2e": "node e2e/run.mjs && node e2e/dot2.mjs && node e2e/dot3.mjs",
+    "e2e": "node e2e/run.mjs && node e2e/dot2.mjs && node e2e/dot3.mjs && node e2e/v11.mjs",
     "demo": "vite build --mode demo && node tools/artifact.mjs",
     "desktop": "npm run build && electron .",
-    "e2e:desktop": "xvfb-run -a node e2e/desktop.mjs",
+    "e2e:desktop": "xvfb-run -a node e2e/desktop.mjs && xvfb-run -a node e2e/desktop-xls.mjs",
     "build:win": "npm run build && node tools/build-win.mjs"
   },
   "devDependencies": {
@@ -66,6 +66,7 @@
     ]
   },
   "dependencies": {
+    "@e965/xlsx": "0.20.3",
     "nspell": "^2.1.5"
   }
 }

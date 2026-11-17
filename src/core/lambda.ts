@@ -50,7 +50,8 @@ const truth = (v: unknown): boolean | CellError | undefined => {
   if (v && typeof v === 'object' && typeof (v as any).val === 'number') return (v as any).val !== 0;
   return undefined; // mảng: để bộ tính xử lý như cũ
 };
-const numErr = () => new CellError(ErrorType.NUM, 'Đệ quy quá sâu');
+const ERR_NUM = ErrorType.NUM, CellErr = CellError; // lấy sẵn: gọi ở độ sâu đệ quy lớn
+const numErr = () => new CellErr(ERR_NUM, 'Đệ quy quá sâu');
 const BIN: Record<string, string> = { CONCATENATE_OP: 'concatOp', EQUALS_OP: 'equalOp', NOT_EQUAL_OP: 'notEqualOp', GREATER_THAN_OP: 'greaterThanOp', LESS_THAN_OP: 'lessThanOp', GREATER_THAN_OR_EQUAL_OP: 'greaterThanOrEqualOp', LESS_THAN_OR_EQUAL_OP: 'lessThanOrEqualOp', PLUS_OP: 'plusOp', MINUS_OP: 'minusOp', TIMES_OP: 'timesOp', POWER_OP: 'powerOp', DIV_OP: 'divOp' };
 const UN: Record<string, string> = { PLUS_UNARY_OP: 'unaryPlusOp', MINUS_UNARY_OP: 'unaryMinusOp', PERCENT_OP: 'percentOp' };
 const one = (v: unknown) => (v instanceof SimpleRangeValue && v.width() === 1 && v.height() === 1 ? (v.data as unknown[][])[0][0] : v);

@@ -604,6 +604,9 @@ html.desktop #backstage .bs-page { padding-top: 40px; }
 .ln-medium { border-top-width: 2px !important; }
 .ln-thick { border-top-width: 3px !important; }
 .ln-double { border-top: 3px double currentColor !important; }
+.ln-hair { border-top-style: dotted !important; opacity: .7; }
+.ln-dashDot, .ln-dashDotDot { border-top-style: dashed !important; }
+.ln-mediumDashed, .ln-mediumDashDot, .ln-mediumDashDotDot, .ln-slantDashDot { border-top-style: dashed !important; border-top-width: 2px !important; }
 .fc-bwrap { display: grid; grid-template-columns: auto 1fr; grid-template-rows: 1fr auto; gap: 8px; }
 .fc-bcol { display: flex; flex-direction: column; gap: 6px; }
 .fc-brow { grid-column: 2; display: flex; gap: 6px; flex-wrap: wrap; }

@@ -60,7 +60,7 @@ export function catOf(f: string | undefined): Cat {
   return 'custom';
 }
 
-const STYLES: [BorderStyle | 'none', string][] = [['none', 'Không'], ['dotted', 'Chấm'], ['dashed', 'Gạch'], ['thin', 'Mảnh'], ['medium', 'Vừa'], ['thick', 'Dày'], ['double', 'Kép']];
+const STYLES: [BorderStyle | 'none', string][] = [['none', 'Không'], ['hair', 'Chấm mảnh'], ['dotted', 'Chấm'], ['dashDotDot', 'Gạch chấm chấm'], ['dashDot', 'Gạch chấm'], ['dashed', 'Gạch'], ['thin', 'Mảnh'], ['mediumDashDotDot', 'Gạch chấm chấm vừa'], ['slantDashDot', 'Gạch chấm xiên'], ['mediumDashDot', 'Gạch chấm vừa'], ['mediumDashed', 'Gạch vừa'], ['medium', 'Vừa'], ['thick', 'Dày'], ['double', 'Kép']];
 type Edge = 't' | 'h' | 'b' | 'l' | 'v' | 'r' | 'd' | 'u';
 
 export function formatCellsDialog(app: App, tab: FcTab = 'num') {

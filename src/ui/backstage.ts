@@ -165,7 +165,7 @@ export class Backstage {
     } else if (page === 'open') {
       h1('Mở');
       const c = document.createElement('div'); c.className = 'bs-cmds';
-      c.appendChild(cmd('folder', 'Duyệt', 'Mở tệp .xlsx, .xlsm hoặc .csv trên máy (Ctrl+O)', () => { this.close(); app.openFile(); }, 'browse'));
+      c.appendChild(cmd('folder', 'Duyệt', 'Mở tệp .xlsx, .xlsm, .xls hoặc .csv trên máy (Ctrl+O)', () => { this.close(); app.openFile(); }, 'browse'));
       m.appendChild(c);
       const h2 = document.createElement('h2'); h2.textContent = 'Sổ làm việc gần đây'; m.appendChild(h2);
       this.recent(m, 50);

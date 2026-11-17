@@ -15,7 +15,7 @@ export async function pickFile(): Promise<{ file: File; handle?: any } | null> {
   if (desk()) { const f = await desk().openDialog(); return f ? deskToPicked(f) : null; }
   if (canPick()) {
     try {
-      const [handle] = await (window as any).showOpenFilePicker({ types: [{ description: 'Excel hoặc CSV', accept: { ...XLSX_TYPE.accept, ...XLSM_TYPE.accept, ...CSV_TYPE.accept } }], excludeAcceptAllOption: false });
+      const [handle] = await (window as any).showOpenFilePicker({ types: [{ description: 'Excel hoặc CSV', accept: { ...XLSX_TYPE.accept, ...XLSM_TYPE.accept, 'application/vnd.ms-excel': ['.xls'], ...CSV_TYPE.accept } }], excludeAcceptAllOption: false });
       return { file: await handle.getFile(), handle };
     } catch (e) {
       if ((e as Error).name === 'AbortError') return null;
@@ -24,7 +24,7 @@ export async function pickFile(): Promise<{ file: File; handle?: any } | null> {
   return new Promise((res) => {
     const inp = document.createElement('input');
     inp.type = 'file';
-    inp.accept = '.xlsx,.xlsm,.csv,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel.sheet.macroEnabled.12,text/csv';
+    inp.accept = '.xlsx,.xlsm,.xls,.csv,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel.sheet.macroEnabled.12,application/vnd.ms-excel,text/csv';
     inp.onchange = () => res(inp.files?.[0] ? { file: inp.files[0] } : null);
     inp.addEventListener('cancel', () => res(null));
     inp.click();
@@ -77,5 +77,5 @@ export async function saveBytes(data: Uint8Array | string, name: string, kind: '
   return { how: 'download' };
 }
 
-export const baseName = (n: string) => n.replace(/\.(xlsx|xlsm|csv|txt)$/i, '');
+export const baseName = (n: string) => n.replace(/\.(xlsx|xlsm|xls|csv|txt)$/i, '');
 export const isBookFile = (n: string) => /\.(xlsx|xlsm)$/i.test(n);

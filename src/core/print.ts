@@ -107,8 +107,8 @@ function cellCss(st: ReturnType<Workbook['style']>, cf: ReturnType<Workbook['cfS
   const side = (k: 't' | 'r' | 'b' | 'l', name: string) => {
     const b = st.bd?.[k];
     if (!b) return;
-    const w = b.s === 'thick' ? 3 : b.s === 'medium' ? 2 : b.s === 'double' ? 3 : 1;
-    const style = b.s === 'dashed' ? 'dashed' : b.s === 'dotted' ? 'dotted' : b.s === 'double' ? 'double' : 'solid';
+    const w = b.s === 'thick' || b.s === 'double' ? 3 : /^medium|^slant/.test(b.s) ? 2 : 1;
+    const style = /dash|slant/i.test(b.s) ? 'dashed' : b.s === 'dotted' || b.s === 'hair' ? 'dotted' : b.s === 'double' ? 'double' : 'solid';
     o.push(`border-${name}:${w}px ${style} ${b.c ?? '#000'}`);
   };
   side('t', 'top'); side('r', 'right'); side('b', 'bottom'); side('l', 'left');

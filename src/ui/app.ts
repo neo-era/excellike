@@ -244,7 +244,12 @@ export class App {
   }
   private dirtySave = false;
   /** Ctrl+S: đang mở tệp .xlsx có quyền ghi → lưu đè tệp; không thì lưu trong app */
-  save() { if (this.fileHandle && this.bookFileOk()) this.saveXlsx(false); else this.saveNow(true); }
+  save() {
+    if (this.fileHandle && this.bookFileOk()) this.saveXlsx(false);
+    // mở từ .xls: Ctrl+S lưu thành .xlsx mới (không ghi đè tệp .xls gốc)
+    else if (/\.xls$/i.test(this.fileName)) this.saveXlsx(true);
+    else this.saveNow(true);
+  }
   /** tệp đang mở ghi lại được đúng định dạng: .xlsx, hoặc .xlsm khi sổ còn macro (không ghi sổ thường vào tên .xlsm) */
   private bookFileOk(name = this.fileName) { return /\.xlsx$/i.test(name) || (/\.xlsm$/i.test(name) && this.wb.hasMacros()); }
 
@@ -1242,7 +1247,33 @@ export class App {
       this.toast('Đang mở ' + file.name + '…');
       // đọc thành dữ liệu sổ rồi nạp lại trang: sổ chỉ dựng một lần (khi khởi động), không dựng hai lần như trước
       const { readXlsxBook } = await import('../core/xlsx');
-      const { book, warnings } = await readXlsxBook(new Uint8Array(await file.arrayBuffer()));
+      let bytes = new Uint8Array(await file.arrayBuffer());
+      const pre: string[] = [];
+      // Excel 97–2003 (.xls): đổi sang .xlsx trong bộ nhớ rồi mở như tệp .xlsx; tệp gốc không bị ghi đè
+      const { isXlsBytes, xlsToXlsx } = await import('../core/xls');
+      const isZip = bytes[0] === 0x50 && bytes[1] === 0x4b;
+      // tệp đuôi .xls thực chất là văn bản (phần mềm khác xuất ra): HTML báo rõ; CSV/TSV nhập như CSV
+      if (!isZip && !isXlsBytes(bytes) && /\.xls$/i.test(file.name)) {
+        const u16 = bytes[0] === 0xff && bytes[1] === 0xfe; // "Văn bản Unicode" của Excel (UTF-16)
+        const text = new TextDecoder(u16 ? 'utf-16le' : 'utf-8').decode(bytes).replace(/^\uFEFF/, '');
+        if (/[\u0000-\u0008\u000E-\u001A]/.test(text.slice(0, 4000))) throw new Error('tệp .xls bị hỏng hoặc không phải tệp Excel/văn bản.');
+        const head = text.slice(0, 2000).trimStart();
+        if (/^<(\?xml|!doctype|html|table|meta|head|body)/i.test(head)) throw new Error('tệp .xls này thực chất là trang HTML/XML do phần mềm khác xuất. Hãy mở bằng Excel rồi lưu lại thành .xlsx.');
+        const id = this.wb.importCSV(text, baseName(file.name).slice(0, 31).replace(/[\\/?*[\]:]/g, '_'));
+        this.grid.setSheet(id); this.renderSheets();
+        this.toast(`Tệp ${file.name} là văn bản phân cách (CSV/TSV): đã nhập vào sheet mới.`, 'ok');
+        return;
+      }
+      if (!isZip && isXlsBytes(bytes)) {
+        const r = await xlsToXlsx(bytes).catch((e: Error) => {
+          // lỗi kỹ thuật (tiếng Anh) từ thư viện → thông báo tiếng Việt
+          throw /[ăâđêôơưạ-ỹ]/i.test(String(e?.message)) ? e : new Error('tệp .xls bị hỏng hoặc không đúng định dạng Excel 97–2003.');
+        });
+        bytes = r.data;
+        pre.push('Tệp Excel 97–2003 (.xls): khi lưu, ExcelLike lưu thành tệp .xlsx mới (tệp .xls gốc giữ nguyên).', ...r.warnings);
+      }
+      const { book, warnings: w0 } = await readXlsxBook(bytes);
+      const warnings = [...pre, ...w0];
       await this.saveNow(false);
       const id = 'b' + Date.now();
       await saveBook({ id, name: baseName(file.name), updated: Date.now(), data: { ...book, name: baseName(file.name), pendingImport: true } as any, handle, fileName: file.name });

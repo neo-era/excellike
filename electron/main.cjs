@@ -13,7 +13,7 @@ const LIC_CFG = require('./license-config.cjs');
 const TEST = !app.isPackaged ? process.env : {};
 if (TEST.XL_USER_DATA) app.setPath('userData', TEST.XL_USER_DATA);
 const DIST = path.join(__dirname, '..', 'dist');
-const OPENABLE = /\.(xlsx|xlsm|csv|txt)$/i;
+const OPENABLE = /\.(xlsx|xlsm|xls|csv|txt)$/i;
 const CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'";
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }]);
@@ -341,7 +341,7 @@ ipcMain.handle('xl:startup-file', async () => {
 ipcMain.handle('xl:open-dialog', async () => {
   let p = TEST.XL_TEST_OPEN;
   if (!p) {
-    const r = await dialog.showOpenDialog(win, { title: 'Mở tệp', properties: ['openFile'], filters: [{ name: 'Excel hoặc CSV', extensions: ['xlsx', 'xlsm', 'csv', 'txt'] }, { name: 'Mọi tệp', extensions: ['*'] }] });
+    const r = await dialog.showOpenDialog(win, { title: 'Mở tệp', properties: ['openFile'], filters: [{ name: 'Excel hoặc CSV', extensions: ['xlsx', 'xlsm', 'xls', 'csv', 'txt'] }, { name: 'Mọi tệp', extensions: ['*'] }] });
     if (r.canceled || !r.filePaths[0]) return null;
     p = r.filePaths[0];
   }
@@ -383,6 +383,13 @@ ipcMain.handle('xl:save', async (_e, { path: p, name, kind, data, saveAs }) => {
       if (r.canceled || !r.filePath) return null;
       target = r.filePath;
     }
+  }
+  // sổ tính chỉ ghi vào tệp đuôi .xlsx/.xlsm (không bao giờ ghi đè tệp .xls gốc hay tệp khác bằng nội dung .xlsx)
+  if (kind !== 'csv' && !/\.(xlsx|xlsm)$/i.test(target)) {
+    // đổi đuôi sau hộp thoại: không ghi đè tệp đã có mà người dùng chưa được hỏi → thêm (1), (2)…
+    const base = target.replace(/\.(xls|xlsb|xlt|csv|txt)$/i, ''), ext = kind === 'xlsm' ? '.xlsm' : '.xlsx';
+    target = base + ext;
+    for (let i = 1; fsSync.existsSync(target) && i < 1000; i++) target = `${base} (${i})${ext}`;
   }
   // sổ có macro nhưng người dùng chọn đuôi .xlsx: báo lại để ứng dụng tạo bản không macro (không ghi bản .xlsm sai đuôi)
   if (kind === 'xlsm' && /\.xlsx$/i.test(target)) { allow(target); return { path: target, name: path.basename(target), plain: true }; }

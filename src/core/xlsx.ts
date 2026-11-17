@@ -82,7 +82,7 @@ function paramPrefixes(f: string) {
 }
 const stripPrefixes = (f: string) => f.replace(/_xlfn\._xlws\.|_xlfn\.|_xlws\.|_xlpm\./g, '');
 
-const BORDER_IN: Record<string, BorderStyle> = { thin: 'thin', hair: 'thin', medium: 'medium', thick: 'thick', dashed: 'dashed', mediumDashed: 'dashed', dashDot: 'dashed', mediumDashDot: 'dashed', dashDotDot: 'dotted', mediumDashDotDot: 'dotted', slantDashDot: 'dashed', dotted: 'dotted', double: 'double' };
+const BORDER_IN: Record<string, BorderStyle> = { thin: 'thin', hair: 'hair', medium: 'medium', thick: 'thick', dashed: 'dashed', mediumDashed: 'mediumDashed', dashDot: 'dashDot', mediumDashDot: 'mediumDashDot', dashDotDot: 'dashDotDot', mediumDashDotDot: 'mediumDashDotDot', slantDashDot: 'slantDashDot', dotted: 'dotted', double: 'double' };
 const OP_IN: Record<string, CFRule['op']> = { greaterThan: 'gt', lessThan: 'lt', greaterThanOrEqual: 'ge', lessThanOrEqual: 'le', equal: 'eq', notEqual: 'ne', between: 'between', notBetween: 'notBetween' };
 const OP_OUT = Object.fromEntries(Object.entries(OP_IN).map(([k, v]) => [v, k]));
 
@@ -456,6 +456,13 @@ export async function readXlsxBook(buf: ArrayBuffer | Uint8Array): Promise<{ boo
       rezip = true;
     }
   }
+  // tên vùng đã tự đọc ở trên: chỉ để lại tiêu đề in cho ExcelJS (ExcelJS trải tên vùng ra từng ô,
+  // vùng lớn như A1:IU65535 làm tràn bộ nhớ)
+  {
+    const keep = (t: string) => /\bname="_xlnm\.Print_Titles"/i.test(t);
+    const wx2 = wbXml.replace(/<((?:\w+:)?)definedName\b[^>]*>[\s\S]*?<\/(?:\w+:)?definedName>/g, (t) => (keep(t) ? t : ''));
+    if (wx2 !== wbXml) { zip.file('xl/workbook.xml', wx2); rezip = true; }
+  }
   const data = rezip ? await zip.generateAsync({ type: 'uint8array' }) : buf;
 
   const x = new ExcelJS.Workbook();
@@ -469,8 +476,11 @@ export async function readXlsxBook(buf: ArrayBuffer | Uint8Array): Promise<{ boo
   for (const fd of fastBy.values()) for (const cl of fd.cells) {
     const f: any = xfs[cl.s]?.font; if (f?.name) { const k = f.name + '|' + (f.size ?? 11); fontCount.set(k, (fontCount.get(k) ?? 0) + 1); }
   }
-  const [defName, defSizeS] = ([...fontCount.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'Calibri|11').split('|');
-  const defSize = +defSizeS;
+  const [defName0, defSizeS] = ([...fontCount.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'Calibri|11').split('|');
+  // phông phổ biến nhất chỉ được coi là "mặc định" (bỏ khỏi kiểu ô) khi là phông chuẩn Calibri/Aptos 11;
+  // tệp dùng phông khác (Times New Roman, .VnTime…) giữ phông trên từng ô, không đổi sang phông của app
+  const stdDef = /^(Calibri|Aptos|Aptos Narrow)$/i.test(defName0) && +defSizeS === 11;
+  const defName = stdDef ? defName0 : '', defSize = stdDef ? +defSizeS : 11;
   // kiểu ô: dựng một lần cho mỗi xf rồi dùng chung (đối tượng kiểu không bị sửa tại chỗ)
   const styleCache = new Map<number, Style | null>();
   const styleOf = (sIdx: number): Style | null => {
@@ -676,7 +686,7 @@ function styleIn(cell: ExcelJS.Cell, defName: string, defSize: number): Style | 
     if (h) st.al = h as Style['al'];
     const hx = { fill: 'fill', justify: 'just', centerContinuous: 'cas', distributed: 'dist' }[al.horizontal as string];
     if (hx) st.hx = hx as Style['hx'];
-    const v = { top: 't', middle: 'm' }[al.vertical as string];
+    const v = { top: 't', middle: 'm', center: 'm' }[al.vertical as string];
     if (v) st.va = v as Style['va'];
     if (al.wrapText) st.wr = true;
     if (al.shrinkToFit) st.shk = true;
@@ -765,6 +775,7 @@ export async function writeXlsx(wb: Workbook, opts: { macro?: boolean } = {}): P
   x.created = new Date();
   const json = wb.toJSON();
   const dsLists: string[][] = [];
+  const rawMerges: Range[][] = [];
   json.sheets.forEach((sh, si) => {
     const id = wb.sheetIds()[si];
     const fz = sh.freeze ?? { rows: 0, cols: 0 };
@@ -773,11 +784,14 @@ export async function writeXlsx(wb: Workbook, opts: { macro?: boolean } = {}): P
       properties: { defaultColWidth: px2w(sh.colDef ?? 64), defaultRowHeight: px2pt(sh.rowDef ?? 20), ...(sh.tabColor ? { tabColor: { argb: 'FF' + sh.tabColor.replace('#', '').toUpperCase() } } : {}) } as any,
       ...(sh.state === 'hidden' ? { state: 'hidden' } : {}),
     } as any);
-    for (const [c, w] of sh.colW ?? []) { const col = ws.getColumn(c + 1); if (w === 0) col.hidden = true; else col.width = px2w(w); }
-    for (const c of sh.hiddenCols ?? []) { const col = ws.getColumn(c + 1); if (!col.width) col.width = px2w(sh.colDef ?? 64); col.hidden = true; }
+    // ExcelJS bỏ cột rộng đúng 9 (coi là mặc định) → nhích 1/256 ký tự
+    const w9 = (w: number) => (w === 9 ? 9 + 1 / 256 : w);
+    for (const [c, w] of sh.colW ?? []) { const col = ws.getColumn(c + 1); if (w === 0) col.hidden = true; else col.width = w9(px2w(w)); }
+    for (const c of sh.hiddenCols ?? []) { const col = ws.getColumn(c + 1); if (!col.width) col.width = w9(px2w(sh.colDef ?? 64)); col.hidden = true; }
     if (sh.colDef) for (let c = 1; c <= Math.max(1, wb.used(id).cols); c++) { const col = ws.getColumn(c); if (!col.width && !col.hidden) col.width = px2w(sh.colDef); }
     for (const [r, h] of sh.rowH ?? []) { const row = ws.getRow(r + 1); if (h === 0) row.hidden = true; else row.height = px2pt(h); }
-    for (const r of sh.hiddenRows ?? []) ws.getRow(r + 1).hidden = true;
+    // ExcelJS không ghi hàng chỉ có cờ ẩn (không ô, không chiều cao) → đặt chiều cao để hàng ẩn trống vẫn được ghi
+    for (const r of sh.hiddenRows ?? []) { const row = ws.getRow(r + 1); row.hidden = true; if (!row.height) row.height = px2pt(sh.rowDef ?? 20); }
     // nhóm hàng/cột (đại cương), hàng/cột tổng đang thu gọn
     if (sh.outline) {
       for (const [r, L] of Object.entries(sh.outline.r)) ws.getRow(+r + 1).outlineLevel = L;
@@ -806,7 +820,15 @@ export async function writeXlsx(wb: Workbook, opts: { macro?: boolean } = {}): P
       const r = Math.floor(k / 16384), c = k % 16384;
       styleOut(ws.getCell(r + 1, c + 1), st, wb, id, r, c);
     }
-    for (const g of sh.merges ?? []) (ws as any).mergeCellsWithoutStyle(g.r1 + 1, g.c1 + 1, g.r2 + 1, g.c2 + 1);
+    // ô gộp mà ô phụ (không phải ô đầu) còn dữ liệu/công thức — Excel vẫn giữ và tính các ô đó (vd F8 = SUM(…) trong vùng gộp A8:F8).
+    // ExcelJS gộp thì xóa ô phụ → mất dữ liệu; các vùng này tự ghi thẻ mergeCell ở bước sau.
+    const keep: Range[] = [];
+    for (const g of sh.merges ?? []) {
+      let busy = false;
+      for (let r = g.r1; r <= g.r2 && !busy; r++) for (let c = g.c1; c <= g.c2; c++) { if (r === g.r1 && c === g.c1) continue; const raw = sh.cells[r]?.[c]; if (raw !== null && raw !== undefined && raw !== '') { busy = true; break; } }
+      if (busy) keep.push(g); else (ws as any).mergeCellsWithoutStyle(g.r1 + 1, g.c1 + 1, g.r2 + 1, g.c2 + 1);
+    }
+    rawMerges[si] = keep;
     for (const rule of sh.cf ?? []) {
       const out = cfOut(rule);
       if (out) ws.addConditionalFormatting({ ref: refOut(rule.range), rules: [out] } as any);
@@ -844,6 +866,7 @@ export async function writeXlsx(wb: Workbook, opts: { macro?: boolean } = {}): P
     return out2;
   });
   if (spillAt.some((x) => x.length)) out = await addDynamicArrays(out, spillAt);
+  if (rawMerges.some((x) => x?.length)) out = await addRawMerges(out, rawMerges);
   if (wb.sheetIds().some((id) => wb.meta(id).sparks?.length)) out = await addSparklines(out, wb);
   if (wb.bookProtect || wb.sheetIds().some((id) => wb.meta(id).protect || wb.meta(id).allowRanges?.length)) out = await addProtection(out, wb);
   const macro = (opts.macro ?? true) && !!wb.vba;
@@ -936,6 +959,26 @@ async function addSparklines(buf: Uint8Array, wb: Workbook): Promise<Uint8Array>
     const grp = gs.map((g) => `<x14:sparklineGroup${g.type !== 'line' ? ` type="${g.type}"` : ''} displayEmptyCellsAs="gap"${g.markers ? ' markers="1"' : ''}${g.hi ? ' high="1"' : ''}${g.lo ? ' low="1"' : ''}${g.first ? ' first="1"' : ''}${g.last ? ' last="1"' : ''}${g.negPts ? ' negative="1"' : ''}><x14:colorSeries rgb="${c(g.color)}"/><x14:colorNegative rgb="${c(g.neg ?? '#C00000')}"/><x14:colorAxis rgb="FF000000"/><x14:colorMarkers rgb="${c(g.color)}"/><x14:colorFirst rgb="FF7030A0"/><x14:colorLast rgb="FF7030A0"/><x14:colorHigh rgb="FF00B050"/><x14:colorLow rgb="FFC00000"/><x14:sparklines>${g.items.map((it) => `<x14:sparkline><xm:f>${xesc(quoteSheet(wb.sheetName(it.src.sheet)))}!${absRef(it.src.range)}</xm:f><xm:sqref>${colName(it.c)}${it.r + 1}</xm:sqref></x14:sparkline>`).join('')}</x14:sparklines></x14:sparklineGroup>`).join('');
     const ext = `<ext uri="{05C60535-1F16-4fd2-B633-F4F36F0B64E0}" xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main"><x14:sparklineGroups xmlns:xm="http://schemas.microsoft.com/office/excel/2006/main">${grp}</x14:sparklineGroups></ext>`;
     xml = /<extLst>/.test(xml) ? xml.replace('</extLst>', ext + '</extLst>') : xml.replace('</worksheet>', `<extLst>${ext}</extLst></worksheet>`);
+    zip.file(path, xml);
+  }
+  return new Uint8Array(await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' }));
+}
+/** ghi thẻ mergeCell cho các vùng gộp có ô phụ còn dữ liệu (giữ nguyên dữ liệu ô phụ như Excel) */
+export async function addRawMerges(buf: Uint8Array, all: Range[][]): Promise<Uint8Array> {
+  const zip = await JSZip.loadAsync(buf);
+  for (let i = 0; i < all.length; i++) {
+    if (!all[i]?.length) continue;
+    const path = `xl/worksheets/sheet${i + 1}.xml`;
+    let xml = await zip.file(path)?.async('string');
+    if (!xml) continue;
+    const items = all[i].map((g) => `<mergeCell ref="${rangeToA1(g)}"/>`).join('');
+    if (/<mergeCells\b[^>]*>/.test(xml)) {
+      xml = xml.replace(/<mergeCells\b[^>]*>([\s\S]*?)<\/mergeCells>/, (_m, inner: string) => { const all2 = inner + items; return `<mergeCells count="${(all2.match(/<mergeCell\b/g) ?? []).length}">${all2}</mergeCells>`; });
+    } else {
+      const block = `<mergeCells count="${all[i].length}">${items}</mergeCells>`;
+      const m = /<(phoneticPr|conditionalFormatting|dataValidations|hyperlinks|printOptions|pageMargins|pageSetup|headerFooter|rowBreaks|colBreaks|customProperties|cellWatches|ignoredErrors|smartTags|drawing|legacyDrawing|legacyDrawingHF|picture|oleObjects|controls|webPublishItems|tableParts|extLst)\b/.exec(xml);
+      xml = m ? xml.slice(0, m.index) + block + xml.slice(m.index) : xml.replace('</worksheet>', block + '</worksheet>');
+    }
     zip.file(path, xml);
   }
   return new Uint8Array(await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' }));

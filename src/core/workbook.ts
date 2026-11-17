@@ -19,7 +19,9 @@ import type { Chart, Ref } from './chart';
 import { computePivot, type PivotSpec } from './pivot';
 import { cfEval, cfStats, dvDescribe, inR, numOf, compare, type CFRule, type CFResult, type CFStats, type DVRule } from './rules';
 
-export type BorderStyle = 'thin' | 'medium' | 'thick' | 'dashed' | 'dotted' | 'double';
+export type BorderStyle = 'thin' | 'medium' | 'thick' | 'dashed' | 'dotted' | 'double'
+  // đủ 13 kiểu nét của Excel (1.1): chấm mảnh, gạch vừa, gạch-chấm…
+  | 'hair' | 'mediumDashed' | 'dashDot' | 'mediumDashDot' | 'dashDotDot' | 'mediumDashDotDot' | 'slantDashDot';
 export interface Border { s: BorderStyle; c?: string }
 export interface Style {
   b?: boolean; i?: boolean; u?: boolean; s?: boolean;
@@ -159,6 +161,31 @@ class ExcelIntPlugin extends FunctionPlugin {
       d === 0 ? new CellError(ErrorType.DIV_BY_ZERO) : n - d * Math.floor(n / d));
   }
 }
+/** làm tròn kiểu Excel: số được làm sạch về 15 chữ số có nghĩa trước khi làm tròn
+ *  (ROUND(519,81*0,25;3) = 129,953 dù phép nhân ra 129,95249999999999; ROUNDUP(0,1+0,2;1) = 0,3) */
+export function xlRound(x: number, places: number, mode: 'near' | 'up' | 'down'): number {
+  if (!isFinite(x) || x === 0) return x;
+  const p = Math.trunc(places);
+  if (p > 308) return x;
+  if (p < -308) return 0;
+  const clean = (v: number) => (v === 0 || !isFinite(v) ? v : Number(v.toPrecision(15)));
+  const a = clean(Math.abs(x));
+  const k = Math.pow(10, Math.abs(p));
+  const sc = clean(p >= 0 ? a * k : a / k);
+  const r = mode === 'near' ? Math.floor(sc + 0.5) : mode === 'up' ? Math.ceil(sc) : Math.floor(sc);
+  const out = p >= 0 ? r / k : r * k;
+  return x < 0 && out !== 0 ? -out : out;
+}
+class ExcelRoundPlugin extends FunctionPlugin {
+  static implementedFunctions = {
+    ROUND: { method: 'round', parameters: [{ argumentType: FunctionArgumentType.NUMBER }, { argumentType: FunctionArgumentType.NUMBER, defaultValue: 0 }] },
+    ROUNDUP: { method: 'roundup', parameters: [{ argumentType: FunctionArgumentType.NUMBER }, { argumentType: FunctionArgumentType.NUMBER, defaultValue: 0 }] },
+    ROUNDDOWN: { method: 'rounddown', parameters: [{ argumentType: FunctionArgumentType.NUMBER }, { argumentType: FunctionArgumentType.NUMBER, defaultValue: 0 }] },
+  };
+  round(ast: any, state: any) { return (this as any).runFunction(ast.args, state, (this as any).metadata('ROUND'), (x: number, p: number) => xlRound(x, p, 'near')); }
+  roundup(ast: any, state: any) { return (this as any).runFunction(ast.args, state, (this as any).metadata('ROUNDUP'), (x: number, p: number) => xlRound(x, p, 'up')); }
+  rounddown(ast: any, state: any) { return (this as any).runFunction(ast.args, state, (this as any).metadata('ROUNDDOWN'), (x: number, p: number) => xlRound(x, p, 'down')); }
+}
 /**
  * TEXT(giá_trị; mã_định_dạng) như Excel chạy trên Windows tiếng Việt: trong mã định dạng của TEXT, "," là dấu thập phân,
  * "." là dấu nhóm nghìn (Excel đọc mã theo vùng của máy) — TEXT(29;"#,##0") = "29,0", TEXT(1234,5;"#.##0") = "1.235".
@@ -174,6 +201,17 @@ export function swapSeps(fmt: string): string {
   }
   return o;
 }
+/** số → chữ như Excel tiếng Việt (toán tử &, CONCATENATE, LEFT…): tối đa 15 chữ số có nghĩa, dấu thập phân ',' */
+export function numText(n: number): string {
+  if (!isFinite(n)) return String(n);
+  if (n === 0) return '0';
+  const [m0, e] = n.toPrecision(15).split('e');
+  const m = m0.includes('.') ? m0.replace(/0+$/, '').replace(/\.$/, '') : m0;
+  if (e === undefined) return m.replace('.', ',');
+  const ex = +e;
+  return m.replace('.', ',') + 'E' + (ex < 0 ? '-' : '+') + String(Math.abs(ex)).padStart(2, '0');
+}
+(globalThis as any).__xlNumText = numText;
 class ExcelTextPlugin extends FunctionPlugin {
   static implementedFunctions = { TEXT: { method: 'text', parameters: [{ argumentType: FunctionArgumentType.SCALAR }, { argumentType: FunctionArgumentType.STRING }] } };
   text(ast: any, state: any) {
@@ -281,6 +319,7 @@ function ensurePlugins() {
   HyperFormula.unregisterFunction('INT');
   HyperFormula.unregisterFunction('MOD');
   HyperFormula.registerFunctionPlugin(ExcelIntPlugin as any, { enGB: { INT: 'INT', MOD: 'MOD' } } as any);
+  HyperFormula.registerFunctionPlugin(ExcelRoundPlugin as any, { enGB: { ROUND: 'ROUND', ROUNDUP: 'ROUNDUP', ROUNDDOWN: 'ROUNDDOWN' } } as any);
   HyperFormula.registerFunctionPlugin(ExcelForecastPlugin as any, { enGB: { FORECAST: 'FORECAST', 'FORECAST.LINEAR': 'FORECAST.LINEAR', INTERCEPT: 'INTERCEPT' } } as any);
   HyperFormula.registerFunctionPlugin(TrendPlugin as any, { enGB: { TREND: 'TREND', GROWTH: 'GROWTH' } } as any);
   HyperFormula.unregisterFunction('TEXT');
@@ -3519,7 +3558,10 @@ export class Workbook {
         const scope = n.scope !== undefined ? wb.hf.getSheetId(n.scope) : undefined;
         if (n.scope !== undefined && scope === undefined) continue;
         const enc = encName(n.name);
-        const fx = encFormulaNames(offsetIn(n.expr[0] === '=' ? n.expr : '=' + n.expr, undefined, ''));
+        let fx = encFormulaNames(offsetIn(n.expr[0] === '=' ? n.expr : '=' + n.expr, undefined, ''));
+        // tên trỏ tới vùng từ hàng 1 tới hàng cuối của tệp .xls (65535/65536) hoặc .xlsx: coi là nguyên cột
+        // (HyperFormula trải giá trị tên ra từng ô → vùng $A$1:$IU$65535 làm tràn bộ nhớ)
+        { const m = /^=((?:'(?:[^']|'')+'|[^'!:=]+)!)?(\$?[A-Z]{1,3})\$?1:(\$?[A-Z]{1,3})\$?(\d+)$/i.exec(fx); if (m && [65535, 65536, 1048576].includes(+m[4])) fx = `=${m[1] ?? ''}${m[2]}:${m[3]}`; }
         const opts: any = {}; if (n.comment) opts.comment = n.comment; if (n.hidden) opts.hidden = true;
         try { if (wb.hf.isItPossibleToAddNamedExpression(enc, fx, scope)) { wb.hf.addNamedExpression(enc, fx, scope, Object.keys(opts).length ? opts : undefined); disp.set(enc.toUpperCase(), n.name); } } catch { /* tên lỗi: bỏ qua */ }
       }

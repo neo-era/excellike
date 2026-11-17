@@ -24,6 +24,20 @@ type Drag =
   | { kind: 'mv'; src: Range; dr0: number; dc0: number; r: number; c: number; mode: 'move' | 'copy' | 'insert'; dir: 'down' | 'right' };
 
 // phông ô và phông tiêu đề lấy từ CSS (--font-cell: Aptos Narrow/Calibri; --font-ui: Segoe UI)
+/** độ dày nét viền (px) theo kiểu Excel */
+export function borderWidth(s: string): number { return s === 'thick' ? 3 : s === 'medium' || s === 'mediumDashed' || s === 'mediumDashDot' || s === 'mediumDashDotDot' || s === 'slantDashDot' ? 2 : 1; }
+/** mẫu nét đứt theo kiểu Excel */
+export function borderDash(s: string, z = 1): number[] {
+  switch (s) {
+    case 'dashed': return [4 * z, 2 * z];
+    case 'dotted': return [1, 2];
+    case 'hair': return [1, 1];
+    case 'mediumDashed': return [8 * z, 3 * z];
+    case 'dashDot': case 'mediumDashDot': case 'slantDashDot': return [8 * z, 3 * z, 2 * z, 3 * z];
+    case 'dashDotDot': case 'mediumDashDotDot': return [8 * z, 3 * z, 2 * z, 3 * z, 2 * z, 3 * z];
+    default: return [];
+  }
+}
 let FONT = "'Aptos Narrow', Calibri, 'Segoe UI', sans-serif";
 let UIFONT = "'Segoe UI', system-ui, sans-serif";
 const OUT = 14; // ô vuông dải đại cương (px ở 100%)
@@ -574,9 +588,9 @@ export class Grid {
         const edge = (b: Border | undefined, x1: number, y1: number, x2: number, y2: number) => {
           if (!b) return;
           ctx.strokeStyle = b.c || C.fg;
-          const lw = b.s === 'thick' ? 3 : b.s === 'medium' ? 2 : 1;
+          const lw = borderWidth(b.s);
           ctx.lineWidth = lw;
-          ctx.setLineDash(b.s === 'dashed' ? [4 * z, 2 * z] : b.s === 'dotted' ? [1, 2] : []);
+          ctx.setLineDash(borderDash(b.s, z));
           const off = lw % 2 ? 0.5 : 0;
           ctx.beginPath();
           if (b.s === 'double') {
