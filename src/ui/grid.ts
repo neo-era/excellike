@@ -671,6 +671,47 @@ export class Grid {
     return !!m && m.r1 === g.r1 && m.r2 === g.r2 && m.c1 === g.c1 && m.c2 === g.c2;
   }
   /** Chiều cao hàng cần để hiện đủ chữ (ô xuống dòng, chữ to) — theo đơn vị px ở mức 100% */
+  /**
+   * Đổi độ rộng cột rồi chỉnh chiều cao các hàng có chữ xuống dòng ở các cột đó để chữ không bị che (như Excel):
+   * hàng đang vừa khít chữ (tự động) thì co/giãn theo; hàng đặt cao tay chỉ giãn thêm khi chữ không đủ chỗ.
+   * Một bước Hoàn tác cho cả độ rộng cột lẫn chiều cao hàng.
+   */
+  private manualH = new Map<string, number>();
+  changeColWidths(cols: number[], apply: () => void) {
+    const s = this.sheet, u = this.wb.used(s), m = this.m;
+    const set = new Set(cols);
+    const rows: number[] = [];
+    const rmax = Math.min(u.rows, 20000);
+    for (let r = 0; r < rmax && rows.length < 5000; r++) {
+      if (this.wb.isRowHidden(s, r)) continue;
+      for (const c of set) {
+        if (c >= u.cols) continue;
+        const g = this.wb.mergeAt(s, r, c);
+        if (g && g.r1 !== g.r2) continue; // ô gộp nhiều hàng: Excel không tự khớp
+        const ar = g ? g.r1 : r, ac = g ? g.c1 : c;
+        if (!this.wb.style(s, ar, ac)?.wr || !this.wb.rawText(s, ar, ac)) continue;
+        rows.push(r); break;
+      }
+    }
+    const def = m.rowH.def;
+    const old = rows.map((r) => this.neededHeight(r));
+    this.wb.group(() => {
+      apply();
+      const list: [number, number][] = [];
+      rows.forEach((r, i) => {
+        const cur = m.rowH.get(r), now = Math.max(def, this.neededHeight(r));
+        const key = s + ':' + r, floor = this.manualH.get(key);
+        const auto = Math.abs(cur - Math.max(def, old[i])) <= 1;
+        // hàng đặt cao tay bị giãn để vừa chữ: nhớ chiều cao cũ để khi nới cột chỉ co về đúng mức đó
+        if (!auto && now > cur) this.manualH.set(key, cur);
+        const target = auto ? Math.max(now, floor ?? 0) : Math.max(cur, now);
+        if (auto && floor !== undefined && now <= floor) this.manualH.delete(key);
+        if (target !== cur) list.push([r, target]);
+      });
+      if (list.length) this.wb.setSizes(s, 'r', list);
+    });
+    this.layout();
+  }
   neededHeight(r: number) {
     const ctx = this.ctx, u = this.wb.used(this.sheet);
     let need = 0;
@@ -1424,7 +1465,7 @@ export class Grid {
     if (d.kind === 'resizeC') {
       const w = this.m.colW.get(d.c);
       this.m.colW.set(d.c, d.w0);
-      this.wb.setColWidth(this.sheet, d.c, w);
+      this.changeColWidths([d.c], () => this.wb.setColWidth(this.sheet, d.c, w));
     } else if (d.kind === 'resizeR') {
       const h = this.m.rowH.get(d.r);
       this.m.rowH.set(d.r, d.h0);
@@ -1481,7 +1522,7 @@ export class Grid {
     if (h.zone === 'resizeC') { this.autoFit(h.c); return; }
     if ((h.zone === 'cell' || h.zone === 'border') && !this.edit.isEditing()) this.edit.begin(null, 'edit');
   }
-  autoFit(c: number) { this.wb.setColWidth(this.sheet, c, this.fitWidth(c)); }
+  autoFit(c: number) { const w = this.fitWidth(c); this.changeColWidths([c], () => this.wb.setColWidth(this.sheet, c, w)); }
   /** Độ rộng vừa nội dung cột (px ở 100%) */
   fitWidth(c: number): number {
     const ctx = this.ctx, u = this.wb.used(this.sheet);

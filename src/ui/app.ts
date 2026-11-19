@@ -2323,15 +2323,14 @@ export class App {
       if (n < 0 || n > 255) return 'Độ rộng cột phải từ 0 đến 255.';
       const list: [number, number][] = [];
       for (let c = a; c <= Math.min(b, a + 2000); c++) list.push([c, n === 0 ? 0 : Math.round(n * 7 + 5)]);
-      this.safe(() => this.wb.setSizes(s, 'c', list));
-      this.grid.layout();
+      this.safe(() => this.grid.changeColWidths(list.map((x) => x[0]), () => this.wb.setSizes(s, 'c', list)));
     });
   }
   autofitRows() { this.fitRows(true); }
   autofitCols() {
     const [a, b] = this.selCols(), list: [number, number][] = [];
     for (let c = a; c <= Math.min(b, a + 500); c++) list.push([c, this.grid.fitWidth(c)]);
-    this.safe(() => this.wb.setSizes(this.grid.sheet, 'c', list)); this.grid.layout();
+    this.safe(() => this.grid.changeColWidths(list.map((x) => x[0]), () => this.wb.setSizes(this.grid.sheet, 'c', list)));
   }
   hideSel(ax: 'r' | 'c', hide: boolean) {
     const s = this.grid.sheet;

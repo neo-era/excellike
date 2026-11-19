@@ -51,6 +51,33 @@ const pick = await X(() => window.__pick);
 ok(pick && pick.name === 'Bao cao cu.xlsx' && pick.types[0] === '.xlsx', 'Ctrl+S đề xuất tên .xlsx: ' + JSON.stringify(pick));
 ok(await X(() => window.__saved.length === 1 && window.__saved[0].bytes[0] === 0x50 && window.__saved[0].bytes[1] === 0x4b), 'ghi ra tệp .xlsx (zip)');
 ok(await X(() => window.__xl.fileName === 'Bao cao cu.xlsx'), 'sau khi lưu, sổ gắn với tệp .xlsx mới');
+// 1.1.2: đổi độ rộng cột → hàng có chữ xuống dòng tự đổi chiều cao để chữ không bị che
+await X(() => { const x = window.__xl; x.newBook ? x.newBook() : null; });
+await wait(300);
+const fit = await X(async () => {
+  const x = window.__xl, g = x.grid, s = g.sheet, wb = x.wb;
+  wb.setInput(s, 30, 1, 'Chi phí thẩm định hồ sơ yêu cầu và kết quả lựa chọn nhà thầu tư vấn khảo sát và lập BCNCKT');
+  wb.setStyle(s, { r1: 30, c1: 1, r2: 30, c2: 1 }, { wr: true });
+  wb.setInput(s, 31, 1, 'Dự phòng cho yếu tố khối lượng, công việc phát sinh');
+  wb.setStyle(s, { r1: 31, c1: 1, r2: 31, c2: 1 }, { wr: true });
+  g.changeColWidths([1], () => wb.setColWidth(s, 1, 400));
+  const def = wb.meta(s).rowH.def;
+  wb.setRowHeight(s, 31, 60); // hàng đặt cao tay
+  const h0 = [wb.meta(s).rowH.get(30), wb.meta(s).rowH.get(31)];
+  g.changeColWidths([1], () => wb.setColWidth(s, 1, 120)); // thu hẹp: chữ phải xuống nhiều dòng
+  const h1 = [wb.meta(s).rowH.get(30), wb.meta(s).rowH.get(31)];
+  const need1 = [g.neededHeight(30), g.neededHeight(31)];
+  g.changeColWidths([1], () => wb.setColWidth(s, 1, 400)); // nới rộng lại
+  const h2 = [wb.meta(s).rowH.get(30), wb.meta(s).rowH.get(31)];
+  wb.undo();
+  const h3 = [wb.meta(s).rowH.get(30), wb.meta(s).colW.get(1)];
+  return { def, h0, h1, need1, h2, h3 };
+});
+ok(fit.h1[0] >= fit.need1[0] && fit.h1[0] > fit.h0[0], 'thu hẹp cột: hàng tự động cao thêm vừa chữ ' + JSON.stringify(fit));
+ok(fit.h1[1] >= Math.max(60, fit.need1[1]), 'hàng đặt cao tay không bị co, chỉ giãn khi cần');
+ok(fit.h2[0] === fit.h0[0], 'nới rộng cột: hàng tự động co lại như cũ');
+ok(fit.h2[1] === 60, 'nới rộng cột: hàng đặt cao tay trở về đúng chiều cao đã đặt (60) ' + JSON.stringify(fit.h2));
+ok(fit.h3[0] === fit.h1[0] && fit.h3[1] === 120, 'một lần Hoàn tác trả cả độ rộng cột và chiều cao hàng');
 console.log(`v11: ${pass} đạt, ${fail} lỗi, ${errors.length} lỗi trang`);
 await browser.close();
 try { process.kill(-srv.pid); } catch { /* đã tắt */ }
